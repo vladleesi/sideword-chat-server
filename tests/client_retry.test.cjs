@@ -55,6 +55,7 @@ function inviteClient() {
     readHistoryRecords = async () => { events.push('outbox-read'); return []; };
     deviceLock = async (_, action) => action();
     renderOutbox = async () => {};
+    renderMessages = () => {};
     observePeerKey = async peer => peer;
     selectChat = id => { selectedChatId = id; events.push('selected:' + id); };
     showToast = () => {};

@@ -16,6 +16,14 @@ on localhost or HTTPS. It is not compatible with NaCl `crypto_box` without an
 interoperability layer. See [invites and chats](../README.md#invites-and-chats) for
 use/reset behavior and [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for trust boundaries.
 `/l/{token}` is the invite landing page and links to `/client?invite={token}`.
+Incoming group messages show the sender's `display_name` from the chat roster
+alongside `sender_public_id`, falling back to the public ID when unnamed. The
+client saves this label in encrypted local history; message envelopes are unchanged.
+Existing history uses current roster names when saved sender routing metadata is
+available. Reload the client to load the updated script URL.
+After reload, restored history opens at the latest messages even if server
+synchronization fails. Incoming messages preserve the position when reading older history.
+Display names are not authenticated by the encryption protocol.
 
 ## Activate link
 

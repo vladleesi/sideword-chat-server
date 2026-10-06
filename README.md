@@ -161,6 +161,15 @@ Full rooms stop accepting new participants, while authenticated reconnects
 reuse existing slots. Revocation, deletion, participant deactivation, and
 expiry invalidate access. Losing browser credentials does not free a slot.
 
+Incoming group messages in the bundled client show the sender's chosen name
+alongside their public ID, or just the ID if no name is set. The label is saved
+with encrypted local history; existing messages also use current names when their
+saved sender identity is available. Reload the client to fetch updated assets.
+Names are participant labels, not verified identities;
+compare peer key fingerprints out of band.
+Refreshing the client opens restored chat history at the latest messages.
+Incoming messages preserve your position when you scroll up to read older messages.
+
 To test a chat, open the invite in two separate browser profiles or a normal and
 private window, activate both participants, and compare peer key fingerprints
 out of band. Device keys and decrypted history stay in the browser; **Reset

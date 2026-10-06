@@ -441,7 +441,26 @@ function compareHistoryEntries(left, right) {
   return String(left.id || "").localeCompare(String(right.id || ""));
 }
 
+function messageMeta(chatId, entry) {
+  const chat = chats.find((candidate) => candidate.id === chatId);
+  if (entry.kind !== "theirs" || chat?.chat_type !== "group") return entry.meta;
+  let senderPublicId = entry.senderPublicId;
+  if (!senderPublicId && typeof entry.id === "string" && entry.id.startsWith("incoming:")) {
+    try {
+      const [storedChatId, storedSenderId] = JSON.parse(entry.id.slice("incoming:".length));
+      if (storedChatId === chatId) senderPublicId = storedSenderId;
+    } catch {
+      // Older history without a routing identity keeps its saved label.
+    }
+  }
+  const sender = chat.participants.find((participant) => participant.public_id === senderPublicId);
+  if (!sender) return entry.meta;
+  const name = sender.display_name?.trim();
+  return name ? `From ${name} (${senderPublicId})` : `From ${senderPublicId}`;
+}
+
 function renderMessages() {
+  if (elements.clientPanel.hidden) return;
   const list = elements.messageList;
   const changedChat = renderedChatId !== selectedChatId;
   const followLatest = changedChat || list.scrollHeight - list.clientHeight - list.scrollTop <= 32;
@@ -472,8 +491,10 @@ function renderMessages() {
   let position = 0;
   for (const entry of entries) {
     const key = entry.id || entry;
+    const metaText = messageMeta(selectedChatId, entry);
     const existing = renderedMessages.get(key);
     if (existing) {
+      if (existing.children[1]) existing.children[1].textContent = metaText || "";
       if (list.children[position] !== existing) list.insertBefore(existing, list.children[position] || null);
       position++;
       continue;
@@ -483,10 +504,10 @@ function renderMessages() {
     const text = document.createElement("span");
     text.textContent = entry.text;
     message.append(text);
-    if (entry.meta) {
+    if (metaText) {
       const meta = document.createElement("span");
       meta.className = "message-meta";
-      meta.textContent = entry.meta;
+      meta.textContent = metaText;
       message.append(meta);
     }
     list.insertBefore(message, list.children[position] || null);
@@ -557,6 +578,7 @@ function updateIdentityUi() {
   elements.clientPanel.hidden = !active;
   document.querySelector("#reconnect-session").hidden = invitePending || active || !identity?.suspendedToken;
   updateConnectionState(false);
+  if (active) renderMessages();
 }
 
 function updateConnectionState(connected) {
@@ -659,13 +681,16 @@ async function processMessages(messages) {
     processingMessageIds.add(key);
     try {
       const plaintext = await decryptMessage(message);
-      await appendMessage(message.chat_id, {
+      const entry = {
         id: key,
         kind: "theirs",
         text: plaintext,
+        senderPublicId: message.sender_public_id,
         meta: `From ${message.sender_public_id}`,
         createdAt: serverTimestamp(message.created_at),
-      });
+      };
+      entry.meta = messageMeta(message.chat_id, entry);
+      await appendMessage(message.chat_id, entry);
       seenMessageIds.add(key);
       failedMessageReasons.delete(key);
       queueRead(message);

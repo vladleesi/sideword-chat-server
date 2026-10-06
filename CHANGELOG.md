@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0 — 2026-10-06
+
+- Show each sender's chosen display name alongside their public ID on incoming group messages, including existing local history when sender routing metadata is available; refresh client assets on reload.
+- Open restored chat history at the latest messages after refresh, including when server synchronization is unavailable, while preserving the scroll position when reading older messages.
+
 ## 0.4.0 — 2026-10-06
 
 - Require body-based invite activation and switch the bundled client to keep admission tokens out of activation URLs; remove the path-based activation endpoint.

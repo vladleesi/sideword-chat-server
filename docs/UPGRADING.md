@@ -42,6 +42,11 @@ retry requirements. Publication does not update running servers or GitHub Pages.
    private routes are blocked publicly. Reload browser clients.
 6. Keep the backup until verification is complete.
 
+The bundled client script URL changes for the sender-label and history-scroll updates so reloads
+fetch the new code. Existing incoming group history shows current roster names
+when its saved sender identity is available; no new invite or device reset is needed.
+Reloading opens restored history at the latest messages.
+
 Startup applies additive SQLite migrations. Upgrade every writer together;
 mixing old and new server code against one database is unsupported.
 SQLite 3.35+ is required for atomic read deletion/receipt creation.

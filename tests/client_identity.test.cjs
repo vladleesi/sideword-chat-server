@@ -63,7 +63,9 @@ test('routine identity saves cannot overwrite a concurrent credential rotation',
 test('fingerprints are local; first-use pins survive reload and never silently change', async () => {
   const backend = storage();
   const run = client(backend);
+  run("peer.display_name = 'Alice';");
   const observed = await run('observePeerKey(peer)');
+  assert.equal(observed.display_name, 'Alice');
   assert.equal(observed.local_fingerprint, createHash('sha256').update('a'.repeat(32)).digest('hex'));
   assert.equal(observed.key_changed, false);
   const reload = client(backend);

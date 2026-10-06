@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-function client() {
+function client(persistHistory = false) {
   const element = { addEventListener() {} };
   const context = vm.createContext({
     TextEncoder, TextDecoder, DOMException,
@@ -17,13 +17,13 @@ function client() {
   vm.runInContext(`
     senderKeyIsLoaded = () => true;
     decryptMessage = async (message) => message.ciphertext;
-    persistHistoryEntry = async () => {};
   `, context);
+  if (!persistHistory) vm.runInContext('persistHistoryEntry = async () => {};', context);
   return (code) => vm.runInContext(code, context);
 }
 
-function renderingClient() {
-  const run = client();
+function renderingClient(persistHistory = false) {
+  const run = client(persistHistory);
   run(`
     class TestNode {
       constructor() { this.children = []; this.scrollTop = 0; this.clientHeight = 100; }
@@ -56,6 +56,128 @@ function renderingClient() {
   return run;
 }
 
+test('polling and live group messages label the matching sender using safe text', async () => {
+  const run = renderingClient();
+  await run(`(async () => {
+    chats = [{ id: 7, chat_type: 'group', participants: [
+      { public_id: 'alice', display_name: '<img src=x onerror=alert(1)>' },
+      { public_id: 'bob', display_name: '<img src=x onerror=alert(1)>' },
+    ] }];
+    messagesByChat.clear();
+    globalThis.savedEntries = [];
+    globalThis.acknowledgements = [];
+    persistHistoryEntry = async (chatId, entry) => {
+      savedEntries.push(JSON.parse(JSON.stringify(entry)));
+      if (pendingReadsByChat.size) throw new Error('acknowledgement queued before persistence');
+    };
+    api = async (path) => { acknowledgements.push(path); };
+    globalThis.pollMessage = { delivery_id: 'a'.repeat(32), chat_id: 7,
+      sender_public_id: 'alice', client_message_id: 'same-id', ciphertext: 'first',
+      created_at: '2026-10-06T12:00:00Z' };
+    await processIncoming({ messages: [pollMessage] });
+    await handleSocketPayload({ type: 'message', message: { ...pollMessage,
+      delivery_id: 'b'.repeat(32), sender_public_id: 'bob', ciphertext: 'second' } });
+    await processIncoming({ messages: [pollMessage] });
+  })()`);
+  assert.equal(run('messagesByChat.get(7).length'), 2);
+  assert.equal(run('savedEntries.length'), 2);
+  for (const [index, sender] of ['alice', 'bob'].entries()) {
+    const label = `From <img src=x onerror=alert(1)> (${sender})`;
+    assert.equal(run(`savedEntries[${index}].meta`), label);
+    assert.equal(run(`elements.messageList.children[${index}].children[1].textContent`), label);
+    assert.equal(run(`elements.messageList.children[${index}].children[1].children.length`), 0);
+  }
+  assert.equal(run('acknowledgements.length'), 3);
+});
+
+test('sender names come from the message chat even when another group is selected', async () => {
+  const run = client();
+  await run(`(async () => {
+    selectedChatId = 8;
+    renderMessages = () => {};
+    chats = [
+      { id: 7, chat_type: 'group', participants: [{ public_id: 'alice', display_name: 'Alice' }] },
+      { id: 8, chat_type: 'group', participants: [{ public_id: 'alice', display_name: 'Other label' }] },
+    ];
+    senderKeyIsLoaded = () => false;
+    globalThis.rosterRefreshes = 0;
+    loadChats = async () => { rosterRefreshes++; chats[0].participants[0].display_name = 'Fresh Alice'; };
+    await processMessages([{ delivery_id: 'a'.repeat(32), chat_id: 7,
+      sender_public_id: 'alice', client_message_id: 'm', ciphertext: 'hello' }]);
+  })()`);
+  assert.equal(run('rosterRefreshes'), 1);
+  assert.equal(run('messagesByChat.get(7)[0].meta'), 'From Fresh Alice (alice)');
+});
+
+test('unnamed group senders and personal chats retain the public ID label', async () => {
+  for (const [chatType, name] of [['group', null], ['group', ''], ['group', '   '], ['personal', 'Alice']]) {
+    const run = client();
+    run(`chats = [{ id: 7, chat_type: ${JSON.stringify(chatType)}, participants: [
+      { public_id: 'alice', display_name: ${JSON.stringify(name)} },
+    ] }];`);
+    await run(`processMessages([{ delivery_id: 'a'.repeat(32), chat_id: 7,
+      sender_public_id: 'alice', client_message_id: 'm', ciphertext: 'hello' }])`);
+    assert.equal(run('messagesByChat.get(7)[0].meta'), 'From alice');
+  }
+});
+
+test('group sender labels survive encrypted history reload without a roster', async () => {
+  const run = renderingClient(true);
+  await run(`(async () => {
+    identity = { publicId: 'recipient', storageKey: await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']) };
+    globalThis.records = [];
+    putDatabaseValue = async (key, value) => { records.push({ key, value }); };
+    readHistoryRecords = async () => records;
+    chats = [{ id: 7, chat_type: 'group', participants: [{ public_id: 'alice', display_name: 'Alice' }] }];
+    messagesByChat.clear();
+    await processMessages([{ delivery_id: 'a'.repeat(32), chat_id: 7,
+      sender_public_id: 'alice', client_message_id: 'm', ciphertext: 'hello' }]);
+    chats = [];
+    messagesByChat.clear();
+    renderMessages();
+    await loadStoredHistory();
+  })()`);
+  assert.equal(run('records.length'), 1);
+  assert.equal(run('identity.storageKey.extractable'), false);
+  assert.equal(run('messagesByChat.get(7)[0].meta'), 'From Alice (alice)');
+  assert.equal(run('elements.messageList.firstChild.children[1].textContent'), 'From Alice (alice)');
+});
+
+test('existing group history gains roster names without changing nodes or delivery identities', async () => {
+  const run = renderingClient();
+  await run(`(async () => {
+    chats = [];
+    messagesByChat.clear();
+    globalThis.legacyId = 'incoming:' + JSON.stringify([7, 'alice', 'old-message']);
+    await appendMessage(7, { id: legacyId, kind: 'theirs', text: 'old message',
+      meta: 'From alice', createdAt: 1 }, false);
+    globalThis.legacyNode = elements.messageList.firstChild;
+    elements.messageList.scrollTop = 12;
+    chats = [{ id: 7, chat_type: 'group', participants: [{ public_id: 'alice', display_name: 'Alice' }] }];
+    renderMessages();
+  })()`);
+  assert.equal(run('elements.messageList.firstChild === legacyNode'), true);
+  assert.equal(run('legacyNode.children[1].textContent'), 'From Alice (alice)');
+  assert.equal(run('messagesByChat.get(7)[0].id === legacyId'), true);
+  assert.equal(run('messagesByChat.get(7)[0].meta'), 'From alice');
+  assert.equal(run('pendingReadsByChat.size'), 0);
+  run(`chats[0].participants[0].display_name = '<b>New name</b>'; renderMessages();`);
+  assert.equal(run('legacyNode.children[1].textContent'), 'From <b>New name</b> (alice)');
+  assert.equal(run('legacyNode.children[1].children.length'), 0);
+  run(`chats[0].participants[0].display_name = null; renderMessages();`);
+  assert.equal(run('legacyNode.children[1].textContent'), 'From alice');
+});
+
+test('unrecognized history and other-chat identities keep saved sender labels', () => {
+  const run = client();
+  run(`chats = [{ id: 7, chat_type: 'group', participants: [{ public_id: 'alice', display_name: 'Alice' }] }];`);
+  for (const id of ['incoming-fixture', 'incoming:invalid', 'incoming:null', 'incoming:' + JSON.stringify([8, 'alice', 'm'])]) {
+    assert.equal(run(`messageMeta(7, { id: ${JSON.stringify(id)}, kind: 'theirs', meta: 'Saved label' })`), 'Saved label');
+  }
+  assert.equal(run(`messageMeta(7, { senderPublicId: 'missing', kind: 'theirs', meta: 'Saved label' })`), 'Saved label');
+});
+
 test('incoming messages preserve existing nodes, chronological order, and reading position', async () => {
   const run = renderingClient();
   await run(`elements.messageList.scrollTop = 50;
@@ -82,6 +204,73 @@ test('new messages follow the bottom and switching chats clears previous message
   assert.equal(run('elements.messageList.children.length'), 1);
   assert.equal(run('elements.messageList.firstChild.children[0].textContent'), 'different chat');
   assert.equal(run('elements.messageList.firstChild === originalNodes[0]'), false);
+});
+
+test('refresh opens encrypted history at the latest message even when synchronization fails', async () => {
+  const run = renderingClient(true);
+  await run(`(async () => {
+    globalThis.savedIdentity = { publicId: 'recipient', token: 'saved-session', activeInviteChatId: 7,
+      storageKey: await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']) };
+    identity = savedIdentity;
+    globalThis.records = [];
+    putDatabaseValue = async (key, value) => { records.push({ key, value }); };
+    readHistoryRecords = async () => records;
+    for (let i = 0; i < 6; i++) {
+      await persistHistoryEntry(7, { id: 'saved-' + i, kind: 'theirs', text: 'message ' + i, createdAt: i + 1 });
+    }
+    messagesByChat.clear();
+    renderedMessages.clear();
+    renderedChatId = undefined;
+    selectedChatId = null;
+    elements.messageList.replaceChildren();
+    elements.clientPanel = { hidden: true };
+    elements.setupPanel = {};
+    elements.inviteToken.value = '';
+    elements.connectionState.classList = { toggle() {} };
+    // Hidden DOM boxes have no scroll range; visible boxes clamp scrollTop.
+    let scrollTop = 0;
+    Object.defineProperties(elements.messageList, {
+      clientHeight: { get: () => elements.clientPanel.hidden ? 0 : 100 },
+      scrollHeight: { get: () => elements.clientPanel.hidden ? 0 : elements.messageList.children.length * 100 },
+      scrollTop: {
+        get: () => elements.clientPanel.hidden ? 0 : scrollTop,
+        set: value => { scrollTop = Math.max(0, Math.min(value,
+          elements.messageList.scrollHeight - elements.messageList.clientHeight)); },
+      },
+    });
+    readIdentity = async () => savedIdentity;
+    window.isSecureContext = true;
+    window.crypto = crypto;
+    window.indexedDB = {};
+    window.setInterval = () => 1;
+    api = async () => { throw new Error('offline'); };
+    showToast = () => {};
+    connectSocket = () => {};
+    await start();
+  })()`);
+  assert.equal(run('elements.clientPanel.hidden'), false);
+  assert.equal(run('elements.messageList.children.length'), 6);
+  assert.equal(run('elements.messageList.scrollTop'), 500);
+  assert.equal(run('elements.messageList.children[5].children[0].textContent'), 'message 5');
+  await run(`elements.messageList.scrollTop = 100;
+    appendMessage(7, { id: 'new-message', text: 'latest', createdAt: 7 }, false)`);
+  assert.equal(run('elements.messageList.scrollTop'), 100);
+});
+
+test('hidden history rendering preserves the first visible chat transition', () => {
+  const run = renderingClient();
+  run(`elements.clientPanel = { hidden: true }; selectedChatId = 8;
+    messagesByChat.set(8, [
+      { id: 'old', text: 'old', createdAt: 1 },
+      { id: 'latest', text: 'latest', createdAt: 2 },
+    ]); renderMessages();`);
+  assert.equal(run('renderedChatId'), 7);
+  assert.equal(run('elements.messageList.firstChild === originalNodes[0]'), true);
+  run('elements.clientPanel.hidden = false; renderMessages();');
+  assert.equal(run('renderedChatId'), 8);
+  assert.equal(run('elements.messageList.scrollTop'), 200);
+  assert.equal(run('elements.messageList.children[1].children[0].textContent'), 'latest');
 });
 
 test('reused SQLite row IDs do not drop new messages or receipts', async () => {

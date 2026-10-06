@@ -79,6 +79,17 @@ are retained. Peer pins and session/invite fields are additive; the encrypted
 key, a fresh 12-byte IV per record, and the complete history storage key as AAD.
 Private identity and storage keys are browser CryptoKeys, never uploaded. New
 private keys are generated non-exportable; existing keys are reused unchanged.
+The bundled client stores incoming group sender labels with each new history
+entry, using the roster's display name and public ID, or just the ID if unnamed.
+When a roster is available, history renders current sender labels using the
+saved sender public ID or the original composite incoming identity. Legacy records
+without that identity and records without a matching roster keep their saved labels.
+This does not rewrite stored history or change delivery identities.
+Names are server-provided metadata,
+not authenticated by the encrypted envelope.
+History rendering waits until the client panel is visible so its first render
+can scroll to the latest message, including when initial synchronization fails.
+Later incoming delivery preserves the position when reading older history.
 
 ## Delivery requirements for future clients
 

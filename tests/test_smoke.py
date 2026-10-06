@@ -17,6 +17,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import secrets
 import tempfile
 from pathlib import Path
@@ -113,16 +114,21 @@ async def _run() -> None:
             assert "default-src 'none'" in r.headers["content-security-policy"]
             assert r.headers["x-frame-options"] == "DENY"
             assert r.text.index('/static/client-protocol.js') < r.text.index('/static/client.js')
+            client_script = re.search(r'src="(/static/client\.js\?[^\"]+)"', r.text)
+            assert client_script is not None
+            # A client with the 0.4.0 script cached must fetch a different URL.
+            assert client_script.group(1) != "/static/client.js?v=14"
 
             r = await c.get("/static/client-protocol.js")
             assert r.status_code == 200
             assert "X25519-2DH-HKDF-SHA256-AES256GCM" in r.text
 
-            r = await c.get("/static/client.js")
+            r = await c.get(client_script.group(1))
             assert r.status_code == 200
             assert "SidewordProtocol.encryptForRecipient" in r.text
             assert "persistHistoryEntry" in r.text
             assert "compareHistoryEntries" in r.text
+            assert "messageMeta" in r.text
             assert 'type: "auth", token: identity.token' in r.text
 
             r = await c.get(f"/l/{pt}")
@@ -255,6 +261,13 @@ async def _run() -> None:
                 pids.append(data["user"]["public_id"])
 
             group_chat_id = data["chat"]["id"]
+            r = await c.get("/api/v1/me", headers={"Authorization": f"Bearer {tokens[0]}"})
+            assert r.status_code == 200
+            group_chat = next(chat for chat in r.json()["chats"] if chat["id"] == group_chat_id)
+            assert group_chat["chat_type"] == "group"
+            assert {
+                peer["public_id"]: peer["display_name"] for peer in group_chat["participants"]
+            } == {pid: f"User{i}" for i, pid in enumerate(pids)}
             u0_token = tokens[0]
             others = pids[1:]
 

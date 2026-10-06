@@ -1,6 +1,6 @@
 # Security review
 
-Current code: 0.4.0. Activation reviewed 2026-10-06; broader review 2026-09-27.
+Current code: 0.5.0. Activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
 This is a source review with regression tests, not an independent audit.
 Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 
@@ -14,6 +14,7 @@ Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 | Client sessions | Short access tokens, hashed refresh credentials, rotation/replay detection, per-device revocation and explicit legacy cutoff controls. Issuance rechecks user/invite validity under the database write reservation. |
 | Transport and capacity | HTTPS/WSS outside loopback, private administration by default, bounded HTTP/WS traffic and database queues. Shared runner/Docker suppress raw access and WS INFO logs. |
 | Device state | Non-exportable private keys, locally calculated fingerprints, atomic first-use peer pins, encrypted history/outbox and persistence before deletion acknowledgements. |
+| Group sender labels | Incoming messages use the matching participant's display name and public ID, saved in encrypted history and rendered with `textContent`. Existing history can resolve current roster names by its saved routing identity without changing delivery IDs or acknowledging old messages again. Names are server-provided labels, not authenticated identities; unnamed senders fall back to public IDs. |
 | Recovery | Isolated restore tests verify that both signing-key rotation and removal of restored session records are needed to invalidate old credentials. |
 
 Implementation does not prove that deployment settings are correct or that the
@@ -174,10 +175,12 @@ Old messages gain no retroactive forward secrecy.
 
 ## Latest verification record
 
-- **0.4.0 code, 2026-10-06:** 178 Python tests passed. Prior results for 47
-  JavaScript tests and client/form syntax remain valid for the unchanged scripts.
-  Ruff, compilation, documentation links/activation JSON, landing
-  anchors/assets/structured data, and diff whitespace/privacy checks passed.
+- **0.5.0 code, 2026-10-06:** the full 178-test Python suite passed before the
+  template/history follow-ups; the affected isolated smoke test passed again,
+  verifying the new script URL and group names in `/me`. All 55 JavaScript tests passed.
+  Ruff, compilation, client/form syntax, changed documentation links, landing
+  anchors/structured data, release version/date, and diff whitespace/privacy
+  checks passed. Unchanged activation JSON and landing assets retain their prior review.
   The existing Starlette/AnyIO deprecation warning remains.
 - **Release automation:** version/notes validation, workflow configuration,
   Bash syntax and nine mocked publication scenarios passed locally, including
@@ -193,9 +196,19 @@ Old messages gain no retroactive forward secrecy.
   identity, sessions and capacity. Removed path routes return 404 without
   admission or resumption and are absent from OpenAPI. Node checks verify that activation retries
   keep the token in JSON and preserve saved credentials after a rejected bearer.
-- **Deployment:** the current 0.4.0 change set has not been deployed or verified
-  against running listeners. Earlier runtime observations do not establish its
-  current deployment behavior.
+  Group-label regressions cover polling/live delivery, matching chat rosters,
+  duplicate names, unnamed fallbacks, text-only rendering, persistence before
+  acknowledgement, and encrypted history reload without a roster.
+  Follow-up regressions cover the rendered script URL, peer-name preservation,
+  existing history relabeling without node replacement or acknowledgement, and
+  malformed/other-chat history fallback.
+  History-scroll regressions cover hidden-panel rendering, encrypted startup
+  history with unavailable synchronization, and preserving an older reading position.
+- **Deployment:** local listeners returned healthy 0.4.0 responses on 2026-10-06;
+  the client returned HTTP 200 and shared administration returned 404. Both local
+  listeners served the new script URL and exact current client source after the
+  sender-label and history-scroll fixes. The running Python process still reports 0.4.0; the
+  0.5.0 change has not been deployed or verified in a browser.
 - **Limits:** tests use isolated databases and Node adapters for browser storage,
   not a live browser. They do not establish native interoperability, production
   configuration, penetration/load-test results, a full dependency audit or a
