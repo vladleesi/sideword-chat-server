@@ -45,7 +45,7 @@ async def _run() -> None:
 
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="https://test") as c:
             # ---------- Admin login ----------
             await c.get("/admin/login")
             c.headers["X-CSRF-Token"] = c.cookies.get("sideword_csrf")
@@ -134,8 +134,9 @@ async def _run() -> None:
             bob_pub, _ = _random_keypair()
 
             r = await c.post(
-                f"/api/v1/links/{pt}/activate",
+                "/api/v1/links/activate",
                 json={
+                    "token": pt,
                     "public_key": base64.b64encode(alice_pub).decode(),
                     "display_name": "Alice",
                 },
@@ -146,8 +147,9 @@ async def _run() -> None:
             alice_token = alice["token"]
 
             r = await c.post(
-                f"/api/v1/links/{pt}/activate",
+                "/api/v1/links/activate",
                 json={
+                    "token": pt,
                     "public_key": base64.b64encode(bob_pub).decode(),
                     "display_name": "Bob",
                 },
@@ -158,8 +160,9 @@ async def _run() -> None:
 
             # Third activation must fail once quota is exhausted.
             r = await c.post(
-                f"/api/v1/links/{pt}/activate",
-                json={"public_key": base64.b64encode(secrets.token_bytes(32)).decode()},
+                "/api/v1/links/activate",
+                json={"token": pt,
+                      "public_key": base64.b64encode(secrets.token_bytes(32)).decode()},
             )
             assert r.status_code in (410, 404)
 
@@ -239,8 +242,9 @@ async def _run() -> None:
             pids: list[str] = []
             for i, pk in enumerate(pubs):
                 r = await c.post(
-                    f"/api/v1/links/{gt}/activate",
+                    "/api/v1/links/activate",
                     json={
+                        "token": gt,
                         "public_key": base64.b64encode(pk).decode(),
                         "display_name": f"User{i}",
                     },
@@ -317,8 +321,9 @@ async def _run() -> None:
 
             # ---------- Unknown invite token ----------
             r = await c.post(
-                "/api/v1/links/no-such-token/activate",
-                json={"public_key": base64.b64encode(secrets.token_bytes(32)).decode()},
+                "/api/v1/links/activate",
+                json={"token": "no-such-token",
+                      "public_key": base64.b64encode(secrets.token_bytes(32)).decode()},
             )
             assert r.status_code == 404
 

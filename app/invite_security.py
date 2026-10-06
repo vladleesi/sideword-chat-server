@@ -22,7 +22,9 @@ FAILURE_LIMIT = 5
 FAILURE_WINDOW_SECONDS = 300
 
 
-def require_secure_transport(request: Request) -> None:
+def require_secure_transport(
+    request: Request, detail: str = "Room passwords require HTTPS (or local loopback).",
+) -> None:
     # Proxy scheme is set only by the server's configured trusted proxy support.
     # Do not read arbitrary X-Forwarded-* headers here.
     local = (
@@ -31,7 +33,7 @@ def require_secure_transport(request: Request) -> None:
         and request.client.host in {"127.0.0.1", "::1"}
     )
     if request.url.scheme != "https" and not local:
-        raise HTTPException(400, "Room passwords require HTTPS (or local loopback).")
+        raise HTTPException(400, detail)
 
 
 def validate_password(password: str) -> None:

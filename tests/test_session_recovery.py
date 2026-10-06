@@ -66,7 +66,8 @@ def test_restore_requires_key_rotation_and_session_removal(
         invite_token = asyncio.run(invite())
         users = []
         for admission in admissions:
-            response = client.post(f"/api/v1/links/{invite_token}/activate", json=admission)
+            response = client.post("/api/v1/links/activate",
+                                   json={**admission, "token": invite_token})
             assert response.status_code == 200
             users.append(response.json())
         issued = bootstrap(client, users[0], old).json()
@@ -136,8 +137,9 @@ def test_restore_requires_key_rotation_and_session_removal(
         if rotate_signing_key and clear_sessions:
             recovered = []
             for index, admission in enumerate(admissions):
-                response = client.post(f"/api/v1/links/{invite_token}/activate", json={
-                    **admission, "session_credential": secrets.token_urlsafe(32),
+                response = client.post("/api/v1/links/activate", json={
+                    **admission, "token": invite_token,
+                    "session_credential": secrets.token_urlsafe(32),
                 })
                 assert response.status_code == 200
                 recovered.append(response.json())

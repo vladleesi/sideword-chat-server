@@ -60,9 +60,11 @@ function inviteClient() {
     showToast = () => {};
     globalThis.failActivation = false;
     globalThis.nextPublicId = 'alice';
-    api = async path => {
+    globalThis.activationRequests = [];
+    api = async (path, options) => {
       events.push(path);
       if (path.includes('/links/')) {
+        activationRequests.push({ path, ...options });
         if (failActivation) throw new Error('Invite expired or password incorrect');
         return { token: 'new-access', user: { public_id: nextPublicId }, chat: { id: 8 },
           session_id: 'new-session', access_expires_at: '2030-01-01T00:00:00Z',
@@ -79,6 +81,36 @@ function inviteClient() {
   `);
   return { run, submit: () => handlers.get('#activation-form:submit')({ preventDefault() {} }) };
 }
+
+test('activation 401 clears rejected bearer and preserves device and resume state for retry', async () => {
+  const requests = [];
+  const run = client({ Headers, fetch: async (_, options) => {
+    requests.push(options);
+    return requests.length === 1
+      ? { ok: false, status: 401, json: async () => ({ detail: 'invalid or revoked session' }) }
+      : { ok: true, json: async () => ({ token: 'recovered-access' }) };
+  } });
+  run(`
+    globalThis.deviceKey = { device: true };
+    globalThis.admission = { resume: 'saved-resume', session: 'saved-session' };
+    identity = { publicId: 'alice', token: 'revoked-access', privateKey: deviceKey,
+      activationCredentials: admission };
+    globalThis.saved = null;
+    writeIdentity = async value => { saved = { ...value }; };
+    updateSessionCountdown = () => {};
+    updateIdentityUi = () => {};
+    elements.inviteToken.focus = () => {};
+    window.clearTimeout = () => {};
+    window.clearInterval = () => {};
+  `);
+  const action = 'api("/api/v1/links/activate", { method: "POST", body: "{}" })';
+  await assert.rejects(run(action), /invalid or revoked session/);
+  assert.equal(requests[0].headers.get('Authorization'), 'Bearer revoked-access');
+  assert.equal(run('saved.token'), null);
+  assert.equal(run('saved.privateKey === deviceKey && saved.activationCredentials === admission'), true);
+  assert.equal((await run(action)).token, 'recovered-access');
+  assert.equal(requests[1].headers.has('Authorization'), false);
+});
 
 for (const scenario of ['different invite', 'legacy identity', 'fresh device']) {
   test(`${scenario} opens requested invite without resuming the previous chat`, async () => {
@@ -147,6 +179,17 @@ test('failed invite stays on the form and a retry reuses the saved admission cre
   await submit();
   assert.equal(run('saved.refreshCredential'), credential);
   assert.equal(run('selectedChatId'), 8);
+  const requests = JSON.parse(run('JSON.stringify(activationRequests)'));
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    assert.equal(request.path, '/api/v1/links/activate');
+    assert.equal(request.method, 'POST');
+    assert.equal(request.path.includes('B'.repeat(24)), false);
+    assert.equal(JSON.parse(request.body).token, 'B'.repeat(24));
+    assert.equal(JSON.parse(request.body).session_credential, credential);
+  }
+  assert.equal(JSON.parse(requests[0].body).resume_credential,
+    JSON.parse(requests[1].body).resume_credential);
 });
 
 for (const failed of [false, true]) {

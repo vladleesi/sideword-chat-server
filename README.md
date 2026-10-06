@@ -172,7 +172,14 @@ Peer pinning detects later key changes, not initial substitution or malicious
 served code. V1 has no recipient forward secrecy or post-compromise recovery;
 see the [security review](docs/SECURITY_REVIEW.md) for current protections and open work.
 Room passwords control admission, not encryption; the server/TLS terminator sees
-them. See [activation rules](docs/API.md#activate-link) for verification, throttling
+them. Every activation requires HTTPS outside loopback, including unprotected
+rooms. Invalid supplied bearer authentication returns 401 without claiming a
+participant slot; credential-only recovery must omit that header.
+The bundled client sends invite tokens in the JSON body of
+`POST /api/v1/links/activate`, the only activation route. Clients using the old
+path-based route must migrate; it returns 404. Invite landing URLs and request
+bodies still require log suppression or redaction.
+See [activation rules](docs/API.md#activate-link) for verification, throttling
 and reconnect credentials.
 
 ## Further documentation

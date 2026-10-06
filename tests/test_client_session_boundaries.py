@@ -83,8 +83,9 @@ def test_issuance_rechecks_admission_after_commit(room, monkeypatch, boundary, a
         async def invite():
             async with SessionLocal() as session:
                 return (await session.get(Link, claims["lid"])).token
-        response = client.post(f"/api/v1/links/{asyncio.run(invite())}/activate",
+        response = client.post("/api/v1/links/activate",
                                headers=headers(user), json={
+                                   "token": asyncio.run(invite()),
                                    "public_key": user["user"]["public_key"],
                                    "session_credential": credential,
                                })
@@ -189,8 +190,9 @@ def test_invite_caps_issued_and_refreshed_deadlines_and_me(room, activation, pre
             return link.token
     invite_token = asyncio.run(set_expiry())
     if activation:
-        response = client.post(f"/api/v1/links/{invite_token}/activate", headers=headers(users[0]),
-                               json={"public_key": users[0]["user"]["public_key"],
+        response = client.post("/api/v1/links/activate", headers=headers(users[0]),
+                               json={"token": invite_token,
+                                     "public_key": users[0]["user"]["public_key"],
                                      "session_credential": old})
     else:
         response = bootstrap(client, users[0], old)

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4 — 2026-10-06
+
+- Require body-based invite activation and switch the bundled client to keep admission tokens out of activation URLs; remove the path-based activation endpoint.
+- Require HTTPS or local loopback for every invite activation, including password-free rooms and legacy token issuance.
+- Reject invalid supplied bearer authentication instead of silently allocating an anonymous participant; validate resume credentials before acquiring the admission write reservation.
+
 ## 0.3.3 — 2026-09-27
 
 - Open the join form for a different invite URL instead of resuming the previous chat; select the invited room after activation.

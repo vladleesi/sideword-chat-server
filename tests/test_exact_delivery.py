@@ -30,7 +30,8 @@ def room():
             token = asyncio.run(create())
             users = []
             for _ in range(size):
-                response = client.post(f"/api/v1/links/{token}/activate", json={
+                response = client.post("/api/v1/links/activate", json={
+                    "token": token,
                     "public_key": base64.b64encode(secrets.token_bytes(32)).decode(),
                 })
                 assert response.status_code == 200

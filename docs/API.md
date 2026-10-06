@@ -19,17 +19,42 @@ use/reset behavior and [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for trust bounda
 
 ## Activate link
 
+Send the invite admission secret as `token` in the JSON body of
+`POST /api/v1/links/activate`, keeping it out of the activation URL. It is separate
+from the client JWT returned by activation. The bundled client uses this route.
+Treat request bodies and complete invite landing URLs as sensitive: HTTPS
+encrypts them in transit, but servers, TLS terminators, proxies or monitoring
+tools can still record them. Anyone who obtains an unprotected, open invite can
+claim a participant slot. Suppress or redact invite URLs and bodies at every
+logging layer; see [public deployment controls](UPGRADING.md#public-deployment-controls).
+Responses use `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, which
+do not erase logs or browser history from opening invite links.
+
+Activation always requires HTTPS outside local loopback, even when
+`SIDEWORD_REQUIRE_HTTPS=false`. The HTTP loopback exception requires both a
+loopback peer address and a `localhost`, `127.0.0.1`, or `::1` host. An insecure
+request is rejected before admission (400 from the endpoint when the global TLS
+guard is disabled; otherwise 403 from that guard). Arbitrary forwarded headers
+do not qualify.
+
 ```
-POST /api/v1/links/{token}/activate
+POST /api/v1/links/activate
 Content-Type: application/json
 
 {
+  "token": "<invite admission secret>",
   "public_key": "<base64, 32 bytes, X25519>",
   "display_name": "Alice",
   "resume_credential": "<43-character base64url credential>",
   "session_credential": "<separate 43-character base64url credential>"
 }
 ```
+
+This is the only activation route. The former
+`POST /api/v1/links/{token}/activate` route is removed and returns 404; all clients
+must send the invite secret in the JSON body. The invite landing paths
+`/l/{token}` and `/client?invite={token}` remain unchanged and still require URL
+log protection.
 
 `display_name` is optional; include `password` for protected rooms. The response
 contains a client JWT, user identity, and chat participants. `session_credential`
@@ -54,6 +79,15 @@ and deadline fields described there; omitting it uses legacy activation until su
   Admission is also capped at 101 members to fit the 100-recipient send limit.
 - A valid existing bearer session reuses its current user when joining another chat.
 
+Omit `Authorization` for a new anonymous join or credential-only recovery. If
+supplied, it must contain a valid, live client bearer session; malformed, expired,
+or revoked authentication returns 401 without consuming a slot. To recover with
+a saved resume credential after 401, explicitly remove the invalid header and
+retry with the same public key and resume credential. The bundled client clears
+the rejected access token and keeps device keys and saved admission credentials
+for that retry. A valid session still requires the password when joining a new
+protected room.
+
 ### Admission and retries
 
 Generate a separate cryptographically random 32-byte `resume_credential` for
@@ -62,6 +96,8 @@ with the device identity before activation. A retry with the same credential
 and public key reuses the participant even if the original response was lost;
 the server stores only the credential's SHA-256 digest. A valid bearer JWT can
 also reconnect without another password or slot, but a public key alone cannot.
+Malformed resume/session credentials return 422 before the database write
+reservation is acquired.
 
 Admission uses a SQLite `BEGIN IMMEDIATE` transaction to prevent concurrent
 joins from overfilling rooms. Failed password guesses are limited to five per

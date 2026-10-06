@@ -28,6 +28,8 @@ class Base64Field(str):
 
 
 class LinkActivateRequest(BaseModel):
+    token: SecretStr = Field(..., min_length=1, max_length=128,
+                             description="Invite admission secret; never log request bodies.")
     public_key: str = Field(..., description="Client X25519 public key as base64 (32 bytes).")
     display_name: str | None = Field(default=None, max_length=64)
     password: SecretStr | None = None

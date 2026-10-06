@@ -1,14 +1,14 @@
 # Security review
 
-Current code: 0.3.3. Reviewed 2026-09-27. This is a source review with regression
-tests, not an independent audit. Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
+Current code: 0.3.4. Activation reviewed 2026-10-06; broader review 2026-09-27.
+This is a source review with regression tests, not an independent audit.
+Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Implemented protections
 
-These names replace the old, unexplained "Stages 1–4" labels.
-
 | Area | Implemented behavior |
 | --- | --- |
+| Invite admission | Body-only `POST /api/v1/links/activate` keeps the invite secret in the JSON body; the bundled client uses it. Activation requires HTTPS or local loopback, independently of the global TLS toggle. Invalid supplied bearer authentication returns 401 without anonymous admission; malformed resume/session credentials are rejected before the SQLite write reservation. Slot allocation and password throttling remain transactional. |
 | Delivery | Exact acknowledgements cannot delete a newer delivery after SQLite row-ID reuse. Read deletion and receipt creation commit together. Identical uploads reuse the original result within a bounded retry window. |
 | Administration | Signed, cookie-bound form tokens prevent cross-site request forgery (CSRF). Login limits persist across processes/restarts. Logout and password resets revoke registered sessions; concurrent old-password logins cannot escape a reset. |
 | Client sessions | Short access tokens, hashed refresh credentials, rotation/replay detection, per-device revocation and explicit legacy cutoff controls. Issuance rechecks user/invite validity under the database write reservation. |
@@ -41,6 +41,14 @@ or browser JavaScript.
 - **Bearer credentials do not prove possession of message keys.** Stolen tokens
   cannot alone decrypt messages but can fetch/delete ciphertext or disrupt delivery.
   Room passwords control admission; the server and TLS terminator see them.
+- **Remaining invite credential exposure.** `/l/{token}` and
+  `/client?invite={token}` contain admission secrets that can enter
+  server/proxy/monitoring logs. Opening invite links can also leave browser
+  history. Activation carries the secret in its body, which logging tools can
+  also record. HTTPS,
+  POST, no-store and no-referrer do not eliminate these copies. Suppress/redact
+  URLs and request bodies at every logging layer; an open, unprotected leaked
+  invite permits a new join.
 - **The relay sees metadata.** Identities, membership, timing, sizes and receipts
   are visible. Receipts are server assertions, not cryptographic proof of reading.
   The relay can delay, suppress, reorder, replay or fabricate metadata.
@@ -67,7 +75,7 @@ Admission may commit a participant slot before session issuance. Issuance
 rechecks the current user/invite and, for legacy migration, token expiry and the
 configured cutoff. Rejection does not roll back admission; keep resume credentials.
 
-Two compatibility boundaries require explicit operator action:
+Compatibility and recovery boundaries:
 
 - Legacy JWTs remain usable until expiry or `SIDEWORD_LEGACY_TOKEN_DEADLINE`.
   They bypass per-device session revocation until then.
@@ -137,7 +145,7 @@ Use the [upgrade/recovery guide](UPGRADING.md) for the procedure. In particular:
 
 | Work | Completion evidence needed |
 | --- | --- |
-| Retire legacy paths | Verify every supported client uses renewable sessions/exact ACKs, then enable both legacy cutoff controls. Their activation has not been verified here. |
+| Retire legacy session/delivery modes | Verify every supported client uses renewable sessions/exact ACKs, then configure `SIDEWORD_LEGACY_TOKEN_DEADLINE` and `SIDEWORD_ALLOW_LEGACY_ACK=false`. Deployment of these controls has not been verified here. |
 | Deployment hardening | Verify actual proxy trust, TLS/HSTS, private routes, logging, backup protection and resource limits for every intended deployment. |
 | Operator recovery drill | Restore an isolated copy of the operator's backup and verify credential invalidation, authorized reconnects and retained delivery state. Automated fixtures do not verify infrastructure or historical server/client rollback. |
 | Broader verification | Real-browser QA and independent security review; separately track dependency/advisory review, penetration testing and load testing. Browser automation was excluded from this work. |
@@ -166,15 +174,23 @@ Old messages gain no retroactive forward secrecy.
 
 ## Latest verification record
 
-- **0.3.3 code:** 132 Python tests and 46 JavaScript tests passed; Ruff, client/form
-  syntax, documentation targets and whitespace checks passed. The existing
-  Starlette/AnyIO deprecation warning remains.
+- **0.3.4 code, 2026-10-06:** 163 Python tests passed. Prior results for 47
+  JavaScript tests and client/form syntax remain valid for the unchanged scripts.
+  Ruff, compilation, documentation links/activation JSON, landing
+  anchors/assets/structured data, and staged whitespace/privacy checks passed.
+  The existing Starlette/AnyIO deprecation warning remains.
 - **Coverage:** crypto interoperability/tampering, key pinning, persistence failures,
   exact delivery and retry races, CSRF/admin revocation, client refresh/issuance
   boundaries, isolated restore scenarios, transport limits and invite navigation.
-- **Local deployment, 2026-09-27:** backend 0.3.2 was healthy on both shared
-  listeners; public admin/OpenAPI routes returned 404. The updated 0.3.3 browser
-  template/script were served locally. A backend restart to 0.3.3 was not verified.
+  Activation regressions cover body-token validation privacy, invalid bearer
+  rejection without slot allocation, HTTP rejection despite the disabled global
+  TLS guard, loopback/spoofed-header boundaries, and body-route retries sharing
+  identity, sessions and capacity. Removed path routes return 404 without
+  admission or resumption and are absent from OpenAPI. Node checks verify that activation retries
+  keep the token in JSON and preserve saved credentials after a rejected bearer.
+- **Deployment:** the current 0.3.4 change set has not been deployed or verified
+  against running listeners. Earlier runtime observations do not establish its
+  current deployment behavior.
 - **Limits:** tests use isolated databases and Node adapters for browser storage,
   not a live browser. They do not establish native interoperability, production
   configuration, penetration/load-test results, a full dependency audit or a

@@ -10,7 +10,6 @@ env/
 .env.local
 .env.*
 !.env.example
-/AGENTS.md
 /.tools/
 /.runtime/
 /.cloudflared/

@@ -51,7 +51,7 @@ def join_payload(**fields):
 
 
 def join(client, link, payload, **kwargs):
-    return client.post(f"/api/v1/links/{link['token']}/activate", json=payload, **kwargs)
+    return client.post("/api/v1/links/activate", json={**payload, "token": link["token"]}, **kwargs)
 
 
 def state(link):
@@ -73,6 +73,78 @@ def change_link(link, **fields):
                 setattr(item, name, value)
             await session.commit()
     asyncio.run(change())
+
+
+def test_body_activation_retries_share_identity_sessions_and_capacity(client):
+    link, _ = create_invite(client, password_mode="none")
+    alice = join_payload(password=None, session_credential=secrets.token_urlsafe(32))
+    first = join(client, link, alice)
+    assert first.status_code == 200
+    assert first.request.url.path == "/api/v1/links/activate"
+    assert link["token"] not in str(first.request.url)
+    resumed = join(client, link, alice)
+    assert resumed.status_code == 200
+    assert resumed.json()["user"] == first.json()["user"]
+    assert resumed.json()["session_id"] == first.json()["session_id"]
+    assert state(link)[:2] == (1, 1)
+
+    bob = join_payload(password=None)
+    second = join(client, link, bob)
+    assert second.status_code == 200
+    assert join(client, link, bob).json()["user"] == second.json()["user"]
+    assert state(link)[:3] == (2, 2, False)
+    assert join(client, link, join_payload(password=None)).status_code == 410
+    assert join(client, link, alice, headers={"Authorization": "Bearer invalid"}).status_code == 401
+    assert state(link)[:3] == (2, 2, False)
+
+
+@pytest.mark.parametrize("suffix", ["", "/"])
+def test_path_activation_is_unavailable_and_cannot_allocate_or_resume(client, suffix):
+    link, _ = create_invite(client, password_mode="none")
+    alice = join_payload(password=None)
+    path = f"/api/v1/links/{link['token']}/activate{suffix}"
+    rejected = client.post(path, json=alice, follow_redirects=False)
+    assert rejected.status_code == 404
+    assert link["token"] not in rejected.text
+    assert rejected.headers["cache-control"] == "no-store"
+    assert state(link) == (0, 0, True, 0)
+
+    first = join(client, link, alice)
+    assert first.status_code == 200
+    rejected = client.post(path, json={**alice, "token": link["token"]},
+                           headers={"Authorization": f"Bearer {first.json()['token']}"},
+                           follow_redirects=False)
+    assert rejected.status_code == 404
+    assert state(link)[:2] == (1, 1)
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/api/v1/links/activate" in paths
+    assert "/api/v1/links/{token}/activate" not in paths
+
+
+@pytest.mark.parametrize("invalid", [None, "", "x" * 129, {"secret": "test-placeholder"}])
+def test_body_invite_validation_never_echoes_secrets_or_claims_slots(client, invalid):
+    link, _ = create_invite(client, password_mode="none")
+    payload = join_payload(password=None, token=invalid)
+    response = client.post("/api/v1/links/activate", json=payload)
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert payload["resume_credential"] not in response.text
+    assert "test-placeholder" not in response.text
+    assert "x" * 129 not in response.text
+    assert state(link) == (0, 0, True, 0)
+
+
+def test_body_invite_is_required_and_other_validation_errors_do_not_echo_it(client):
+    link, _ = create_invite(client, password_mode="none")
+    payload = join_payload(password=None)
+    response = client.post("/api/v1/links/activate", params={"token": link["token"]}, json=payload)
+    assert response.status_code == 422
+    assert link["token"] not in response.text
+    response = join(client, link, {**payload, "public_key": "invalid"})
+    assert response.status_code == 422
+    assert link["token"] not in response.text
+    assert state(link) == (0, 0, True, 0)
 
 
 def test_password_hash_is_salted_and_never_truncates():
@@ -181,7 +253,7 @@ def test_concurrent_first_joins_and_retries_are_atomic(client):
         async with AsyncClient(transport=ASGITransport(app=create_app()),
                                base_url="https://testserver") as c:
             return await asyncio.gather(*[
-                c.post(f"/api/v1/links/{link['token']}/activate", json=payload)
+                c.post("/api/v1/links/activate", json={**payload, "token": link["token"]})
                 for payload in payloads
             ])
 
@@ -260,6 +332,103 @@ def test_https_and_validation_response_privacy(client):
     assert PASSWORD not in response.text
     assert response.headers["cache-control"] == "no-store"
     assert state(link)[:2] == (0, 0)
+
+
+@pytest.mark.parametrize("credentials", [False, True])
+def test_unprotected_activation_requires_https_even_when_globally_disabled(client, credentials):
+    link, _ = create_invite(client, password_mode="none")
+    payload = join_payload(password=None, resume_credential=None)
+    if credentials:
+        payload.update(resume_credential=secrets.token_urlsafe(32),
+                       session_credential=secrets.token_urlsafe(32))
+    with TestClient(create_app(), base_url="http://testserver") as insecure:
+        response = join(insecure, link, payload, headers={"X-Forwarded-Proto": "https"})
+    assert response.status_code == 400
+    assert response.headers["cache-control"] == "no-store"
+    assert "token" not in response.json()
+    assert state(link) == (0, 0, True, 0)
+
+
+@pytest.mark.parametrize("host,peer,expected", [
+    ("localhost", "127.0.0.1", 200),
+    ("127.0.0.1", "127.0.0.1", 200),
+    ("[::1]", "::1", 200),
+    ("localhost", "192.0.2.1", 400),
+    ("example.test", "127.0.0.1", 400),
+])
+def test_activation_loopback_exception_checks_both_host_and_peer(client, host, peer, expected):
+    link, _ = create_invite(client, password_mode="none")
+
+    async def activate():
+        async with AsyncClient(transport=ASGITransport(app=create_app(), client=(peer, 1234)),
+                               base_url=f"http://{host}") as local:
+            return await local.post("/api/v1/links/activate",
+                                    json=join_payload(password=None, token=link["token"]))
+
+    assert asyncio.run(activate()).status_code == expected
+    assert state(link)[:2] == ((1, 1) if expected == 200 else (0, 0))
+
+
+@pytest.mark.parametrize("authorization", ["", "Basic invalid", "Bearer", "Bearer ",
+                                          "Bearer invalid", "bearer invalid"])
+def test_invalid_authorization_never_falls_back_to_anonymous_admission(client, authorization):
+    link, _ = create_invite(client, password_mode="none")
+    payload = join_payload(password=None)
+    response = join(client, link, payload, headers={"Authorization": authorization})
+    assert response.status_code == 401
+    assert response.headers["cache-control"] == "no-store"
+    assert "token" not in response.json()
+    assert state(link) == (0, 0, True, 0)
+    # An explicit credential-free join still works; invalid auth must be removed.
+    assert join(client, link, payload).status_code == 200
+
+
+@pytest.mark.parametrize("boundary", ["expiry", "revocation", "deletion", "session"])
+def test_invalidated_bearer_cannot_allocate_another_rooms_slot(client, boundary):
+    source, _ = create_invite(client, password_mode="none")
+    payload = join_payload(password=None, session_credential=secrets.token_urlsafe(32))
+    first = join(client, source, payload).json()
+    auth = {"Authorization": f"Bearer {first['token']}"}
+    if boundary == "session":
+        assert client.delete(f"/api/v1/sessions/{first['session_id']}",
+                             headers=auth).status_code == 200
+    else:
+        field = {"expiry": "expires_at", "revocation": "revoked_at",
+                 "deletion": "is_deleted"}[boundary]
+        change_link(source, **{field: True if field == "is_deleted" else
+                              datetime.now(timezone.utc) - timedelta(seconds=1)})
+    destination, _ = create_invite(client, password_mode="none")
+    response = join(client, destination, payload, headers=auth)
+    assert response.status_code == 401
+    assert state(destination) == (0, 0, True, 0)
+    if boundary == "session":
+        # Resume is an independent admission credential; removing invalid JWT
+        # explicitly recovers the original identity, without consuming a slot.
+        payload["session_credential"] = secrets.token_urlsafe(32)
+        assert join(client, source, payload, headers=auth).status_code == 401
+        recovered = join(client, source, payload)
+        assert recovered.status_code == 200
+        assert recovered.json()["user"]["public_id"] == first["user"]["public_id"]
+        assert state(source)[:2] == (1, 1)
+
+
+@pytest.mark.parametrize("field", ["resume_credential", "session_credential"])
+@pytest.mark.parametrize("invalid", ["short", "!" * 43, "x" * 44])
+def test_malformed_credentials_are_rejected_before_database_access(client, monkeypatch,
+                                                                  field, invalid):
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    link, _ = create_invite(client, password_mode="none")
+
+    async def forbidden_execute(*args, **kwargs):
+        pytest.fail("malformed admission must not acquire a database write reservation")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AsyncSession, "execute", forbidden_execute)
+        response = join(client, link, join_payload(password=None, **{field: invalid}))
+    assert response.status_code == 422
+    assert invalid not in response.text
+    assert state(link) == (0, 0, True, 0)
 
 
 def test_export_import_preserves_protection_and_resume(client):

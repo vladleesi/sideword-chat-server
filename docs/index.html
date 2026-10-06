@@ -120,7 +120,7 @@
         <article><span class="number">01 / LIFECYCLE</span><h3>Temporary rooms</h3><p>Create 1:1 or group invites with optional expiration. Session issuance rechecks invite validity; expiry and explicit revocation end access for issued sessions.</p></article>
         <article><span class="number">02 / REAL TIME</span><h3>WebSocket relay</h3><p>Stream pending encrypted messages and read receipts over WebSocket. HTTP polling provides a fallback.</p></article>
         <article><span class="number">03 / TRANSPORT</span><h3>Encrypted payloads</h3><p>The API relays opaque ciphertext. Clients implement encryption and peer verification; HTTPS protects sessions in transit.</p></article>
-        <article><span class="number">04 / ADMISSION</span><h3>Participant slots that seal</h3><p>Two slots for 1:1 rooms; optional limits for groups. Full rooms seal. Authenticated reconnects reuse a slot; link previews use none.</p></article>
+        <article><span class="number">04 / ADMISSION</span><h3>Participant slots that seal</h3><p>Two slots for 1:1 rooms; optional limits for groups. Activation accepts invite tokens only in JSON, requires HTTPS outside loopback, and rejects invalid supplied sessions. Authenticated reconnects reuse a slot; link previews use none.</p></article>
         <article><span class="number">05 / PROTECTION</span><h3>Optional room passwords</h3><p>Require a password alongside the invite. Salted scrypt verifiers and rate-limited attempts protect admission.</p></article>
         <article><span class="number">06 / RETENTION</span><h3>No permanent server archive</h3><p>Queued ciphertext is removed after ACK, read, or message TTL. Bounded retry metadata prevents duplicate sends; clients retain local history and room metadata persists separately.</p></article>
       </div>
@@ -146,7 +146,7 @@
           </ul>
           <p class="muted">OpenAPI is available at <code>/docs</code> on your local administration listener. Clients must agree on an authenticated encryption format.</p>
         </div>
-        <div class="code-panel"><div class="code-heading">Core endpoints <span>API v1</span></div><pre tabindex="0" aria-label="Core HTTP and WebSocket endpoints"><code><span class="code-accent">POST</span> /api/v1/links/{token}/activate
+        <div class="code-panel"><div class="code-heading">Core endpoints <span>API v1</span></div><pre tabindex="0" aria-label="Core HTTP and WebSocket endpoints"><code><span class="code-accent">POST</span> /api/v1/links/activate
 <span class="code-accent">GET </span> /api/v1/me
 <span class="code-accent">POST</span> /api/v1/chats/{chat_id}/messages
 <span class="code-accent">WS  </span> /ws

@@ -865,9 +865,10 @@ elements.activationForm.addEventListener("submit", async (event) => {
     const previousPublicId = identity.publicId;
     const password = elements.roomPassword.value;
     elements.roomPassword.value = "";
-    const result = await api(`/api/v1/links/${encodeURIComponent(token)}/activate`, {
+    const result = await api("/api/v1/links/activate", {
       method: "POST",
       body: JSON.stringify({
+        token,
         public_key: identity.publicKey,
         display_name: displayName,
         password: password || undefined,

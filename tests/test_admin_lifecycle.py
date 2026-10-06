@@ -39,7 +39,8 @@ def make_link(hours=None):
 
 
 def activate(client, token):
-    response = client.post(f"/api/v1/links/{token}/activate", json={
+    response = client.post("/api/v1/links/activate", json={
+        "token": token,
         "public_key": base64.b64encode(secrets.token_bytes(32)).decode(),
         "display_name": "Test participant",
     })
@@ -60,7 +61,8 @@ def test_restore_full_link_restores_access_without_allowing_third_user(client):
     result = client.post(f"/admin/links/{link_id}/reactivate", follow_redirects=False)
     assert result.status_code == 303
     assert client.get("/api/v1/me", headers=headers(user)).status_code == 200
-    assert client.post(f"/api/v1/links/{token}/activate", json={
+    assert client.post("/api/v1/links/activate", json={
+        "token": token,
         "public_key": base64.b64encode(secrets.token_bytes(32)).decode(),
     }).status_code == 410
 
