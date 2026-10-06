@@ -1,0 +1,60 @@
+name: Create versioned release
+
+on:
+  workflow_call:
+    inputs:
+      tested_sha:
+        description: Exact commit that passed CI and was promoted to main
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: promote-main
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tested_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Create tag and release from the matching changelog section
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main develop --tags
+          if [ "$(git rev-parse origin/main)" != "$TESTED_SHA" ] || \
+             [ "$(git rev-parse origin/develop)" != "$TESTED_SHA" ]; then
+            echo "The tested commit is no longer current on main and develop; skipping release."
+            exit 0
+          fi
+
+          TAG=$(python -m scripts.release_notes "$RUNNER_TEMP/release-notes.md")
+          gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name' > "$RUNNER_TEMP/released-tags"
+          if grep -Fxq "$TAG" "$RUNNER_TEMP/released-tags"; then
+            echo "Release $TAG already exists; leaving it unchanged."
+            exit 0
+          fi
+
+          tag_options=(--target "$TESTED_SHA")
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            if [ "$(git rev-parse "$TAG^{commit}")" != "$TESTED_SHA" ]; then
+              echo "Existing tag $TAG belongs to another commit; refusing to move it."
+              exit 1
+            fi
+            tag_options=(--verify-tag)
+          fi
+          gh release create "$TAG" "${tag_options[@]}" \
+            --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"

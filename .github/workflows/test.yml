@@ -71,3 +71,13 @@ jobs:
             exit 1
           fi
           git push origin "$TESTED_SHA:refs/heads/main"
+
+  release:
+    name: Publish promoted release
+    needs: [smoke, container, promote]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tested_sha: ${{ github.sha }}

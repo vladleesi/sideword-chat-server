@@ -61,12 +61,21 @@ Never push `main` locally. If history diverges, integrate on `develop` and rerun
 checks; outdated runs are skipped. Repository rules must allow the promotion
 job's `GITHUB_TOKEN` to push with `contents: write`.
 
-For a release, update `app/version.py` and [CHANGELOG.md](CHANGELOG.md), then tag
-the promoted commit as `vX.Y.Z`. Use patch versions for fixes, minor versions
-for features or pre-1.0 breaking changes, and major versions for stable breaking
-changes. The backend version is exposed in `/health` and OpenAPI; API `/api/v1`
-and encryption envelope versions are independent. Promotion does not deploy
-the backend.
+For a release, update `app/version.py` and the matching dated section in
+[CHANGELOG.md](CHANGELOG.md) before pushing to `develop`. After successful checks
+and promotion, the [release workflow](.github/workflows/release.yml) creates
+`vX.Y.Z` on that exact commit and publishes a GitHub release using that section
+as its notes. It skips outdated runs and existing releases, fails on missing or
+invalid notes, and refuses to move a tag belonging to another commit. Rerun the
+CI workflow for the current commit to retry a failed publication. Repository
+rules must also allow the job's `GITHUB_TOKEN` to create tags and releases with
+`contents: write`; no personal access token is needed.
+
+Use `MAJOR.MINOR.PATCH`: patch versions for compatible fixes, minor versions for
+features, deprecations or pre-1.0 breaking changes, and major versions for stable
+breaking changes. The backend version is exposed in `/health` and OpenAPI;
+API `/api/v1` and encryption envelope versions are independent. Promotion and
+release publication do not deploy the backend or GitHub Pages.
 
 Contributions use the project's [MIT license](LICENSE). Follow the
 [code of conduct](CODE_OF_CONDUCT.md).

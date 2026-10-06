@@ -1,6 +1,6 @@
 # Security review
 
-Current code: 0.3.4. Activation reviewed 2026-10-06; broader review 2026-09-27.
+Current code: 0.4.0. Activation reviewed 2026-10-06; broader review 2026-09-27.
 This is a source review with regression tests, not an independent audit.
 Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 
@@ -174,11 +174,16 @@ Old messages gain no retroactive forward secrecy.
 
 ## Latest verification record
 
-- **0.3.4 code, 2026-10-06:** 163 Python tests passed. Prior results for 47
+- **0.4.0 code, 2026-10-06:** 178 Python tests passed. Prior results for 47
   JavaScript tests and client/form syntax remain valid for the unchanged scripts.
   Ruff, compilation, documentation links/activation JSON, landing
-  anchors/assets/structured data, and staged whitespace/privacy checks passed.
+  anchors/assets/structured data, and diff whitespace/privacy checks passed.
   The existing Starlette/AnyIO deprecation warning remains.
+- **Release automation:** version/notes validation, workflow configuration,
+  Bash syntax and nine mocked publication scenarios passed locally, including
+  outdated commits, existing releases, conflicting tags and command failures.
+  The workflow has not yet run on GitHub; repository permissions and successful
+  remote publication remain unverified.
 - **Coverage:** crypto interoperability/tampering, key pinning, persistence failures,
   exact delivery and retry races, CSRF/admin revocation, client refresh/issuance
   boundaries, isolated restore scenarios, transport limits and invite navigation.
@@ -188,7 +193,7 @@ Old messages gain no retroactive forward secrecy.
   identity, sessions and capacity. Removed path routes return 404 without
   admission or resumption and are absent from OpenAPI. Node checks verify that activation retries
   keep the token in JSON and preserve saved credentials after a rejected bearer.
-- **Deployment:** the current 0.3.4 change set has not been deployed or verified
+- **Deployment:** the current 0.4.0 change set has not been deployed or verified
   against running listeners. Earlier runtime observations do not establish its
   current deployment behavior.
 - **Limits:** tests use isolated databases and Node adapters for browser storage,

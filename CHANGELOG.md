@@ -1,10 +1,11 @@
 # Changelog
 
-## 0.3.4 — 2026-10-06
+## 0.4.0 — 2026-10-06
 
 - Require body-based invite activation and switch the bundled client to keep admission tokens out of activation URLs; remove the path-based activation endpoint.
 - Require HTTPS or local loopback for every invite activation, including password-free rooms and legacy token issuance.
 - Reject invalid supplied bearer authentication instead of silently allocating an anonymous participant; validate resume credentials before acquiring the admission write reservation.
+- Automatically create versioned GitHub tags and releases after CI promotion, using the matching changelog section as release notes.
 
 ## 0.3.3 — 2026-09-27
 
