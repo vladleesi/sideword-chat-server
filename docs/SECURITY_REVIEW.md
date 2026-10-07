@@ -178,9 +178,8 @@ Old messages gain no retroactive forward secrecy.
 - **0.5.0 code, 2026-10-06:** the full 178-test Python suite passed before the
   template/history follow-ups; the affected isolated smoke test passed again,
   verifying the new script URL and group names in `/me`. All 55 JavaScript tests passed.
-  Ruff, compilation, client/form syntax, changed documentation links, landing
-  anchors/structured data, release version/date, and diff whitespace/privacy
-  checks passed. Unchanged activation JSON and landing assets retain their prior review.
+  Ruff, compilation, client/form syntax, release version/date, and diff
+  whitespace/privacy checks passed. Unchanged activation JSON retains its prior review.
   The existing Starlette/AnyIO deprecation warning remains.
 - **Release automation:** version/notes validation, workflow configuration,
   Bash syntax and nine mocked publication scenarios passed locally, including
@@ -212,7 +211,7 @@ Old messages gain no retroactive forward secrecy.
 - **Limits:** tests use isolated databases and Node adapters for browser storage,
   not a live browser. They do not establish native interoperability, production
   configuration, penetration/load-test results, a full dependency audit or a
-  cryptographic proof. Unchanged landing metadata/social assets retain their prior review.
+  cryptographic proof.
 
 For future updates, replace the current status and latest verification record
 when new evidence exists. Keep unresolved boundaries and acceptance criteria;

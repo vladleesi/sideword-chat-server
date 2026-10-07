@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#070B12">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#F1F0EA">
+  <meta name="theme-color" content="#111210" media="(prefers-color-scheme: dark)">
   <meta name="description" content="Open-source, self-hosted backend for temporary private chat. Build custom clients on HTTP and WebSocket APIs with expiring invites and encrypted payload relay.">
   <title>Sideword Server | Open-Source, Self-Hosted Chat Backend</title>
   <link rel="canonical" href="https://vladleesi.dev/sideword-chat-server/">
@@ -27,7 +28,11 @@
   <meta name="twitter:image" content="https://vladleesi.dev/sideword-chat-server/social-card.png">
   <meta name="twitter:image:alt" content="Sideword Server. Open-source, self-hosted backend for temporary private chat. HTTP API, WebSocket relay, and expiring invites.">
   <link rel="icon" href="./mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./site.css">
+  <link rel="preload" href="./fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <script src="./theme.js?v=2"></script>
+  <link rel="stylesheet" href="./site.css?v=4">
   <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -82,89 +87,168 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="header wrap">
-    <a class="brand" href="./" aria-label="Sideword home"><img src="./mark.svg" width="30" height="30" alt="">Sideword <span class="brand-suffix">Server</span></a>
-    <nav aria-label="Main navigation">
-      <a href="#how-it-works">Architecture</a>
-      <a href="#api">API</a>
-      <a href="#deploy">Self-host</a>
-      <a href="https://github.com/vladleesi/sideword-chat-server">GitHub <span aria-hidden="true">&#8599;</span></a>
-    </nav>
+    <a class="brand" href="./" aria-label="Sideword Server home">SIDEWORD <span>/ SERVER</span></a>
+    <div class="header-controls">
+      <nav aria-label="Main navigation">
+        <a href="#how-it-works">Architecture</a>
+        <a href="#api">API</a>
+        <a href="#deploy">Self-host</a>
+        <a href="https://github.com/vladleesi/sideword-chat-server">GitHub <span aria-hidden="true">&#8599;</span></a>
+      </nav>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to dark theme" hidden>Dark</button>
+    </div>
   </header>
   <main id="main">
     <section class="hero wrap" aria-labelledby="hero-title">
       <div class="hero-copy">
         <p class="eyebrow"><span class="signal" aria-hidden="true"></span> Open source / Self-hosted / MIT</p>
-        <h1 id="hero-title">Private chat infrastructure<br><span>you can run yourself.</span></h1>
-        <p class="lead">An open-source backend for temporary private chat. Inspect the code, deploy your own server, and build custom clients on its HTTP and WebSocket APIs.</p>
+        <h1 id="hero-title">Private chat.<br>Your server.</h1>
+        <p class="lead">A small backend for temporary private chat. Expiring invites, encrypted message relay, and a documented API. Run it on your infrastructure. Bring your own client.</p>
         <div class="actions">
-          <a class="button primary" href="https://github.com/vladleesi/sideword-chat-server">View on GitHub <span aria-hidden="true">&#8599;</span></a>
-          <a class="button secondary" href="#deploy">Self-host the server <span aria-hidden="true">&#8595;</span></a>
+          <a class="button primary" href="#deploy">Self-host <span aria-hidden="true">&#8594;</span></a>
+          <a class="text-link" href="https://github.com/vladleesi/sideword-chat-server">View on GitHub <span aria-hidden="true">&#8599;</span></a>
         </div>
-        <p class="footnote">Python + FastAPI &middot; SQLite &middot; Docker or Python</p>
+        <p class="footnote">Python + FastAPI / SQLite / Docker or Python</p>
       </div>
-      <figure class="room" aria-labelledby="room-caption">
-        <div class="room-top"><span class="mono">SIDEWORD SERVER</span><span class="sealed">Your infrastructure</span></div>
-        <div class="room-heading"><span class="room-title">Your clients. One relay.</span><span class="muted">A small backend with explicit responsibilities.</span></div>
-        <dl class="server-contract">
-          <div><dt>HTTP API</dt><dd>Admission, messages, receipts, ACKs</dd></div>
-          <div><dt>WebSocket</dt><dd>Live ciphertext and receipt delivery</dd></div>
-          <div><dt>SQLite</dt><dd>Room metadata + temporary delivery queue</dd></div>
-          <div><dt>Clients</dt><dd>Encryption, key verification, local history</dd></div>
+      <aside class="server-contract" aria-labelledby="contract-title">
+        <p class="eyebrow" id="contract-title">Server contract</p>
+        <dl>
+          <div><dt>01 / HTTP API</dt><dd>Admission, messages, receipts, acknowledgements.</dd></div>
+          <div><dt>02 / WEBSOCKET</dt><dd>Live ciphertext delivery. Polling as a fallback.</dd></div>
+          <div><dt>03 / SERVER</dt><dd>Sessions, membership, and a temporary delivery queue.</dd></div>
+          <div><dt>04 / YOUR CLIENT</dt><dd>Encryption, key verification, and local history.</dd></div>
         </dl>
-        <figcaption id="room-caption">Read the code. Run the backend. Bring your own client.</figcaption>
-      </figure>
+      </aside>
+      <dl class="spec-strip">
+        <div><dt>Runtime</dt><dd>Python 3.12+</dd></div>
+        <div><dt>Interface</dt><dd>HTTP / WebSocket</dd></div>
+        <div><dt>Storage</dt><dd>SQLite</dd></div>
+        <div><dt>License</dt><dd>MIT</dd></div>
+      </dl>
     </section>
+
     <section class="features wrap" id="privacy" aria-labelledby="privacy-title">
-      <div class="section-intro"><p class="eyebrow">Backend capabilities</p><h2 id="privacy-title">Control admission.<br>Relay ciphertext.<br>Limit retention.</h2><p>Room lifecycle and delivery primitives for your application.</p></div>
-      <div class="feature-grid">
-        <article><span class="number">01 / LIFECYCLE</span><h3>Temporary rooms</h3><p>Create 1:1 or group invites with optional expiration. Session issuance rechecks invite validity; expiry and explicit revocation end access for issued sessions.</p></article>
-        <article><span class="number">02 / REAL TIME</span><h3>WebSocket relay</h3><p>Stream pending encrypted messages and read receipts over WebSocket. HTTP polling provides a fallback.</p></article>
-        <article><span class="number">03 / TRANSPORT</span><h3>Encrypted payloads</h3><p>The API relays opaque ciphertext. Clients implement encryption and peer verification; HTTPS protects sessions in transit.</p></article>
-        <article><span class="number">04 / ADMISSION</span><h3>Participant slots that seal</h3><p>Two slots for 1:1 rooms; optional limits for groups. Activation accepts invite tokens only in JSON, requires HTTPS outside loopback, and rejects invalid supplied sessions. Authenticated reconnects reuse a slot; link previews use none.</p></article>
-        <article><span class="number">05 / PROTECTION</span><h3>Optional room passwords</h3><p>Require a password alongside the invite. Salted scrypt verifiers and rate-limited attempts protect admission.</p></article>
-        <article><span class="number">06 / RETENTION</span><h3>No permanent server archive</h3><p>Queued ciphertext is removed after ACK, read, or message TTL. Bounded retry metadata prevents duplicate sends; clients retain local history and room metadata persists separately.</p></article>
+      <div class="section-intro">
+        <p class="eyebrow">01 / Capabilities</p>
+        <h2 id="privacy-title">Small surface.<br>Clear behavior.</h2>
+        <p>Room lifecycle and delivery primitives for your application.</p>
+      </div>
+      <div class="feature-list">
+        <article>
+          <p class="number">01 / LIFECYCLE</p>
+          <div><h3>Temporary rooms</h3><p>Create personal or group invites with optional expiration. Invite expiry and explicit revocation end session access.</p></div>
+        </article>
+        <article>
+          <p class="number">02 / REAL TIME</p>
+          <div><h3>WebSocket relay</h3><p>Deliver queued encrypted messages and read receipts over WebSocket. HTTP polling provides the same delivery flow.</p></div>
+        </article>
+        <article>
+          <p class="number">03 / TRANSPORT</p>
+          <div><h3>Opaque payloads</h3><p>The API relays ciphertext. Clients implement encryption and peer verification; HTTPS protects sessions in transit.</p></div>
+        </article>
+        <article>
+          <p class="number">04 / ADMISSION</p>
+          <div><h3>Participant slots that seal</h3><p>Two slots for personal rooms; optional limits for groups. Body-only activation requires HTTPS outside loopback. Authenticated reconnects reuse a slot; link previews use none.</p></div>
+        </article>
+        <article>
+          <p class="number">05 / ACCESS</p>
+          <div><h3>Optional room passwords</h3><p>Require a password alongside the invite. Salted scrypt verifiers and rate-limited attempts protect admission.</p></div>
+        </article>
+        <article>
+          <p class="number">06 / RETENTION</p>
+          <div><h3>A queue, not an archive</h3><p>ACK, read, or message TTL removes queued ciphertext. Bounded retry metadata prevents duplicate sends. Clients retain local history; room metadata persists separately.</p></div>
+        </article>
       </div>
     </section>
+
     <section class="how wrap" id="how-it-works" aria-labelledby="how-title">
-      <div class="section-heading"><div><p class="eyebrow">Transparent architecture</p><h2 id="how-title">A relay, with clear boundaries.</h2></div><a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/tree/main/app">Inspect the implementation <span aria-hidden="true">&#8599;</span></a></div>
+      <div class="section-heading">
+        <div><p class="eyebrow">02 / Architecture</p><h2 id="how-title">A relay with<br>clear boundaries.</h2></div>
+        <a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/tree/main/app">Inspect the implementation <span aria-hidden="true">&#8599;</span></a>
+      </div>
+      <figure class="relay-diagram" aria-labelledby="relay-caption">
+        <div class="relay-flow" role="img" aria-label="The sending client encrypts a payload. Sideword queues and relays ciphertext. The receiving client decrypts and persists it, then acknowledges delivery.">
+          <div class="relay-node"><span>01 / SENDER</span><strong>CLIENT</strong><small>Encrypt locally</small></div>
+          <div class="relay-line" aria-hidden="true"><span>CIPHERTEXT</span></div>
+          <div class="relay-node"><span>02 / SIDEWORD</span><strong>RELAY</strong><small>Queue and deliver</small></div>
+          <div class="relay-line" aria-hidden="true"><span>CIPHERTEXT</span></div>
+          <div class="relay-node"><span>03 / RECIPIENT</span><strong>CLIENT</strong><small>Persist, then ACK</small></div>
+        </div>
+        <figcaption id="relay-caption">Plaintext stays with the clients. The server sees routing metadata.</figcaption>
+      </figure>
       <ol class="steps">
-        <li><span class="step-number">01 / SENDING CLIENT</span><h3>Encrypt before upload.</h3><p>Your client manages private keys, verifies peers, and creates an encrypted envelope for each recipient.</p><code>Client &#8594; HTTPS / WSS</code></li>
-        <li><span class="step-number">02 / YOUR SERVER</span><h3>Authenticate and relay.</h3><p>Sideword validates revocable sessions and membership, deduplicates send retries, and delivers queued ciphertext over WebSocket or polling.</p><code>FastAPI &#8596; SQLite queue</code></li>
-        <li><span class="step-number">03 / RECEIVING CLIENT</span><h3>Persist, then acknowledge.</h3><p>The recipient decrypts and saves locally before acknowledging the exact delivery identity. The server removes acknowledged ciphertext; TTL clears stale deliveries.</p><code>Recipient &#8594; exact ACK &#8594; deletion</code></li>
+        <li><p class="number">01 / ENCRYPT</p><h3>Before upload.</h3><p>Your client manages private keys, verifies peers, and creates an encrypted envelope for each recipient.</p></li>
+        <li><p class="number">02 / RELAY</p><h3>Authenticate and deliver.</h3><p>Sideword validates revocable sessions and membership, deduplicates send retries, and delivers queued ciphertext.</p></li>
+        <li><p class="number">03 / ACKNOWLEDGE</p><h3>After local persistence.</h3><p>The recipient decrypts and saves locally before acknowledging the exact delivery identity. ACK removes ciphertext; TTL clears stale deliveries.</p></li>
       </ol>
-      <p class="architecture-note">The server sees routing metadata. Password admission trusts the server and HTTPS terminator; it does not replace client-side encryption or peer key verification. The test client pins first-use keys but has no recipient forward secrecy or post-compromise recovery. <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/SECURITY_REVIEW.md">Read the security review and migration plan.</a></p>
+      <p class="architecture-note">Password admission trusts the server and HTTPS terminator; it does not replace client-side encryption or peer key verification. The reference client pins first-use keys but has no recipient forward secrecy or post-compromise recovery. <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/SECURITY_REVIEW.md">Security review and migration plan <span aria-hidden="true">&#8599;</span></a></p>
     </section>
+
     <section class="developer wrap" id="api" aria-labelledby="api-title">
-      <div class="section-heading"><div><p class="eyebrow">Build on the API</p><h2 id="api-title">Your frontend. A documented contract.</h2></div><a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/API.md">Read the API guide <span aria-hidden="true">&#8599;</span></a></div>
+      <div class="section-heading">
+        <div><p class="eyebrow">03 / API</p><h2 id="api-title">A contract for<br>your client.</h2></div>
+        <a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/API.md">API reference <span aria-hidden="true">&#8599;</span></a>
+      </div>
       <div class="developer-grid">
-        <div>
-          <ul class="api-points">
+        <div class="api-copy">
+          <ol class="api-points">
             <li>Activate an invite and receive a bearer JWT.</li>
-            <li>Send per-recipient encrypted envelopes over HTTP. The bundled test client labels incoming group messages and saved history with participant names and public IDs.</li>
-            <li>Receive live messages over WebSocket, or poll over HTTP.</li>
-            <li>Persist messages locally, then acknowledge delivery.</li>
-          </ul>
+            <li>Send per-recipient encrypted envelopes over HTTP.</li>
+            <li>Receive messages over WebSocket or HTTP polling.</li>
+            <li>Persist locally, then acknowledge exact delivery.</li>
+          </ol>
           <p class="muted">OpenAPI is available at <code>/docs</code> on your local administration listener. Clients must agree on an authenticated encryption format.</p>
         </div>
-        <div class="code-panel"><div class="code-heading">Core endpoints <span>API v1</span></div><pre tabindex="0" aria-label="Core HTTP and WebSocket endpoints"><code><span class="code-accent">POST</span> /api/v1/links/activate
+        <div class="code-panel">
+          <div class="code-heading"><span>HTTP + WEBSOCKET</span><span>API V1</span></div>
+          <pre tabindex="0" aria-label="Core HTTP and WebSocket endpoints"><code><span class="code-accent">POST</span> /api/v1/links/activate
 <span class="code-accent">GET </span> /api/v1/me
 <span class="code-accent">POST</span> /api/v1/chats/{chat_id}/messages
 <span class="code-accent">WS  </span> /ws
 <span class="code-accent">GET </span> /api/v1/poll
-<span class="code-accent">POST</span> /api/v1/ack/exact</code></pre></div>
+<span class="code-accent">POST</span> /api/v1/ack/exact</code></pre>
+        </div>
       </div>
-      <aside class="reference-note"><h3>Included web client: a test/reference tool</h3><p>The minimal browser client at <code>/client</code> helps validate the server, protocol, and basic chat flow. It is not a production-ready messenger or the main product. Compare its locally calculated fingerprints out of band; first-use pinning cannot prevent initial key substitution or malicious server-delivered code.</p><a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/PROTOCOL.md">Read the reference protocol <span aria-hidden="true">&#8599;</span></a></aside>
+      <aside class="reference-note">
+        <p class="number">REFERENCE CLIENT</p>
+        <div><h3>A tool for testing the contract.</h3><p>The browser client at <code>/client</code> validates the server, protocol, and basic chat flow. Group messages and saved history show participant names with public IDs. Restored history opens at the latest messages. This is a test/reference client, not a production-ready messenger. Compare fingerprints out of band: first-use pinning cannot prevent initial key substitution or malicious server-delivered code.</p><a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/PROTOCOL.md">Reference protocol <span aria-hidden="true">&#8599;</span></a></div>
+      </aside>
     </section>
+
     <section class="open-source wrap" id="deploy" aria-labelledby="source-title">
-      <div><p class="eyebrow">Open source / Self-hosted</p><h2 id="source-title">Inspect it. Deploy it.<br>Build on it.</h2><p>MIT-licensed source, a FastAPI backend, and SQLite storage. Run with Docker Compose or directly with Python. Keep administration private and expose your API over HTTPS.</p><div class="actions"><a class="button primary" href="https://github.com/vladleesi/sideword-chat-server#public-access">Deployment guide <span aria-hidden="true">&#8599;</span></a><a class="text-link" href="https://github.com/vladleesi/sideword-chat-server#run-locally">Python setup <span aria-hidden="true">&#8599;</span></a></div></div>
-      <div class="code-panel"><div class="code-heading">Self-host with Docker <span>Shell</span></div><pre tabindex="0" aria-label="Docker deployment commands"><code>git clone https://github.com/vladleesi/sideword-chat-server.git
+      <div class="deploy-copy">
+        <p class="eyebrow">04 / Self-host</p>
+        <h2 id="source-title">Run it on<br>your terms.</h2>
+        <p>MIT-licensed source. FastAPI and SQLite. Run with Docker Compose or directly with Python. Keep administration private and expose the API over HTTPS.</p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/vladleesi/sideword-chat-server#public-access">Deployment guide <span aria-hidden="true">&#8599;</span></a>
+          <a class="text-link" href="https://github.com/vladleesi/sideword-chat-server#run-locally">Python setup <span aria-hidden="true">&#8599;</span></a>
+        </div>
+      </div>
+      <div class="deploy-code">
+        <div class="code-panel">
+          <div class="code-heading"><span>DOCKER COMPOSE</span><span>SHELL</span></div>
+          <pre tabindex="0" aria-label="Docker deployment commands"><code>git clone https://github.com/vladleesi/sideword-chat-server.git
 cd sideword-chat-server
 cp .env.example .env
+
 <span class="code-comment"># Set a random signing secret and admin credentials.</span>
 <span class="code-comment"># Set SIDEWORD_PUBLIC_URL to your HTTPS origin.</span>
-docker compose up -d --build</code></pre><p class="code-note">Configure <code>.env</code> before starting. See the guide for HTTPS, persistent storage, and private admin access. Admin password resets revoke sessions and reject logins still using the previous password. GitHub releases provide version tags and changelog notes; update your server explicitly to deploy a release.</p></div>
+docker compose up -d --build</code></pre>
+        </div>
+        <p class="code-note">Configure <code>.env</code> before starting. Follow the deployment guide for HTTPS, persistent storage, and private administration. GitHub release publication does not deploy your server; update it explicitly.</p>
+      </div>
     </section>
   </main>
-  <footer class="footer wrap"><a class="brand" href="./">Sideword Server</a><nav aria-label="Project resources"><a href="https://github.com/vladleesi/sideword-chat-server">GitHub</a><a href="https://github.com/vladleesi/sideword-chat-server#readme">Documentation</a><a href="https://github.com/vladleesi/sideword-chat-server/blob/main/SECURITY.md">Security policy</a><a href="https://github.com/vladleesi/sideword-chat-server/blob/main/LICENSE">MIT License</a></nav><p>Open-source infrastructure for temporary private chat.</p></footer>
+  <footer class="footer wrap">
+    <a class="brand" href="./">SIDEWORD <span>/ SERVER</span></a>
+    <nav aria-label="Project resources">
+      <a href="https://github.com/vladleesi/sideword-chat-server">GitHub <span aria-hidden="true">&#8599;</span></a>
+      <a href="https://github.com/vladleesi/sideword-chat-server#readme">Documentation</a>
+      <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/SECURITY.md">Security</a>
+      <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/LICENSE">MIT license</a>
+    </nav>
+    <p>Open-source infrastructure for temporary private chat.</p>
+  </footer>
 </body>
 </html>

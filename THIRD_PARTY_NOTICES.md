@@ -1,5 +1,15 @@
 # Third-party notices
 
+## IBM Plex
+
+The landing page bundles unmodified IBM Plex Sans and IBM Plex Mono webfonts
+from the [official IBM Plex repository](https://github.com/IBM/plex), source commit
+`763c36ef9117782905ae010056dfbe8fd2653a25`.
+Copyright 2017 IBM Corp., with Reserved Font Name "Plex".
+These fonts are licensed under the SIL Open Font License, Version 1.1.
+The full upstream license and copyright notice are distributed with the fonts in
+[docs/fonts/OFL.txt](docs/fonts/OFL.txt).
+
 ## Ponytail
 
 The Ponytail integration section in `AGENTS.md` adapts guidance from

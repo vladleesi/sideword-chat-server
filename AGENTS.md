@@ -23,8 +23,7 @@
 - Keep progress updates short: new finding, material decision, or blocker. Avoid repeating plans and successful checks.
 - For multi-stage security work, maintain a concise local progress note with completed stages and verification so context recovery does not restart exploration. Efficiency must not remove security regression coverage or isolated-database safeguards.
 - Keep `docs/SECURITY_REVIEW.md` aligned with affected code and tests in the same change. Remove resolved or superseded open findings, narrow partially fixed findings, record verified protections and current verification evidence, and preserve unresolved limitations. Keep release history in `CHANGELOG.md`; do not claim deployment or audit evidence that was not obtained.
-
-- Keep the GitHub Pages site in `docs/` current when API contracts, core capabilities, architecture, security/retention behavior, or deployment steps change. Review landing copy, API/deployment snippets, links, SEO/structured data, and the social preview in the same change; preserve its backend-focused positioning.
+- After code changes, assess whether the GitHub Pages site in `docs/` needs updating. Update it in the same change only when affected API contracts, described capabilities/client behavior, architecture, security/retention behavior, or deployment steps make its published information inaccurate or incomplete. Internal refactors, tests, tooling, and maintenance that do not affect published information require no site edits. Review only affected landing copy, API/deployment snippets, links, SEO/structured data, and social assets; reuse existing verification for unchanged material and preserve the site's backend-focused positioning.
 
 ## Ponytail integration
 - Adapted from https://github.com/DietrichGebert/ponytail/blob/main/skills/ponytail/SKILL.md. This section supplements the working agreement; all other repository rules take precedence over it. Upstream updates are not adopted automatically.

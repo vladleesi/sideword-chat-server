@@ -27,7 +27,8 @@ jobs:
       - name: Collect static site files
         run: |
           mkdir _site
-          cp docs/index.html docs/site.css docs/mark.svg docs/.nojekyll docs/social-card.png docs/robots.txt docs/sitemap.xml _site/
+          cp docs/index.html docs/site.css docs/theme.js docs/mark.svg docs/.nojekyll docs/social-card.png docs/robots.txt docs/sitemap.xml _site/
+          cp -R docs/fonts _site/fonts
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
