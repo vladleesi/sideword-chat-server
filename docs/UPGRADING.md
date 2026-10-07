@@ -42,10 +42,10 @@ retry requirements. Publication does not update running servers or GitHub Pages.
    private routes are blocked publicly. Reload browser clients.
 6. Keep the backup until verification is complete.
 
-The bundled client script URL changes for the sender-label and history-scroll updates so reloads
-fetch the new code. Existing incoming group history shows current roster names
-when its saved sender identity is available; no new invite or device reset is needed.
-Reloading opens restored history at the latest messages.
+Deploy the backend, dependencies, protocol script, client script and template
+together. Backend 0.6.0 intentionally replaces the test encryption protocol;
+reload clients and create fresh rooms/invites. The new client uses a separate
+P-256 browser database and never reads or erases the prior device database.
 
 Startup applies additive SQLite migrations. Upgrade every writer together;
 mixing old and new server code against one database is unsupported.
@@ -61,9 +61,15 @@ SQLite 3.35+ is required for atomic read deletion/receipt creation.
 | Admin/client race fixes (0.3.1–0.3.2) | No schema, key or client migration. Valid sessions remain usable. New session lifetime is capped by invite expiry; rejected session issuance may follow an already committed admission, so preserve resume credentials. |
 | Invite navigation (0.3.3) | Reload the client. A different invite shows its join form and pauses that tab's background activity; activation selects its room. Same invite or `/client` resumes the saved room. Older identities show the form once for an explicit URL. Keys/history/outbox remain scoped to their participant identity for later reconnects. |
 | Activation hardening (0.4.0) | Deploy the backend and bundled client together; update custom clients to send the invite token in the JSON body of `POST /api/v1/links/activate`. The old path-based route is removed and returns 404, with no fallback or redirect. Existing identities, memberships, resume credentials and sessions remain usable; no schema or key migration. Activation requires HTTPS or local loopback even with the global TLS check disabled. Supplied invalid bearer headers return 401; remove the rejected header explicitly to retry with saved resume credentials. The bundled client preserves device/admission state for retry. Suppress/redact invite landing URLs and request bodies at every logging layer. |
+| P-256 test protocol (0.6.0, breaking) | Upgrade every backend worker and client together, including the new `cryptography` dependency. Retire old rooms/invites and issue new ones; clients start fresh P-256 identities and verify fingerprints again. `/api/v1` and envelope `v: 1` stay, with a new algorithm/context and validated 65-byte public keys. Old clients cannot authenticate or renew; old rooms cannot admit P-256 members; old exports containing retired keys cannot be imported. There is no ciphertext/key conversion or old-format receive support. The prior browser database and server records are not automatically deleted. Key persistence is checked before admission, and unreadable records in the new store are preserved. |
 
 Backend release, HTTP API and encryption envelope versions are independent.
-No upgrade above introduces a ratchet or changes the v1 ciphertext format.
+The 0.6.0 replacement changes the test ciphertext format; it does not introduce
+a ratchet or recipient forward secrecy. It does not recover prior unreadable keys.
+Unused invites with no room/members can still create a fresh P-256 room. Invitations
+for rooms with old participants must be replaced, even when admission capacity remains.
+Do not restore an old full database to resume old clients under 0.6.0. Keep backups
+for archival/explicit rollback, and test any rollback offline before reopening access.
 
 ## Retire legacy clients
 

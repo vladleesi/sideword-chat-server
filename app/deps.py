@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import get_settings
 from .db import get_session
+from .message_keys import valid_public_key
 from .models import Admin, AdminSession, ClientSession, Link, User
 from .security import decode_admin_token, decode_client_token
 
@@ -33,6 +34,7 @@ async def resolve_client_user(session: AsyncSession, token: str) -> User | None:
     if (
         user is None
         or not user.is_active
+        or not valid_public_key(user.public_key)
         or user.public_id != payload.get("pid")
         or link is None
         or link.is_deleted

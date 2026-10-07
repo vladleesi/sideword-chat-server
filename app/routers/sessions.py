@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..db import get_session
 from ..deps import get_current_user, resolve_client_user
+from ..message_keys import valid_public_key
 from ..models import ClientSession, Link, RefreshUse, User
 from ..security import create_client_token, decode_client_token
 
@@ -53,7 +54,8 @@ async def issue(session, user, link_id, credential, *, legacy_token=None):
     user = await session.get(User, user_id, populate_existing=True)
     link = await session.get(Link, link_id, populate_existing=True)
     now = datetime.now(timezone.utc)
-    if (user is None or not user.is_active or user.public_id != public_id
+    if (user is None or not user.is_active or not valid_public_key(user.public_key)
+            or user.public_id != public_id
             or link is None or link.is_deleted or link.revoked_at is not None
             or (link.expires_at is not None and utc(link.expires_at) <= now)):
         raise HTTPException(401, "session unavailable")
@@ -128,7 +130,8 @@ async def refresh(payload: Refresh, session: AsyncSession = Depends(get_session)
         raise HTTPException(401, "session unavailable")
     user = await session.get(User, record.user_id)
     link = await session.get(Link, record.link_id)
-    if (user is None or not user.is_active or user.public_id != record.public_id
+    if (user is None or not user.is_active or not valid_public_key(user.public_key)
+            or user.public_id != record.public_id
             or link is None or link.is_deleted or link.revoked_at is not None
             or (link.expires_at is not None and utc(link.expires_at) <= now)):
         raise HTTPException(401, "session unavailable")

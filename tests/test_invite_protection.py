@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from csrf_client import TestClient
 from httpx import ASGITransport, AsyncClient
+from message_key_fixtures import public_key
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -43,7 +44,7 @@ def create_invite(client, **fields):
 
 def join_payload(**fields):
     return {
-        "public_key": base64.b64encode(secrets.token_bytes(32)).decode(),
+        "public_key": base64.b64encode(public_key()).decode(),
         "password": PASSWORD,
         "resume_credential": secrets.token_urlsafe(32),
         **fields,

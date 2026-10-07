@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light dark">
   <title>Sideword test client</title>
   <link rel="stylesheet" href="/static/client.css?v=6">
-  <script src="/static/client-protocol.js?v=1" defer></script>
-  <script src="/static/client.js?v=16" defer></script>
+  <script src="/static/client-protocol.js?v=3" defer></script>
+  <script src="/static/client.js?v=19" defer></script>
 </head>
 <body>
   <header class="client-header">
@@ -36,7 +36,7 @@
       <div>
         <p class="eyebrow">Join a conversation</p>
         <h1 id="setup-heading">Activate an invite</h1>
-        <p class="muted">A device identity is generated locally. The private key never leaves this browser.</p>
+        <p class="muted">A P-256 device identity is generated locally. The private key never leaves this browser. Rooms created before the P-256 update require a new invite.</p>
       </div>
       <form id="activation-form" class="activation-form">
         <label>

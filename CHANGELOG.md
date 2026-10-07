@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 — 2026-10-07
+
+- Replace the test encryption protocol with native non-exportable P-256 ECDH keys, keeping HKDF-SHA-256, AES-256-GCM, local key pinning, encrypted history, and durable delivery safeguards.
+- Require validated 65-byte P-256 public points for activation and configuration imports; reject retired device credentials and mixed-curve rooms. Existing test rooms require new invites and identities; the browser starts a separate P-256 device store without deleting prior data.
+- Keep the test envelope at v1 and the HTTP API at /api/v1 with an explicit P256 algorithm identifier and a new authenticated context; remove all X25519 encryption support.
+- Check that browser device keys can be restored from local storage before invite activation, avoiding admission on incompatible storage while retaining non-exportable keys.
+- Report unreadable or missing local device data separately from a device change, preserve unreadable records, and keep startup storage errors visible on the join form.
+- Explain browser storage, changed keys, login, invite, and service failures in plain language; show HTTP status for rejected requests and keep raw server validation values and exception text out of client errors.
+
 ## 0.5.0 — 2026-10-06
 
 - Show each sender's chosen display name alongside their public ID on incoming group messages, including existing local history when sender routing metadata is available; refresh client assets on reload.

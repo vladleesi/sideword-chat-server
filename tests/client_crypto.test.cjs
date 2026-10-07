@@ -3,12 +3,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { webcrypto, createPrivateKey, createPublicKey, diffieHellman, hkdfSync,
-  createCipheriv, createDecipheriv } = require('node:crypto');
+  createCipheriv, createDecipheriv, createECDH } = require('node:crypto');
 
-function client() {
+function client(crypto = webcrypto) {
   const element = { addEventListener() {} };
   const context = vm.createContext({
-    TextEncoder, TextDecoder, DOMException, crypto: webcrypto, btoa, atob,
+    TextEncoder, TextDecoder, DOMException, crypto, btoa, atob,
     document: { querySelector: () => element, addEventListener() {} },
     window: { addEventListener() {} },
   });
@@ -20,20 +20,29 @@ function client() {
   return { context, run: code => vm.runInContext(code, context) };
 }
 
-// Synthetic deterministic keys only. Independent OpenSSL implementation of the
-// existing v1 contract catches wire drift across the protocol extraction.
+// Synthetic fixed P-256 keys only. Independent OpenSSL operations catch
+// wire drift in both directions; production keys use the platform CSPRNG.
+function importPoint(raw) {
+  const point = Buffer.from(raw, 'base64');
+  return createPublicKey({ format: 'jwk', key: { kty: 'EC', crv: 'P-256',
+    x: point.subarray(1, 33).toString('base64url'),
+    y: point.subarray(33).toString('base64url') } });
+}
 function pair(byte) {
-  const der = Buffer.concat([Buffer.from('302e020100300506032b656e04220420', 'hex'),
-    Buffer.alloc(32, byte)]);
-  const privateKey = createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
-  const publicKey = createPublicKey(privateKey);
-  return { privateKey, publicKey, der,
-    raw: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64') };
+  const key = createECDH('prime256v1');
+  const scalar = Buffer.alloc(32, byte);
+  key.setPrivateKey(scalar);
+  const point = key.getPublicKey();
+  const privateKey = createPrivateKey({ format: 'jwk', key: { kty: 'EC', crv: 'P-256',
+    x: point.subarray(1, 33).toString('base64url'),
+    y: point.subarray(33).toString('base64url'), d: scalar.toString('base64url') } });
+  return { privateKey, publicKey: createPublicKey(privateKey),
+    der: privateKey.export({ format: 'der', type: 'pkcs8' }), raw: point.toString('base64') };
 }
 const alice = pair(1), bob = pair(2), ephemeral = pair(3);
-const info = Buffer.from('sideword-web-v1|7|fixture-message|alice|bob');
+const info = Buffer.from('sideword-web-p256-v1|7|fixture-message|alice|bob');
 const salt = Buffer.alloc(16, 4), iv = Buffer.alloc(12, 5);
-const text = 'Legacy message: hello 🌍';
+const text = 'P-256 message: hello 🌍';
 function key(sender, recipient, epk, saltValue, context) {
   const secrets = Buffer.concat([
     diffieHellman({ privateKey: sender.privateKey, publicKey: recipient.publicKey }),
@@ -45,7 +54,7 @@ function fixture() {
   const cipher = createCipheriv('aes-256-gcm', key(alice, bob, ephemeral, salt, info), iv);
   cipher.setAAD(info);
   const ct = Buffer.concat([cipher.update(text, 'utf8'), cipher.final(), cipher.getAuthTag()]);
-  return { v: 1, alg: 'X25519-2DH-HKDF-SHA256-AES256GCM', epk: ephemeral.raw,
+  return { v: 1, alg: 'P256-2DH-HKDF-SHA256-AES256GCM', epk: ephemeral.raw,
     salt: salt.toString('base64'), iv: iv.toString('base64'), ct: ct.toString('base64') };
 }
 function message(envelope = fixture()) {
@@ -55,13 +64,13 @@ function message(envelope = fixture()) {
 async function receiver() {
   const app = client();
   app.context.recipient = { privateKey: await webcrypto.subtle.importKey('pkcs8', bob.der,
-    'X25519', false, ['deriveBits']), publicId: 'bob', publicKey: bob.raw };
+    { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']), publicId: 'bob', publicKey: bob.raw };
   app.context.sender = { public_id: 'alice', public_key: alice.raw };
   app.run('identity = recipient; chats = [{ id: 7, participants: [sender] }];');
   return app;
 }
 
-test('v1 decrypts an independent legacy envelope and rejects context/header/body tampering', async () => {
+test('P-256 decrypts an independent envelope and rejects context/header/body tampering', async () => {
   const app = await receiver();
   app.context.message = message();
   assert.equal(await app.run('decryptMessage(message)'), text);
@@ -79,26 +88,70 @@ test('v1 decrypts an independent legacy envelope and rejects context/header/body
   }
   app.context.message = message({ ...fixture(), v: 2 });
   await assert.rejects(app.run('decryptMessage(message)'), /Unsupported/);
+  app.context.message = message({ ...fixture(), alg: 'X25519-2DH-HKDF-SHA256-AES256GCM' });
+  await assert.rejects(app.run('decryptMessage(message)'), /Unsupported/);
   app.context.message = message();
   app.run('identity.publicId = "other-recipient";');
   await assert.rejects(app.run('decryptMessage(message)'));
 });
 
-test('new envelopes remain readable by the legacy v1 construction; private keys stay non-exportable', async () => {
+test('invalid curves, malformed points, and invalid envelope lengths fail closed', async () => {
+  const app = await receiver();
+  for (const raw of [Buffer.alloc(32), Buffer.concat([Buffer.from([4]), Buffer.alloc(64)]),
+    Buffer.concat([Buffer.from([2]), Buffer.alloc(64)])]) {
+    app.context.badKey = raw.toString('base64');
+    await assert.rejects(app.run('SidewordProtocol.publicKeyFingerprint(badKey)'));
+    app.context.sender = { public_id: 'alice', public_key: app.context.badKey };
+    app.context.message = message();
+    await assert.rejects(app.run('SidewordProtocol.decryptMessage(identity, message, sender)'));
+  }
+  app.context.sender = { public_id: 'alice', public_key: alice.raw };
+  for (const [field, length] of [['salt', 0], ['salt', 15], ['iv', 16], ['ct', 15]]) {
+    app.context.message = message({ ...fixture(), [field]: Buffer.alloc(length).toString('base64') });
+    await assert.rejects(app.run('SidewordProtocol.decryptMessage(identity, message, sender)'), /Invalid ciphertext/);
+  }
+});
+
+test('ephemeral P-256 private keys are generated non-exportable', async () => {
+  const privateKeys = [];
+  const subtle = new Proxy(webcrypto.subtle, { get(target, name) {
+    if (name === 'generateKey') return async (...args) => {
+      const result = await target.generateKey(...args);
+      if (args[0].name === 'ECDH') privateKeys.push(result.privateKey);
+      return result;
+    };
+    const value = target[name];
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  const app = client({ subtle, getRandomValues: webcrypto.getRandomValues.bind(webcrypto) });
+  await app.run('generateIdentity().then(value => { identity = value; identity.publicId = "alice"; })');
+  app.context.peer = { public_id: 'bob', public_key: bob.raw };
+  await app.run('encryptForRecipient("hello", 7, "fixture-message", peer)');
+  assert.equal(privateKeys.length, 2);
+  for (const key of privateKeys) {
+    assert.equal(key.extractable, false);
+    await assert.rejects(webcrypto.subtle.exportKey('pkcs8', key));
+  }
+});
+
+test('P-256 envelopes match independent OpenSSL decryption; private keys stay non-exportable', async () => {
   const app = client();
   app.context.peer = { public_id: 'bob', public_key: bob.raw };
   await app.run('generateIdentity().then(value => { identity = value; identity.publicId = "alice"; })');
   const own = app.run('identity');
   assert.equal(own.privateKey.extractable, false);
+  assert.equal(own.privateKey.algorithm.name, 'ECDH');
+  assert.equal(own.privateKey.algorithm.namedCurve, 'P-256');
+  assert.equal(Buffer.from(own.publicKey, 'base64').length, 65);
   assert.equal(own.storageKey.extractable, false);
   await assert.rejects(webcrypto.subtle.exportKey('pkcs8', own.privateKey));
   const wire = await app.run('encryptForRecipient("hello", 7, "fixture-message", peer)');
   const env = JSON.parse(Buffer.from(wire, 'base64'));
-  const importPublic = raw => createPublicKey({ key: Buffer.concat([
-    Buffer.from('302a300506032b656e032100', 'hex'), Buffer.from(raw, 'base64'),
-  ]), format: 'der', type: 'spki' });
+  assert.equal(env.v, 1);
+  assert.equal(env.alg, 'P256-2DH-HKDF-SHA256-AES256GCM');
+  assert.equal(Buffer.from(env.epk, 'base64').length, 65);
   const secrets = Buffer.concat([own.publicKey, env.epk].map(raw => diffieHellman({
-    privateKey: bob.privateKey, publicKey: importPublic(raw),
+    privateKey: bob.privateKey, publicKey: importPoint(raw),
   })));
   const aes = hkdfSync('sha256', secrets, Buffer.from(env.salt, 'base64'), info, 32);
   const decipher = createDecipheriv('aes-256-gcm', aes, Buffer.from(env.iv, 'base64'));
@@ -168,6 +221,6 @@ test('an aborted history transaction rejects persistence instead of leaving deli
     await assert.rejects(Promise.race([
       app.run('persistHistoryEntry(7, { id: "entry", text: "hello" })'),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('persistence hung')), 200); }),
-    ]), /storage unavailable/);
+    ]), /could not save local chat history/);
   } finally { clearTimeout(timer); }
 });

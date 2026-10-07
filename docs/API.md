@@ -51,7 +51,7 @@ Content-Type: application/json
 
 {
   "token": "<invite admission secret>",
-  "public_key": "<base64, 32 bytes, X25519>",
+  "public_key": "<base64 uncompressed P-256 public point, 65 bytes>",
   "display_name": "Alice",
   "resume_credential": "<43-character base64url credential>",
   "session_credential": "<separate 43-character base64url credential>"
@@ -257,13 +257,21 @@ Deletes pending ciphertext your user sent that recipients have not read yet.
 
 ## Message security model
 
-The server contract requires a 32-byte base64 X25519 public key and treats each
+The server contract requires a valid uncompressed 65-byte base64 P-256 public point
+and validates curve membership using the `cryptography` library. It treats each
 ciphertext envelope as opaque base64 data. Production clients must agree on an
 authenticated envelope format, such as the bundled [v1 contract](PROTOCOL.md).
 The server's `key_fingerprint` is a convenience, not a trust anchor: calculate and
 verify fingerprints locally. V1 has no recipient forward secrecy or recovery
 after key compromise. See [threat model and limits](SECURITY_REVIEW.md#threat-model-and-limits)
 for relay, browser, bearer-token and retention boundaries.
+
+Backend 0.6.0 replaces the prior test encryption format without compatibility
+support. `/api/v1` remains the HTTP API prefix. Retired device keys cannot activate,
+authenticate over HTTP or WebSocket, bootstrap sessions, or refresh credentials.
+An invite attached to a room with a retired key rejects admission with 409;
+create a new room/invite. Configuration imports reject invalid/retired public
+keys with 400 before modifying any state, including in replace mode.
 
 ## Send retries and capacity
 

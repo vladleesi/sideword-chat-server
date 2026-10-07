@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from .config import get_settings
 from .invite_security import authenticate_password, resume_digest
+from .message_keys import valid_public_key
 from .models import (
     Chat,
     ChatMember,
@@ -45,6 +46,8 @@ async def load_chat_info(session: AsyncSession, chat: Chat) -> ChatInfo:
         .options(selectinload(ChatMember.user))
     )
     members = [m.user for m in result.scalars().all() if m.user is not None]
+    if any(not valid_public_key(u.public_key) for u in members):
+        raise HTTPException(409, "This room uses retired encryption. Create a new invite.")
     return ChatInfo(
         id=chat.id,
         chat_type=chat.chat_type.value,
@@ -110,6 +113,8 @@ async def activate_link(
             select(ChatMember).where(ChatMember.chat_id == chat.id)
             .options(selectinload(ChatMember.user))
         )).all())
+        if any(m.user is not None and not valid_public_key(m.user.public_key) for m in members):
+            raise HTTPException(409, "This room uses retired encryption. Create a new invite.")
         for member in members:
             authenticated = (
                 current_user is not None and member.user_id == current_user.id
@@ -191,4 +196,7 @@ async def chat_members(session: AsyncSession, chat_id: int) -> list[User]:
         .join(ChatMember, ChatMember.user_id == User.id)
         .where(ChatMember.chat_id == chat_id)
     )
-    return list(result.scalars().all())
+    members = list(result.scalars().all())
+    if any(not valid_public_key(u.public_key) for u in members):
+        raise HTTPException(409, "This room uses retired encryption. Create a new invite.")
+    return members

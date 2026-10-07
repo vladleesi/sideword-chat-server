@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 from ..db import get_session
 from ..deps import get_current_admin
 from ..invite_security import valid_verifier
+from ..message_keys import valid_public_key
 from ..models import (
     Admin,
     Chat,
@@ -157,6 +158,13 @@ async def import_bundle(
         raise HTTPException(status_code=400, detail="unsupported bundle version")
 
     # Validate before mutating anything. Never silently downgrade protected links.
+    for raw_user in data.get("users", []):
+        try:
+            public_key = base64.b64decode(raw_user.get("public_key", ""), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(400, "Invalid participant P-256 public key.") from exc
+        if not valid_public_key(public_key):
+            raise HTTPException(400, "Invalid participant P-256 public key.")
     for raw_link in data.get("links", []):
         verifier = raw_link.get("password_hash")
         protected = verifier is not None or raw_link.get("password_required")
@@ -188,13 +196,8 @@ async def import_bundle(
         pid = raw_user.get("public_id")
         if not pid:
             continue
-        pub_key_b64 = raw_user.get("public_key", "")
-        try:
-            pub_key = base64.b64decode(pub_key_b64, validate=True)
-        except Exception:
-            continue
-        if len(pub_key) != 32:
-            continue
+        # All keys were validated before any replace-mode mutation.
+        pub_key = base64.b64decode(raw_user["public_key"], validate=True)
 
         user = users_by_public_id.get(pid)
         if user is None:

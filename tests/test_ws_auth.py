@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 from csrf_client import TestClient
+from message_key_fixtures import public_key
 from starlette.websockets import WebSocket
 
 from app.db import SessionLocal, init_db
@@ -54,7 +55,7 @@ async def _create_websocket_user() -> tuple[User, Link]:
         user = User(
             public_id=secrets.token_hex(6),
             display_name="WebSocket test",
-            public_key=secrets.token_bytes(32),
+            public_key=public_key(),
         )
         link = Link(
             token=secrets.token_urlsafe(32),

@@ -1,6 +1,7 @@
 "use strict";
 
-const DB_NAME = "sideword-test-client";
+// New test protocol: keep prior device/history records untouched in their old DB.
+const DB_NAME = "sideword-test-client-p256";
 const STORE_NAME = "device";
 const IDENTITY_KEY = "identity";
 const HISTORY_PREFIX = "history:";
@@ -54,6 +55,31 @@ const failedMessageReasons = new Map();
 const pendingReadsByChat = new Map();
 const pendingReceiptIds = new Map();
 
+// Only locally written explanations may reach the UI; request bodies and raw
+// browser/server exception text can contain credentials or message data.
+class ClientError extends Error {}
+
+class DeviceStorageError extends ClientError {
+  constructor(message = "The browser could not read your saved chat keys from site storage. The saved device record is unreadable. Keep existing device data; do not use Reset device.") {
+    super(message);
+    this.name = "DeviceStorageError";
+  }
+}
+
+function storageFailure(error, explanation) {
+  if (error instanceof DOMException && ["QuotaExceededError", "SecurityError"].includes(error.name)) {
+    return new ClientError(errorMessage(error));
+  }
+  return new ClientError(explanation);
+}
+
+function unreadableIdentity(value) {
+  return value === null || Boolean(value && (
+    (Object.hasOwn(value, "privateKey") && !value.privateKey)
+    || (Object.hasOwn(value, "storageKey") && !value.storageKey)
+  ));
+}
+
 function bytesToBase64(bytes) {
   return SidewordProtocol.bytesToBase64(bytes);
 }
@@ -63,7 +89,7 @@ function openDatabase() {
     const request = indexedDB.open(DB_NAME, 1);
     request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME);
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onerror = () => reject(storageFailure(request.error, "The browser could not open local chat storage."));
   });
 }
 
@@ -72,9 +98,19 @@ async function readIdentity() {
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, "readonly");
     const request = transaction.objectStore(STORE_NAME).get(IDENTITY_KEY);
-    request.onsuccess = () => resolve(request.result || null);
-    request.onerror = () => reject(request.error);
-    transaction.oncomplete = () => database.close();
+    let value;
+    request.onsuccess = () => { value = request.result; };
+    transaction.oncomplete = () => {
+      database.close();
+      // Missing records return undefined. WebKit can return null when it
+      // cannot deserialize a saved CryptoKey; preserve that record.
+      if (unreadableIdentity(value)) reject(new DeviceStorageError());
+      else resolve(value || null);
+    };
+    transaction.onerror = transaction.onabort = () => {
+      database.close();
+      reject(storageFailure(transaction.error || request.error, "The browser could not finish reading your saved device data. The saved login was not loaded."));
+    };
   });
 }
 
@@ -84,7 +120,13 @@ async function writeIdentity(value, updateSession = false) {
     const transaction = database.transaction(STORE_NAME, "readwrite");
     const store = transaction.objectStore(STORE_NAME);
     const current = store.get(IDENTITY_KEY);
+    let failure;
     current.onsuccess = () => {
+      if (unreadableIdentity(current.result)) {
+        failure = new DeviceStorageError();
+        transaction.abort();
+        return;
+      }
       // Routine profile/history updates must not overwrite a newer rotation
       // committed by another tab while a network request was in flight.
       if (!updateSession && current.result && current.result.publicId === value.publicId) {
@@ -103,7 +145,7 @@ async function writeIdentity(value, updateSession = false) {
     };
     transaction.onerror = transaction.onabort = () => {
       database.close();
-      reject(transaction.error || new Error("Identity storage failed"));
+      reject(failure || storageFailure(transaction.error, "The browser could not save your device keys or login in local storage."));
     };
   });
 }
@@ -117,12 +159,14 @@ async function clearIdentity() {
       database.close();
       resolve();
     };
-    transaction.onerror = () => reject(transaction.error);
+    transaction.onerror = () => reject(storageFailure(transaction.error, "The browser could not remove local device data."));
   });
 }
 
 async function generateIdentity() {
-  const pair = await crypto.subtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
+  const pair = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"],
+  );
   const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
   const privateKey = pair.privateKey;
   const storageKey = await crypto.subtle.generateKey(
@@ -149,6 +193,14 @@ async function ensureStorageKey() {
   await writeIdentity(identity);
 }
 
+async function verifyIdentityPersistence() {
+  const stored = await readIdentity();
+  if (!stored?.privateKey || !stored.storageKey) throw new DeviceStorageError();
+  if (stored.publicId !== identity.publicId || stored.publicKey !== identity.publicKey) {
+    throw new ClientError("The device saved in this browser no longer matches the device this tab loaded. Its participant ID or encryption key changed. Chat is paused to avoid using the wrong identity.");
+  }
+}
+
 function historyKey(chatId, entryId) {
   return `${HISTORY_PREFIX}${identity.publicId}:${chatId}:${entryId}`;
 }
@@ -164,7 +216,7 @@ async function putDatabaseValue(key, value) {
     };
     transaction.onabort = transaction.onerror = () => {
       database.close();
-      reject(transaction.error || new Error("Local history transaction aborted."));
+      reject(storageFailure(transaction.error, "The browser could not save local chat history. The message has not been confirmed as saved."));
     };
   });
 }
@@ -193,7 +245,7 @@ async function observePeerKey(peer) {
     transaction.oncomplete = () => { database.close(); resolve(value); };
     transaction.onabort = transaction.onerror = () => {
       database.close();
-      reject(transaction.error || new Error("Could not save peer key."));
+      reject(storageFailure(transaction.error, "The browser could not save a participant's key fingerprint. Messages are blocked because key changes cannot be checked safely."));
     };
   });
   return { ...peer, local_fingerprint: fingerprint, key_changed: pinned !== fingerprint };
@@ -201,7 +253,7 @@ async function observePeerKey(peer) {
 
 async function assertTrustedPeer(peer) {
   if ((await observePeerKey(peer)).key_changed) {
-    throw new Error(`Peer ${peer.public_id} key changed. Sending and decryption blocked. Verify out of band; keep this device's history.`);
+    throw new ClientError("A participant's encryption key changed and no longer matches the fingerprint saved on this device. Sending and decryption are blocked. Keep this device's history.");
   }
 }
 
@@ -221,7 +273,7 @@ async function readHistoryRecords(recordPrefix = null) {
       }
       cursor.continue();
     };
-    request.onerror = () => reject(request.error);
+    request.onerror = () => reject(storageFailure(request.error, "The browser could not read saved chat history or pending messages."));
     transaction.oncomplete = () => {
       database.close();
       resolve(records);
@@ -231,7 +283,7 @@ async function readHistoryRecords(recordPrefix = null) {
 
 async function persistHistoryEntry(chatId, entry) {
   if (!identity?.storageKey || !identity.publicId || !entry.id) {
-    throw new Error("Local history storage is unavailable. Message retained for retry.");
+    throw new ClientError("Local history storage is unavailable: this device's history key or identity is missing. Message retained for retry.");
   }
   const key = historyKey(chatId, entry.id);
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -281,13 +333,83 @@ function showToast(message, isError = false) {
 }
 
 function errorMessage(error) {
-  if (error instanceof DOMException && error.name === "OperationError") {
-    return "This message could not be authenticated or decrypted.";
+  if (error instanceof ClientError || error instanceof SidewordProtocol.ProtocolError) {
+    return error.message;
   }
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof DOMException && error.name === "QuotaExceededError") {
+    return "The browser has no space available for saved chat data. Device data has not been reset.";
+  }
+  if (error instanceof DOMException && error.name === "SecurityError") {
+    return "The browser blocked access to local storage or encryption features.";
+  }
+  if (error instanceof DOMException && error.name === "NotSupportedError") {
+    return "This browser does not support the P-256 encryption required by this client.";
+  }
+  if (error instanceof DOMException && error.name === "OperationError") {
+    return "The browser could not encrypt or decrypt this data with the available keys.";
+  }
+  return "An unexpected client error prevented this operation.";
 }
 
-class SessionExpiredError extends Error {}
+function requestError(status, detail, context = "Chat request failed") {
+  const explanations = {
+    "link not found": "This invite does not exist on this service.",
+    "link expired": "This invite has expired.",
+    "link revoked": "The administrator disabled this invite.",
+    "room sealed; reconnect with your saved session": "This room is full or closed to new devices. Joining again cannot recover an existing participant slot.",
+    "This room uses retired encryption. Create a new invite.": "This room was created with the old test encryption and cannot accept P-256 devices.",
+    "The room phrase or password is incorrect.": "The room password does not match, or a required password was left empty.",
+    "Too many failed attempts. Try again later.": "Password checks for this room are temporarily blocked after too many failed attempts.",
+    "public_key mismatch with existing session": "Your saved login belongs to a different encryption key than this device is using.",
+    "public_key mismatch with existing participant": "The saved room participant uses a different encryption key than this device.",
+    "This device has joined. Use its saved session or resume credential.": "This device already claimed a room slot, but its saved login or recovery credential is missing.",
+    "personal chat has no peer yet": "The other participant has not joined this room yet.",
+    "message identity already has a different payload": "This message ID was already used for different encrypted data. The new upload was rejected.",
+    "message predates retry ledger; verify delivery": "The service cannot safely retry this older message because its original delivery record is missing.",
+    "credential already rotated; use saved refresh state": "The saved login recovery credential is older than the server's current credential.",
+  };
+  const defaults = {
+    400: "The service rejected the request because its data does not match the chat state.",
+    401: "The service rejected the saved login because it is invalid, expired, or disabled.",
+    403: "The service refused permission for this request.",
+    404: "The requested room or service endpoint does not exist.",
+    409: "The request conflicts with the device, room, or message state saved by the service.",
+    410: "This invite, room, or client operation is no longer available.",
+    413: "The request is larger than the service allows.",
+    422: "The service rejected one or more request fields as invalid.",
+    429: "The service temporarily blocked this request because a rate or capacity limit was reached.",
+  };
+  let explanation = typeof detail === "string" && Object.hasOwn(explanations, detail)
+    ? explanations[detail]
+    : defaults[status] || (status >= 500
+      ? "The chat service could not complete the request because of a server error."
+      : "The chat service rejected this request.");
+  if (status === 422 && Array.isArray(detail) && detail.some(item => (
+    Array.isArray(item?.loc) && item.loc.length === 2
+    && item.loc[0] === "body" && item.loc[1] === "public_key"
+  ))) {
+    explanation = "The service rejected this device's public encryption key. The client and server may use different test encryption formats.";
+  }
+  return new ClientError(`${context} (HTTP ${status}). ${explanation}`);
+}
+
+async function fetchClient(path, options) {
+  try {
+    return await fetch(path, options);
+  } catch {
+    throw new ClientError("No response was received from the chat service. The network connection failed or the service is unavailable; the server may already have processed the request.");
+  }
+}
+
+async function responseData(response) {
+  try {
+    return await response.json();
+  } catch {
+    throw new ClientError("The chat service returned a response this client could not read.");
+  }
+}
+
+class SessionExpiredError extends ClientError {}
 
 async function invalidateSession(reason = "Session expired") {
   if (!identity) return;
@@ -309,7 +431,7 @@ async function invalidateSession(reason = "Session expired") {
   if (activeSocket && activeSocket.readyState <= WebSocket.OPEN) activeSocket.close();
   updateIdentityUi();
   elements.inviteToken.focus();
-  throw new SessionExpiredError(`${reason}. Activate a valid invite to continue.`);
+  throw new SessionExpiredError(`${reason}. Chat is paused; your local keys and saved messages are kept.`);
 }
 
 function randomCredential() {
@@ -319,7 +441,7 @@ function randomCredential() {
 
 async function deviceLock(name, action) {
   if (!globalThis.navigator?.locks) {
-    throw new Error("This browser needs Web Locks for safe session and message retries.");
+    throw new ClientError("This browser cannot coordinate saved logins and message retries safely across tabs because Web Locks is unavailable.");
   }
   return navigator.locks.request(`sideword:${name}`, action);
 }
@@ -329,14 +451,19 @@ async function ensureFreshSession(force = false) {
   const previousToken = identity.token;
   await deviceLock("session", async () => {
     const stored = await readIdentity();
-    if (stored?.publicId !== identity.publicId) throw new Error("Device changed in another tab. Reload.");
+    if (!stored) {
+      throw new DeviceStorageError("Local device data is missing: the browser no longer has the saved device record this tab loaded. Chat is paused to avoid losing access to its encryption key.");
+    }
+    if (stored.publicId !== identity.publicId || stored.publicKey !== identity.publicKey) {
+      throw new ClientError("The device saved in this browser no longer matches the device this tab loaded. Its participant ID or encryption key changed. Chat is paused to avoid using the wrong identity.");
+    }
     identity = stored;
     if ((!force || identity.token !== previousToken) && identity.refreshCredential
         && Date.now() < identity.tokenExpiresAt - 60000) return;
     const migrating = !identity.refreshCredential;
     identity.pendingRefreshCredential ||= randomCredential();
     await writeIdentity(identity, true); // Keep the proposed rotation if the response/save is lost.
-    const response = await fetch(migrating ? "/api/v1/sessions" : "/api/v1/sessions/refresh", {
+    const response = await fetchClient(migrating ? "/api/v1/sessions" : "/api/v1/sessions/refresh", {
       method: "POST", cache: "no-store",
       headers: { "Content-Type": "application/json", ...(migrating
         ? { Authorization: `Bearer ${identity.token}` } : {}) },
@@ -345,10 +472,10 @@ async function ensureFreshSession(force = false) {
       }),
     });
     if (!response.ok) {
-      if (response.status === 401) await invalidateSession("Session expired or revoked");
-      throw new Error("Session renewal failed. Retry without resetting this device.");
+      if (response.status === 401) await invalidateSession("The server rejected the saved login (HTTP 401); it has expired or was disabled");
+      throw requestError(response.status, undefined, "Could not renew the saved login");
     }
-    const result = await response.json();
+    const result = await responseData(response);
     identity.token = result.token;
     identity.sessionId = result.session_id;
     identity.tokenExpiresAt = Date.parse(result.access_expires_at);
@@ -371,21 +498,21 @@ async function api(path, options = {}) {
   if (identity?.token) {
     headers.set("Authorization", `Bearer ${identity.token}`);
   }
-  const response = await fetch(path, { ...options, headers, cache: "no-store" });
+  const response = await fetchClient(path, { ...options, headers, cache: "no-store" });
   if (!response.ok) {
-    let detail = `${response.status} ${response.statusText}`;
+    let detail;
     try {
       const body = await response.json();
-      detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+      detail = body?.detail;
     } catch {
-      // Keep the status text when an error response is not JSON.
+      // A proxy may return HTML; explain its HTTP status without displaying it.
     }
     if (response.status === 401) {
-      await invalidateSession(`Session unavailable: ${detail}`);
+      await invalidateSession("The server rejected the saved login (HTTP 401); it has expired or was disabled");
     }
-    throw new Error(detail);
+    throw requestError(response.status, detail, activation ? "Could not join the room" : "Chat request failed");
   }
-  return response.json();
+  return responseData(response);
 }
 
 async function encryptForRecipient(plaintext, chatId, messageId, recipient) {
@@ -396,7 +523,7 @@ async function encryptForRecipient(plaintext, chatId, messageId, recipient) {
 async function decryptMessage(message) {
   const chat = chats.find(candidate => candidate.id === message.chat_id);
   const sender = chat?.participants.find(peer => peer.public_id === message.sender_public_id);
-  if (!sender) throw new Error("Sender key is not present in this chat.");
+  if (!sender) throw new ClientError("The message sender is missing from this room's participant list, so their encryption key is unavailable.");
   await assertTrustedPeer(sender);
   return SidewordProtocol.decryptMessage(identity, message, sender);
 }
@@ -598,7 +725,7 @@ async function loadChats() {
     : null;
   updateSessionCountdown();
   if (data.user.public_key !== identity.publicKey) {
-    throw new Error("Server identity does not match this device key. Verify out of band; keep this device's history.");
+    throw new ClientError("The server's account encryption key differs from this device's saved key. The login and local device identity do not match. Keep this device's history.");
   }
   const checkedChats = [];
   for (const chat of data.chats) {
@@ -627,7 +754,7 @@ function senderKeyIsLoaded(message) {
 
 function deliveryReference(delivery, peerField) {
   if (!/^[0-9a-f]{32}$/.test(delivery.delivery_id || "")) {
-    throw new Error("Server delivery identity missing. Update the server before acknowledging messages.");
+    throw new ClientError("The server sent incomplete delivery information. This client cannot safely confirm that the message was received, so it stays queued.");
   }
   return {
     delivery_id: delivery.delivery_id,
@@ -874,7 +1001,7 @@ elements.activationForm.addEventListener("submit", async (event) => {
   }
   const token = elements.inviteToken.value.trim();
   if (!/^[A-Za-z0-9_-]{20,128}$/.test(token)) {
-    showToast("Enter a valid URL-safe invite token.", true);
+    showToast("The invite token is missing, incomplete, or contains invalid characters. The room has not been joined.", true);
     return;
   }
   const submitButton = elements.activationForm.querySelector("button[type='submit']");
@@ -886,6 +1013,8 @@ elements.activationForm.addEventListener("submit", async (event) => {
     identity.activationCredentials ||= {};
     identity.activationCredentials[token] ||= randomCredential();
     await writeIdentity(identity);
+    // Verify a separate read transaction before admission can consume a slot.
+    await verifyIdentityPersistence();
     const sessionCredential = identity.activationCredentials[token];
     const previousPublicId = identity.publicId;
     const password = elements.roomPassword.value;
@@ -986,7 +1115,7 @@ document.querySelector("#retry-pending-sends").addEventListener("click", () => {
 });
 
 async function persistOutbox(record) {
-  if (!identity.storageKey) throw new Error("Local storage key is unavailable.");
+  if (!identity.storageKey) throw new ClientError("This device is missing the encryption key for its saved outgoing messages.");
   const key = `outbox:${identity.publicId}:${record.chatId}:${record.messageId}`;
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
@@ -1003,7 +1132,7 @@ async function removeOutbox(key) {
     transaction.objectStore(STORE_NAME).delete(key);
     transaction.oncomplete = () => { database.close(); resolve(); };
     transaction.onabort = transaction.onerror = () => {
-      database.close(); reject(transaction.error || new Error("Outbox update failed"));
+      database.close(); reject(storageFailure(transaction.error, "The browser could not remove a saved outgoing retry from local storage."));
     };
   });
 }
@@ -1017,7 +1146,7 @@ async function flushOutbox() {
         additionalData: encoder.encode(stored.key) }, identity.storageKey, stored.value.ciphertext);
       const record = JSON.parse(decoder.decode(plaintext));
       if (record.expiresAt <= Date.now()) {
-        throw new Error("An outgoing retry expired. It remains saved; verify delivery before resending.");
+        throw new ClientError("An outgoing retry expired. The message is still saved locally; uploading it now could duplicate a message already delivered.");
       }
       const result = await api(`/api/v1/chats/${record.chatId}/messages`, {
         method: "POST", body: JSON.stringify({ client_message_id: record.messageId,
@@ -1046,13 +1175,13 @@ elements.messageForm.addEventListener("submit", async (event) => {
         ciphertext: await encryptForRecipient(plaintext, chat.id, messageId, recipient),
       })),
     );
-    if (!identity.retryWindowSeconds) throw new Error("Server does not support durable retries.");
+    if (!identity.retryWindowSeconds) throw new ClientError("The server does not advertise a safe message retry period. This message was not uploaded.");
     const record = { chatId: chat.id, messageId, envelopes, plaintext,
       expiresAt: Date.now() + Math.max(0, identity.retryWindowSeconds - 300) * 1000,
       createdAt: Date.now() };
     await deviceLock(`outbox:${identity.publicId}`, async () => {
       if ((await readHistoryRecords(`outbox:${identity.publicId}:`)).length >= 100) {
-        throw new Error("Local outbox is full. Retry pending messages first.");
+        throw new ClientError("This device has too many saved outgoing messages awaiting confirmation. Another message cannot be added to the local outbox.");
       }
       await persistOutbox(record);
     });
@@ -1096,14 +1225,18 @@ elements.resetButton.addEventListener("click", async () => {
     "Remove this browser's private key and session? Existing chats cannot be recovered on this device.",
   );
   if (!confirmed) return;
-  await clearIdentity();
-  window.location.assign("/client");
+  try {
+    await clearIdentity();
+    window.location.assign("/client");
+  } catch (error) {
+    showToast(errorMessage(error), true);
+  }
 });
 
 async function start() {
-  if (!window.isSecureContext || !window.crypto?.subtle || !window.indexedDB) {
-    throw new Error("This client requires a secure browser context (HTTPS or localhost) with Web Crypto.");
-  }
+  if (!window.isSecureContext) throw new ClientError("This page is not running in a secure browser context. Chat requires HTTPS or localhost.");
+  if (!window.crypto?.subtle) throw new ClientError("The browser's encryption features are unavailable, so this client cannot create or use chat keys.");
+  if (!window.indexedDB) throw new ClientError("The browser's local database is unavailable, so this client cannot save device keys or chat history.");
   identity = await readIdentity();
   const requestedInvite = (elements.inviteToken.value || "").trim();
   invitePending = Boolean(requestedInvite && requestedInvite !== identity?.activeInviteToken);
@@ -1153,4 +1286,10 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-start().catch((error) => showToast(errorMessage(error), true));
+function showStartupError(error) {
+  elements.activationError.textContent = errorMessage(error);
+  elements.activationError.hidden = false;
+  showToast(errorMessage(error), true);
+}
+
+start().catch(showStartupError);

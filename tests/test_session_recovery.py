@@ -7,6 +7,7 @@ import sqlite3
 
 import pytest
 from csrf_client import TestClient
+from message_key_fixtures import public_key
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_exact_delivery import headers, poll, send
 from test_security_stages import bootstrap, rotate
@@ -50,7 +51,7 @@ def test_restore_requires_key_rotation_and_session_removal(
     original, engine = recovery_database("original.sqlite3")
     backup = tmp_path / "restored.sqlite3"
     admissions = [{
-        "public_key": base64.b64encode(secrets.token_bytes(32)).decode(),
+        "public_key": base64.b64encode(public_key()).decode(),
         "resume_credential": secrets.token_urlsafe(32),
     } for _ in range(2)]
     old, current = secrets.token_urlsafe(32), secrets.token_urlsafe(32)

@@ -9,6 +9,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+from .message_keys import valid_public_key
+
 
 def _decode_b64(value: str) -> bytes:
     if not isinstance(value, str):
@@ -30,7 +32,8 @@ class Base64Field(str):
 class LinkActivateRequest(BaseModel):
     token: SecretStr = Field(..., min_length=1, max_length=128,
                              description="Invite admission secret; never log request bodies.")
-    public_key: str = Field(..., description="Client X25519 public key as base64 (32 bytes).")
+    public_key: str = Field(..., max_length=88,
+                            description="Base64 uncompressed P-256 public point (65 bytes).")
     display_name: str | None = Field(default=None, max_length=64)
     password: SecretStr | None = None
     resume_credential: SecretStr | None = None
@@ -40,8 +43,8 @@ class LinkActivateRequest(BaseModel):
     @classmethod
     def _check_public_key(cls, value: str) -> str:
         data = _decode_b64(value)
-        if len(data) != 32:
-            raise ValueError("public_key must be 32 bytes (X25519)")
+        if not valid_public_key(data):
+            raise ValueError("public_key must be a valid uncompressed P-256 point (65 bytes)")
         return value
 
 

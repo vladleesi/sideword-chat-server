@@ -157,6 +157,19 @@ Opening a different invite in the test client shows its join form and pauses
 background chat activity in that tab until activation. Successful activation
 selects the invited room. The same invite or `/client` resumes the saved room;
 device keys and encrypted history are preserved without using **Reset device**.
+The 0.6.0 test protocol uses native P-256 ECDH with non-exportable private keys.
+It replaces the prior test format completely: existing rooms need new invites
+and clients get fresh identities. Prior browser data is left untouched in its old
+database; it is not imported or decrypted by the new client. See the
+[breaking upgrade procedure](docs/UPGRADING.md#compatibility-notes).
+Before activation, the client checks that saved device keys can be read back from
+local storage. Browsers that cannot restore non-exportable P-256 keys are blocked
+before admission, with an inline storage error. Unreadable existing device records
+are preserved; do not reset them to dismiss the error. This check detects an
+incompatible browser/storage implementation; it does not repair it or recover lost keys.
+Client errors explain whether a failure comes from saved device data, changed
+keys, login, an invite, or the service. Rejected requests show their HTTP status;
+raw server validation values and browser exception details are not displayed.
 Full rooms stop accepting new participants, while authenticated reconnects
 reuse existing slots. Revocation, deletion, participant deactivation, and
 expiry invalidate access. Losing browser credentials does not free a slot.

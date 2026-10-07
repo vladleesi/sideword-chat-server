@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from csrf_client import TestClient
+from message_key_fixtures import public_key
 from sqlalchemy import select
 
 from app.db import SessionLocal
@@ -41,7 +42,7 @@ def make_link(hours=None):
 def activate(client, token):
     response = client.post("/api/v1/links/activate", json={
         "token": token,
-        "public_key": base64.b64encode(secrets.token_bytes(32)).decode(),
+        "public_key": base64.b64encode(public_key()).decode(),
         "display_name": "Test participant",
     })
     assert response.status_code == 200
@@ -63,7 +64,7 @@ def test_restore_full_link_restores_access_without_allowing_third_user(client):
     assert client.get("/api/v1/me", headers=headers(user)).status_code == 200
     assert client.post("/api/v1/links/activate", json={
         "token": token,
-        "public_key": base64.b64encode(secrets.token_bytes(32)).decode(),
+        "public_key": base64.b64encode(public_key()).decode(),
     }).status_code == 410
 
 

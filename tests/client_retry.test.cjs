@@ -105,12 +105,63 @@ test('activation 401 clears rejected bearer and preserves device and resume stat
     window.clearInterval = () => {};
   `);
   const action = 'api("/api/v1/links/activate", { method: "POST", body: "{}" })';
-  await assert.rejects(run(action), /invalid or revoked session/);
+  await assert.rejects(run(action), /server rejected the saved login \(HTTP 401\)/);
   assert.equal(requests[0].headers.get('Authorization'), 'Bearer revoked-access');
   assert.equal(run('saved.token'), null);
   assert.equal(run('saved.privateKey === deviceKey && saved.activationCredentials === admission'), true);
   assert.equal((await run(action)).token, 'recovered-access');
   assert.equal(requests[1].headers.has('Authorization'), false);
+});
+
+test('activation errors explain HTTP failures without rendering server inputs or exception data', async () => {
+  const privateMarker = 'synthetic-private-value';
+  for (const [status, detail, expected] of [
+    [403, 'The room phrase or password is incorrect.', /room password does not match/],
+    [410, 'link expired', /invite has expired/],
+    [410, 'room sealed; reconnect with your saved session', /full or closed to new devices/],
+    [409, 'This room uses retired encryption. Create a new invite.', /old test encryption/],
+    [429, 'Too many failed attempts. Try again later.', /Password checks.*temporarily blocked/],
+    [422, [{ loc: ['body', 'public_key'], input: privateMarker, msg: privateMarker }], /rejected this device's public encryption key/],
+    [422, [{ loc: ['body', 'token'], input: privateMarker, msg: privateMarker }], /request fields as invalid/],
+    [500, privateMarker, /server error/],
+    [400, { input: privateMarker }, /data does not match the chat state/],
+  ]) {
+    const run = client({ Headers, fetch: async () => ({ ok: false, status,
+      statusText: privateMarker, json: async () => ({ detail }) }) });
+    run('identity = null');
+    await assert.rejects(run('api("/api/v1/links/activate", { method: "POST", body: "{}" })'), error => {
+      const text = run('errorMessage')(error);
+      assert.match(text, /Could not join the room/);
+      assert.match(text, new RegExp(`HTTP ${status}`));
+      assert.match(text, expected);
+      assert.equal(text.includes(privateMarker), false);
+      return true;
+    });
+  }
+});
+
+test('network, unreadable responses, and unknown exceptions have safe understandable explanations', async () => {
+  for (const [fetch, expected] of [
+    [async () => { throw new Error('synthetic-private-value'); }, /network connection failed/],
+    [async () => ({ ok: true, json: async () => { throw new Error('synthetic-private-value'); } }), /response this client could not read/],
+    [async () => ({ ok: false, status: 502, json: async () => { throw new Error('synthetic-private-value'); } }), /HTTP 502.*server error/],
+  ]) {
+    const run = client({ Headers, fetch });
+    run('identity = null');
+    await assert.rejects(run('api("/api/v1/links/activate")'), error => {
+      const text = run('errorMessage')(error);
+      assert.match(text, expected);
+      assert.equal(text.includes('synthetic-private-value'), false);
+      return true;
+    });
+  }
+  const run = client();
+  assert.equal(run('errorMessage(new Error("synthetic-private-value"))'),
+    'An unexpected client error prevented this operation.');
+  assert.equal(run('errorMessage("synthetic-private-value")'),
+    'An unexpected client error prevented this operation.');
+  assert.match(run('errorMessage(new DOMException("synthetic-private-value", "NotSupportedError"))'), /does not support the P-256/);
+  assert.match(run('errorMessage(storageFailure(new DOMException("synthetic-private-value", "QuotaExceededError"), "fallback"))'), /no space available/);
 });
 
 for (const scenario of ['different invite', 'legacy identity', 'fresh device']) {
@@ -191,6 +242,36 @@ test('failed invite stays on the form and a retry reuses the saved admission cre
   }
   assert.equal(JSON.parse(requests[0].body).resume_credential,
     JSON.parse(requests[1].body).resume_credential);
+});
+
+test('unrestorable device storage blocks fresh invite admission and leaves retry credentials intact', async () => {
+  const { run, submit } = inviteClient();
+  run('saved = null;');
+  await run('start();');
+  run('readIdentity = async () => null;');
+  await submit();
+  assert.equal(run('activationRequests.length'), 0);
+  assert.equal(run('elements.setupPanel.hidden'), false);
+  assert.equal(run('elements.clientPanel.hidden'), true);
+  assert.match(run('elements.activationError.textContent'), /could not read your saved chat keys/);
+  assert.equal(run('saved.publicId'), null);
+  assert.equal(run('saved.token'), null);
+  assert.ok(run('saved.activationCredentials["B".repeat(24)]'));
+  assert.equal(run('events.includes("socket") || events.includes("url-cleared")'), false);
+  // The same device and admission proposals can continue if storage becomes usable.
+  run('readIdentity = async () => saved;');
+  await submit();
+  assert.equal(run('activationRequests.length'), 1);
+  assert.equal(run('elements.activationError.hidden'), true);
+});
+
+test('unreadable saved storage leaves a persistent startup error without reconnecting', async () => {
+  const { run } = inviteClient();
+  run('readIdentity = async () => { throw new DeviceStorageError(); };');
+  await run('start().catch(showStartupError)');
+  assert.equal(run('elements.activationError.hidden'), false);
+  assert.match(run('elements.activationError.textContent'), /Keep existing device data/);
+  assert.deepEqual(Array.from(run('events')), []);
 });
 
 for (const failed of [false, true]) {
@@ -294,7 +375,7 @@ test('concurrent tabs reuse persisted refresh proposals after a lost response', 
   const a = client(shared), b = client(shared);
   for (const run of [a,b]) await run(`(async () => { identity = await load();
     readIdentity = load; writeIdentity = save; connectSocket = () => {}; })()`);
-  await assert.rejects(a('ensureFreshSession()'), /lost response/);
+  await assert.rejects(a('ensureFreshSession()'), /network connection failed/);
   assert.ok(state.pendingRefreshCredential);
   await Promise.all([a('ensureFreshSession()'), b('ensureFreshSession()')]);
   assert.equal(requests.length, 2);

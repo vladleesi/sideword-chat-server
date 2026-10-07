@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from csrf_client import TestClient
+from message_key_fixtures import public_key
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -32,7 +33,7 @@ def room():
             for _ in range(size):
                 response = client.post("/api/v1/links/activate", json={
                     "token": token,
-                    "public_key": base64.b64encode(secrets.token_bytes(32)).decode(),
+                    "public_key": base64.b64encode(public_key()).decode(),
                 })
                 assert response.status_code == 200
                 users.append(response.json())

@@ -1,6 +1,6 @@
 """End-to-end smoke test for critical server flows.
 
-Emulates clients with random 32-byte keys (same wire shape as X25519 public keys),
+Emulates clients with valid P-256 public points,
 exercises invite links, ciphertext relay, read receipts, and config export/import.
 
 How to run:
@@ -31,14 +31,9 @@ os.environ["SIDEWORD_DB_PATH"] = str(Path(_TMPDIR) / "sideword.sqlite3")
 os.environ["SIDEWORD_EXPORTS_DIR"] = str(Path(_TMPDIR) / "exports")
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
+from message_key_fixtures import public_key  # noqa: E402
 
 from app.main import create_app  # noqa: E402
-
-
-def _random_keypair() -> tuple[bytes, bytes]:
-    """Pseudo X25519 public keys — random 32-byte blobs."""
-
-    return secrets.token_bytes(32), secrets.token_bytes(32)
 
 
 async def _run() -> None:
@@ -116,12 +111,12 @@ async def _run() -> None:
             assert r.text.index('/static/client-protocol.js') < r.text.index('/static/client.js')
             client_script = re.search(r'src="(/static/client\.js\?[^\"]+)"', r.text)
             assert client_script is not None
-            # A client with the 0.4.0 script cached must fetch a different URL.
-            assert client_script.group(1) != "/static/client.js?v=14"
+            # A client with the 0.5.0 script cached must fetch a different URL.
+            assert client_script.group(1) != "/static/client.js?v=16"
 
             r = await c.get("/static/client-protocol.js")
             assert r.status_code == 200
-            assert "X25519-2DH-HKDF-SHA256-AES256GCM" in r.text
+            assert "P256-2DH-HKDF-SHA256-AES256GCM" in r.text
 
             r = await c.get(client_script.group(1))
             assert r.status_code == 200
@@ -136,8 +131,8 @@ async def _run() -> None:
             assert f"/client?invite={pt}" in r.text
 
             # ---------- Two clients activate the personal link ----------
-            alice_pub, _ = _random_keypair()
-            bob_pub, _ = _random_keypair()
+            alice_pub = public_key()
+            bob_pub = public_key()
 
             r = await c.post(
                 "/api/v1/links/activate",
@@ -168,7 +163,7 @@ async def _run() -> None:
             r = await c.post(
                 "/api/v1/links/activate",
                 json={"token": pt,
-                      "public_key": base64.b64encode(secrets.token_bytes(32)).decode()},
+                      "public_key": base64.b64encode(public_key()).decode()},
             )
             assert r.status_code in (410, 404)
 
@@ -243,7 +238,7 @@ async def _run() -> None:
             assert r.json()["deleted_receipts"] == 1
 
             # ---------- Group chat with three members ----------
-            pubs = [secrets.token_bytes(32) for _ in range(3)]
+            pubs = [public_key() for _ in range(3)]
             tokens: list[str] = []
             pids: list[str] = []
             for i, pk in enumerate(pubs):
@@ -336,7 +331,7 @@ async def _run() -> None:
             r = await c.post(
                 "/api/v1/links/activate",
                 json={"token": "no-such-token",
-                      "public_key": base64.b64encode(secrets.token_bytes(32)).decode()},
+                      "public_key": base64.b64encode(public_key()).decode()},
             )
             assert r.status_code == 404
 

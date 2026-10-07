@@ -1,6 +1,6 @@
 # Security review
 
-Current code: 0.5.0. Activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
+Current code: 0.6.0. P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
 This is a source review with regression tests, not an independent audit.
 Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 
@@ -13,7 +13,9 @@ Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 | Administration | Signed, cookie-bound form tokens prevent cross-site request forgery (CSRF). Login limits persist across processes/restarts. Logout and password resets revoke registered sessions; concurrent old-password logins cannot escape a reset. |
 | Client sessions | Short access tokens, hashed refresh credentials, rotation/replay detection, per-device revocation and explicit legacy cutoff controls. Issuance rechecks user/invite validity under the database write reservation. |
 | Transport and capacity | HTTPS/WSS outside loopback, private administration by default, bounded HTTP/WS traffic and database queues. Shared runner/Docker suppress raw access and WS INFO logs. |
-| Device state | Non-exportable private keys, locally calculated fingerprints, atomic first-use peer pins, encrypted history/outbox and persistence before deletion acknowledgements. |
+| Device state | Non-exportable private keys, locally calculated fingerprints, atomic first-use peer pins, encrypted history/outbox and persistence before deletion acknowledgements. A separate committed identity read precedes invite admission; unreadable saved identities are preserved and cannot be overwritten by routine/activation writes. |
+| P-256 boundary | Native non-exportable ECDH identity/ephemeral keys; validated uncompressed 65-byte P-256 public points. Retired keys cannot authenticate, issue/refresh sessions, or share a room with new clients. Configuration imports reject invalid keys before replacement/deletion. The new browser database is separate from prior test data, with no old-format decryption or key conversion. |
+| Client errors | Fixed local/protocol explanations and allowlisted server-detail translations distinguish storage, identity, login, invite and HTTP failures. Raw server validation inputs, status text, response bodies and unknown exception messages are not displayed. No diagnostic upload, reporting controls or new telemetry is added. |
 | Group sender labels | Incoming messages use the matching participant's display name and public ID, saved in encrypted history and rendered with `textContent`. Existing history can resolve current roster names by its saved routing identity without changing delivery IDs or acknowledging old messages again. Names are server-provided labels, not authenticated identities; unnamed senders fall back to public IDs. |
 | Recovery | Isolated restore tests verify that both signing-key rotation and removal of restored session records are needed to invalidate old credentials. |
 
@@ -26,7 +28,7 @@ Assume network observers, leaked databases/backups, stolen bearer credentials,
 a malicious relay/key directory, malicious group members, and compromised devices
 or browser JavaScript.
 
-- **Encryption v1 has no recipient forward secrecy.** A stolen recipient identity
+- **P-256 encryption v1 has no recipient forward secrecy.** A stolen recipient identity
   key can decrypt recorded inbound traffic: both DH values are recoverable from
   that key and public headers. A stolen sender identity key alone does not recover
   past outbound ephemeral DH values. There is no ratchet or post-compromise
@@ -126,6 +128,30 @@ The last activated invite/room is stored with the session, and routine identity
 writes preserve newer session/invite state from another tab. Switching invites
 is not a privacy wipe; Reset device explicitly clears local storage.
 
+Backend 0.6.0 intentionally replaces the test encryption format without backwards
+support. The browser uses `sideword-test-client-p256`; prior device data is neither
+read nor automatically deleted. Reset device clears only the new database.
+Old server records are not converted or erased, and old credentials are rejected
+independently of JWT/refresh expiry. Create new rooms/invites and reverify new
+fingerprints; do not treat a new participant public ID as a verified old identity.
+
+The browser checks the saved identity after committing admission credentials and
+before sending activation. An absent IndexedDB record permits new setup; a null
+deserialization result or null saved key is treated as unreadable storage. Reads
+wait for transaction completion, and failed reads do not release session state.
+Unreadable records cannot be replaced by a new identity; startup failures remain
+visible on the join form. Renewal distinguishes missing/unreadable storage from
+an actual changed participant/public key and does not renew either case.
+
+P-256 removes the dependency on the key type affected by the reported
+[WebKit persistence bug](https://bugs.webkit.org/show_bug.cgi?id=312279).
+The storage preflight remains and rejects failed round trips before admission;
+it does not repair browser storage or recover inaccessible keys. The reported
+user-device failure has not been directly reproduced in a browser. Node adapters
+verify the null-read failure path and native P-256 key cloning/usage, not the
+underlying WebKit implementation. There is no exportable-key fallback. Actual
+Safari/iOS persistence and chat behavior remain a release-QA requirement.
+
 ## Deployment and recovery obligations
 
 Use the [upgrade/recovery guide](UPGRADING.md) for the procedure. In particular:
@@ -168,19 +194,29 @@ Require authenticated version negotiation and identity transitions, no silent
 downgrade, crash-consistent key/history/ACK state, persistent outgoing ciphertext,
 bounded skipped keys and cross-language test vectors. Group upgrades need member
 agreement, authenticated membership epochs and defined leaving-member access.
-Keep v1 receive support and local history during explicit opt-in migration;
-dual-encrypting new messages under v1 does not provide ratchet security.
+For a future production upgrade, define preservation of the current P-256 receive
+format and local history during an explicit transition. Dual-encrypting new
+messages with this format does not provide ratchet security. This requirement
+does not add support for the retired pre-0.6.0 test format.
 Review upgrade/rollback before rollout: never reset ratchet state or reuse keys.
 Old messages gain no retroactive forward secrecy.
 
 ## Latest verification record
 
-- **0.5.0 code, 2026-10-06:** the full 178-test Python suite passed before the
-  template/history follow-ups; the affected isolated smoke test passed again,
-  verifying the new script URL and group names in `/me`. All 55 JavaScript tests passed.
-  Ruff, compilation, client/form syntax, release version/date, and diff
-  whitespace/privacy checks passed. Unchanged activation JSON retains its prior review.
-  The existing Starlette/AnyIO deprecation warning remains.
+- **0.6.0 code, 2026-10-07:** Ruff, dependency consistency, Python compilation,
+  client/protocol/form syntax, release notes and whitespace checks passed.
+  Python regression coverage totals 189 passing cases across the full run and
+  affected-test rerun; JavaScript coverage totals 76 passing cases across the full
+  run and affected-test reruns. Coverage includes native point
+  validation, independent OpenSSL encryption/decryption, non-exportable keys,
+  malformed and retired-key rejection, blocked mixed rooms, failed-storage
+  admission and import rejection before replace-mode mutation. No browser
+  verification was performed; Docker was unavailable for a local container build.
+  Clearer-error verification passed client/protocol syntax, 64 affected JavaScript
+  cases (with 18 retry cases rerun after an outdated wording assertion), the Python
+  smoke test, release-note generation and whitespace checks. Error regressions
+  verify HTTP explanations, private validation-value filtering, unknown exceptions,
+  storage/encryption failures and retained refresh proposals after a lost response.
 - **Release automation:** version/notes validation, workflow configuration,
   Bash syntax and nine mocked publication scenarios passed locally, including
   outdated commits, existing releases, conflicting tags and command failures.
@@ -203,11 +239,17 @@ Old messages gain no retroactive forward secrecy.
   malformed/other-chat history fallback.
   History-scroll regressions cover hidden-panel rendering, encrypted startup
   history with unavailable synchronization, and preserving an older reading position.
-- **Deployment:** local listeners returned healthy 0.4.0 responses on 2026-10-06;
-  the client returned HTTP 200 and shared administration returned 404. Both local
-  listeners served the new script URL and exact current client source after the
-  sender-label and history-scroll fixes. The running Python process still reports 0.4.0; the
-  0.5.0 change has not been deployed or verified in a browser.
+  Storage regressions cover committed reads, transaction aborts, non-exportable
+  key round trips, WebKit-style null reads, partial null keys, preserving unreadable
+  records, missing versus changed devices, blocked admission before network activity,
+  retained admission proposals, successful retry after storage recovery, and inline startup errors.
+- **Deployment:** read-only inspection on 2026-10-07 verified a healthy cloud
+  container reporting 0.5.0, zero container restarts and no OOM kill, and public
+  JavaScript matching the 0.5.0 repository source. Retained deployment logs and
+  service journals showed no matching application exceptions. Application logging
+  is disabled; nginx access logging is off and errors are discarded, so logs
+  cannot establish the user-device failure's cause. The cloud backend runs
+  independently of the local admin tunnel. The 0.6.0 change has not been deployed.
 - **Limits:** tests use isolated databases and Node adapters for browser storage,
   not a live browser. They do not establish native interoperability, production
   configuration, penetration/load-test results, a full dependency audit or a
