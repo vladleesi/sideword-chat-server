@@ -141,7 +141,7 @@ address. Keep tunnel addresses and credentials out of version control.
 
 Invite paths and session credentials must not enter logs. Apply the
 [public deployment controls](docs/UPGRADING.md#public-deployment-controls) for
-proxy trust, log suppression, resource limits and backup protection.
+proxy trust, log suppression, resource limits, public asset caching and backup protection.
 
 ## Invites and chats
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1 — 2026-10-07
+
+- Reduce client asset transfers with public-only gzip compression, bounded browser/CDN caching and proxy buffering; preserve no-store responses for invites, authenticated APIs and errors.
+
 ## 0.9.0 — 2026-10-07
 
 - Replace technical receipt messages with compact sending, sent, delivered, read and failed indicators; show orange double checks once any recipient confirms reading, with accessible per-recipient message details and expandable full identifiers.

@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from .admin_setup import ensure_default_admin
 from .cleanup import run_periodic_cleanup
@@ -39,6 +40,31 @@ logging.basicConfig(
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
+class PublicStaticFiles(StaticFiles):
+    """Cache and buffer only bundled public assets, never application responses."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code in (200, 206, 304):
+            # Asset query revisions change on updates; avoid immutable caching
+            # because older/unversioned URLs can still resolve to updated files.
+            response.headers["Cache-Control"] = "public, max-age=3600, must-revalidate"
+            response.headers["X-Accel-Buffering"] = "yes"
+            if response.status_code == 304:
+                response.headers.add_vary_header("Accept-Encoding")
+        return response
+
+
+class StaticGZipMiddleware(GZipMiddleware):
+    async def __call__(self, scope, receive, send):
+        # Preserve byte ranges over the original file representation. Compressing
+        # a partial body would make Content-Range describe the wrong encoding.
+        if scope["type"] == "http" and any(name == b"range" for name, _ in scope["headers"]):
+            await self.app(scope, receive, send)
+        else:
+            await super().__call__(scope, receive, send)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
@@ -65,7 +91,9 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def private_responses(request: Request, call_next):
         response = await call_next(request)
-        if not request.url.path.startswith("/static/"):
+        public_asset = (request.url.path.startswith("/static/")
+                        and response.status_code in (200, 206, 304))
+        if not public_asset:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
         return response
@@ -78,7 +106,11 @@ def create_app() -> FastAPI:
             for error in exc.errors()
         ]})
 
-    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+    # Compress only public files: invite HTML and authenticated responses must
+    # never mix credentials or user content into a compression context.
+    app.mount("/static", StaticGZipMiddleware(
+        PublicStaticFiles(directory=str(_STATIC_DIR)), minimum_size=1024, compresslevel=5,
+    ), name="static")
 
     app.include_router(health.router)
     app.include_router(landing.router)

@@ -34,7 +34,9 @@ retry requirements. Publication does not update running servers or GitHub Pages.
 1. Read the target changelog and compatibility notes below.
 2. Stop all writers and take the database/configuration backup.
 3. Update the server and matching browser assets. Review `.env.example` for changed
-   settings without replacing existing secrets.
+   settings without replacing existing secrets. Change every template reference's
+   asset query revision when its file changes; purge affected CDN URLs on rollback
+   or when reusing an existing revision.
 4. In the Python virtual environment, install changed requirements with
    `python -m pip install -r requirements.txt`, then run
    `python -m scripts.serve_shared`. For Docker, use `docker compose up -d --build`.
@@ -132,6 +134,46 @@ Require HTTPS/WSS outside loopback. Keep `/admin`, its subpaths, `/docs`, `/redo
 and `/openapi.json` private for HTTP and WS upgrades. The shared runner exposes
 only the restricted listener on port 8001; Docker's port 8000 includes admin routes
 and needs proxy restrictions.
+
+### Public asset transfers
+
+Backend 0.9.1 compresses bundled `/static/` files with gzip when supported and
+returns `Cache-Control: public, max-age=3600, must-revalidate` for successful and
+conditional asset responses. Browsers and CDNs may reuse these public files for
+one hour; existing ETag/Last-Modified validators support revalidation. The URLs
+are not immutable: unversioned and old query revisions still resolve to the
+current files. Deploy templates and files together, update every affected query
+revision, and retain query strings in the CDN cache key. Purge affected cached
+URLs on rollback or when replacing files under an already-used revision.
+
+Scope CDN cache eligibility to public assets and GET/HEAD requests. A
+hostname-wide cache-bypass rule must exclude those requests; for Cloudflare,
+the bypass expression can be:
+
+```text
+(http.host eq "chat.example.com") and not
+(starts_with(http.request.uri.path, "/static/") and http.request.method in {"GET" "HEAD"})
+```
+
+Respect origin cache headers; never force caching for `/client`, `/l/`, API/admin
+responses, redirects or errors. Those responses remain `no-store`. Only bundled
+public files receive application gzip compression; do not extend it to responses
+containing credentials or user content.
+
+Successful static responses send `X-Accel-Buffering: yes` so Nginx can buffer
+asset downloads even if the general proxy disables buffering. Keep this header
+enabled for public files; no WebSocket or private-response buffering policy is
+changed. Nginx needs no reload for this response-header override unless its
+configuration explicitly ignores `X-Accel-Buffering`. See the
+[Nginx buffering reference](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_buffering)
+and [Cloudflare cache rules](https://developers.cloudflare.com/cache/how-to/cache-rules/).
+
+After deployment, verify gzip content matches the release, a repeated asset
+request reports a CDN cache hit, and client/invite/API responses remain uncached.
+Compare first-byte and complete-download times; local tests do not establish
+production network performance.
+
+### Proxy trust and resource limits
 
 Trust only actual proxy IPs: `SIDEWORD_TRUSTED_PROXY_IPS` for the shared runner,
 `FORWARDED_ALLOW_IPS` for standalone Uvicorn/Docker. Never use `*`. Container peers

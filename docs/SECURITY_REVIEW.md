@@ -1,6 +1,6 @@
 # Security review
 
-Current code: 0.9.0. Client UI, sender/reader labels, P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
+Current code: 0.9.1. Static asset transport/cache boundaries, client UI, sender/reader labels, P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
 This is a source review with regression tests, not an independent audit.
 Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 
@@ -156,6 +156,24 @@ permanently lose keys/history. A future ratchet does not protect retained plaint
 on a compromised device. CSP blocks inline/third-party scripts, framing and
 cross-origin connections; content uses `textContent`. Non-static responses use
 no-store/no-referrer headers.
+
+Successful bundled static files may be publicly cached for one hour and are
+compressed independently of private application responses. Static redirects,
+errors, invite HTML, authenticated API data and admin responses retain no-store;
+the application does not apply gzip to private responses. Asset buffering is
+requested through `X-Accel-Buffering: yes` only for successful static responses.
+CDN operators must exclude GET/HEAD public assets from blanket bypass rules while
+respecting origin cache headers and retaining query revisions in cache keys; see
+[asset deployment controls](UPGRADING.md#public-asset-transfers). Cache purges or
+new query revisions are required when replacing previously cached code. An
+origin/CDN compromise can still replace executable client code.
+`tests/test_static_delivery.py` covers compression round trips and transfer size,
+cache scope, conditional validation, HEAD/range behavior and uncached errors and
+private responses. Local coverage does not prove production CDN configuration or
+network speed.
+Verification for 0.9.1 on 2026-10-07 passed all 251 isolated Python tests,
+including 22 static transport cases, and all 167 JavaScript tests. No production
+cache rule was changed and no rollout or browser performance evidence was obtained.
 
 Opening a different invite pauses the old chat in that tab until explicit
 activation; other tabs continue. Keys, encrypted history and pending sends remain.
