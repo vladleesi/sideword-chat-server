@@ -140,7 +140,7 @@
         </article>
         <article>
           <p class="number">02 / REAL TIME</p>
-          <div><h3>WebSocket relay</h3><p>Deliver queued encrypted messages and read receipts over WebSocket, with optional ephemeral participant presence in a shared process. HTTP polling provides the same message delivery flow.</p></div>
+          <div><h3>WebSocket relay</h3><p>Deliver queued encrypted messages with separate durable delivery and viewing confirmations over WebSocket, with optional ephemeral participant presence in a shared process. HTTP polling provides the same message delivery flow.</p></div>
         </article>
         <article>
           <p class="number">03 / TRANSPORT</p>
@@ -156,7 +156,7 @@
         </article>
         <article>
           <p class="number">06 / RETENTION</p>
-          <div><h3>A queue, not an archive</h3><p>ACK, read, or message TTL removes queued ciphertext. Bounded retry metadata prevents duplicate sends. Clients retain local history; room metadata persists separately.</p></div>
+          <div><h3>A queue, not an archive</h3><p>ACK, read, or message TTL removes queued ciphertext. Bounded retry and per-recipient confirmation metadata supports idempotent sends and sender-only status recovery. Clients retain local history; room metadata persists separately.</p></div>
         </article>
       </div>
     </section>

@@ -74,6 +74,16 @@ async def init_db() -> None:
             await conn.execute(text(
                 f"CREATE UNIQUE INDEX IF NOT EXISTS ix_{table}_delivery_id ON {table}(delivery_id)"
             ))
+        columns = await conn.execute(text("PRAGMA table_info(read_receipts)"))
+        if "message_delivery_id" not in {row[1] for row in columns}:
+            await conn.execute(text(
+                "ALTER TABLE read_receipts ADD COLUMN message_delivery_id VARCHAR(32)"
+            ))
+        columns = await conn.execute(text("PRAGMA table_info(send_records)"))
+        if "receipt_state_json" not in {row[1] for row in columns}:
+            await conn.execute(text(
+                "ALTER TABLE send_records ADD COLUMN receipt_state_json TEXT NOT NULL DEFAULT '{}'"
+            ))
         # Lightweight in-place migration for installations created before
         # invite revocation was tied to client sessions. Existing inactive
         # links are treated as revoked once, which safely invalidates legacy

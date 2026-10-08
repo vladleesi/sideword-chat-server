@@ -39,7 +39,11 @@ async def _purge_once() -> None:
             delete(ReadReceipt).where(ReadReceipt.created_at < cutoff)
         )
         now = datetime.now(timezone.utc)
-        await session.execute(delete(SendRecord).where(SendRecord.expires_at <= now))
+        # Read authorization outlives ciphertext deletion, but never exceeds the
+        # larger of the configured retry window and message retention period.
+        await session.execute(delete(SendRecord).where(
+            SendRecord.expires_at <= now, SendRecord.created_at < cutoff
+        ))
         await session.execute(delete(RefreshUse).where(RefreshUse.session_id.in_(
             select(ClientSession.id).where(ClientSession.expires_at <= now))))
         for model in (ClientSession, AdminSession, LoginLimit):

@@ -156,7 +156,9 @@ identity. `/client` requires HTTPS or localhost; keys and history
 stay in the browser. **Reset device** or clearing site data can permanently lose
 access. Do not reset to dismiss key or storage errors.
 Participant presence updates over WebSocket; unavailable status is shown as
-unknown. See [presence semantics](docs/API.md#participant-presence).
+unknown. Outgoing messages show delivery/read indicators and per-recipient details.
+See [presence semantics](docs/API.md#participant-presence) and
+[confirmation semantics](docs/API.md#durable-delivery-and-actual-viewing).
 
 Rooms from before the P-256 update (0.6.0) require fresh invites and identities;
 see [upgrade guidance](docs/UPGRADING.md#compatibility-notes). This is a reference

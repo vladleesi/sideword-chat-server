@@ -12,6 +12,7 @@ function client(shared = {}) {
   vm.runInContext(fs.readFileSync('app/static/client-protocol.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('app/static/client.js', 'utf8')
     .replace(/start\(\)\.catch[^\n]+/, ''), context);
+  vm.runInContext('renderMessages = () => {};', context);
   return code => vm.runInContext(code, context);
 }
 
@@ -205,6 +206,7 @@ test('saved-device restoration keeps activation hidden during slow key and histo
     readIdentity = () => new Promise(resolve => { globalThis.finishIdentity = resolve; });
     globalThis.historyEntered = new Promise(resolve => { globalThis.enterHistory = resolve; });
     loadStoredHistory = () => {
+      if (globalThis.finishHistory) return Promise.resolve();
       enterHistory();
       return new Promise(resolve => { globalThis.finishHistory = resolve; });
     };
@@ -343,6 +345,7 @@ for (const failed of [false, true]) {
       deviceLock = async (_, action) => action();
       readHistoryRecords = async () => [];
       persistOutbox = async () => events.push('saved');
+      storeOutgoing = async () => {};
       flushOutbox = async () => { events.push('upload'); ${failed ? "throw new Error('offline');" : ''} };
       renderOutbox = async () => events.push('render');
       showToast = () => events.push('error');
@@ -363,24 +366,24 @@ test('encrypted outbox survives upload response loss and history-save failure', 
     deviceLock = async (_, action) => action();
     globalThis.records = new Map();
     putDatabaseValue = async (key, value) => records.set(key, value);
-    readHistoryRecords = async () => [...records].map(([key, value]) => ({ key, value }));
+    readHistoryRecords = async () => [...records].filter(([key]) => key.startsWith('outbox:')).map(([key, value]) => ({ key, value }));
     removeOutbox = async key => records.delete(key);
     globalThis.requests = [];
     api = async (_, options) => { requests.push(options.body); throw new Error('response lost'); };
     await persistOutbox({ chatId: 7, messageId: 'stable', envelopes: [{ciphertext:'already encrypted'}],
-      plaintext: 'private plaintext', expiresAt: Date.now() + 60000 });
+      plaintext: 'private plaintext', createdAt: Date.now(), expiresAt: Date.now() + 60000 });
   })()`);
   assert.equal(run('JSON.stringify([...records]).includes("private plaintext")'), false);
   await assert.rejects(run('flushOutbox()'), /response lost/);
-  assert.equal(run('records.size'), 1);
+  assert.equal(run('[...records.keys()].filter(key => key.startsWith("outbox:")).length'), 1);
   await run(`api = async (_, options) => { requests.push(options.body); return {created_at:'2026-09-27T00:00:00Z'}; };
     persistHistoryEntry = async () => { throw new Error('disk full'); };`);
   await assert.rejects(run('flushOutbox()'), /disk full/);
-  assert.equal(run('records.size'), 1);
+  assert.equal(run('[...records.keys()].filter(key => key.startsWith("outbox:")).length'), 1);
   await run('persistHistoryEntry = async () => {}; flushOutbox()');
-  assert.equal(run('records.size'), 0);
+  assert.equal(run('[...records.keys()].filter(key => key.startsWith("outbox:")).length'), 0);
   assert.equal(run('new Set(requests).size'), 1);
-  assert.equal(run('messagesByChat.get(7).length'), 1);
+  assert.equal(run('messagesByChat.get(7).filter(e => e.kind === "mine").length'), 1);
 });
 
 test('expired outgoing records stay saved without unsafe retransmission', async () => {
@@ -393,7 +396,7 @@ test('expired outgoing records stay saved without unsafe retransmission', async 
     putDatabaseValue = async (key, value) => { record = {key,value}; };
     readHistoryRecords = async () => [record];
     api = async () => { throw new Error('must not upload'); };
-    await persistOutbox({chatId:7,messageId:'old',expiresAt:0});
+    await persistOutbox({chatId:7,messageId:'old',expiresAt:0,createdAt:1,envelopes:[],plaintext:'old'});
   })()`);
   await assert.rejects(run('flushOutbox()'), /retry expired/);
   assert.equal(run('record !== null'), true);

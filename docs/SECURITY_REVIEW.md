@@ -1,6 +1,6 @@
 # Security review
 
-Current code: 0.7.0. Client UI, sender/reader labels, P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
+Current code: 0.9.0. Client UI, sender/reader labels, P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
 This is a source review with regression tests, not an independent audit.
 Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 
@@ -9,7 +9,7 @@ Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 | Area | Implemented behavior |
 | --- | --- |
 | Invite admission | Body-only `POST /api/v1/links/activate` keeps the invite secret in the JSON body; the bundled client uses it. Activation requires HTTPS or local loopback, independently of the global TLS toggle. Invalid supplied bearer authentication returns 401 without anonymous admission; malformed resume/session credentials are rejected before the SQLite write reservation. Slot allocation and password throttling remain transactional. |
-| Delivery | Exact acknowledgements cannot delete a newer delivery after SQLite row-ID reuse. Read deletion and receipt creation commit together. Identical uploads reuse the original result within a bounded retry window. |
+| Delivery | Exact acknowledgements cannot delete a newer delivery after SQLite row-ID reuse. Durable delivery and actual viewing are distinct, bound to original recipients and delivery IDs; legacy read deletion and receipt creation still commit together. Identical uploads reuse the original result within a bounded retry window. |
 | Administration | Signed, cookie-bound form tokens prevent cross-site request forgery (CSRF). Login limits persist across processes/restarts. Logout and password resets revoke registered sessions; concurrent old-password logins cannot escape a reset. |
 | Client sessions | Short access tokens, hashed refresh credentials, rotation/replay detection, per-device revocation and explicit legacy cutoff controls. Issuance rechecks user/invite validity under the database write reservation. |
 | Transport and capacity | HTTPS/WSS outside loopback, private administration by default, bounded HTTP/WS traffic and database queues. Shared runner/Docker suppress raw access and WS INFO logs. |
@@ -120,14 +120,23 @@ cause temporary lockouts.
 
 ## Delivery, local storage and retention
 
-Authenticate/decrypt and persist local history before ACK/read deletion.
+Authenticate/decrypt and persist encrypted local history before durable ACK deletion.
+Actual viewing requires the active, focused, visible conversation and message
+viewport dwell; background persistence does not count as reading. Confirmations
+are authenticated recipient assertions and cannot prove human attention.
+[The API contract](API.md#durable-delivery-and-actual-viewing) defines the rule,
+original recipient binding, encrypted migration and idempotent recovery.
 Storage or key-check failures keep deliveries retryable. Exact references bind
 a random delivery ID, chat, sender/reader and client message ID. Deduplicate by
 logical identities, not SQLite row IDs; treat naive timestamps as UTC.
 
 The send ledger retains hashes, routing metadata and timestamps, not message
-plaintext or ciphertext. It survives read/ACK/outbox deletion for the configured
-retry window (default 30 days). Conflicting retries return 409. Pre-upgrade queued
+plaintext or ciphertext. It includes original recipient delivery IDs and first
+delivery/viewing times, survives ACK/outbox deletion until the later of original
+retry expiry and message TTL (each defaults to 30 days), and retains the existing
+ledger quota. Ciphertext never waits for viewing. Confirmation queues remain
+bounded; overflow commits the ledger state for sender-only status recovery.
+Status queries and queued/live receipt exposure require current sender membership. Conflicting retries return 409. Pre-upgrade queued
 rows without ledger evidence reject matching IDs; already deleted older messages
 and evidence missing from backups have no retry guarantee. Do not automatically
 resend beyond a saved retry window. Legacy ACK/read matching remains ambiguous
@@ -229,6 +238,36 @@ Review upgrade/rollback before rollout: never reset ratchet state or reuse keys.
 Old messages gain no retroactive forward secrecy.
 
 ## Latest verification record
+
+- **Message confirmations, 2026-10-07:** implementation separates durable delivery
+  and visibility-based viewing, retains original recipient identities and stores
+  immutable receipt metadata encrypted in browser history. Focused regressions
+  cover partial groups, identity matching, concurrent acknowledgements, legacy
+  semantics, expiry, queue pressure, authorization, WS/poll recovery, encrypted
+  reload/tab merges and accessible desktop/mobile message details. Prior full local
+  validation passed 226 isolated Python and 150 JavaScript cases, Ruff, compilation,
+  client/form syntax, whitespace and release-note checks. New encrypted metadata
+  uses hashed event keys so recipient bindings stay inside encrypted values.
+  Mixed-version client regressions passed for fresh capability negotiation,
+  deletion-only durable ACKs, retained viewing intents and rejection of implicit
+  legacy-read fallback. Orange double checks now require at least one actual read
+  confirmation; group labels expose the read count and recovery continues for
+  remaining original recipients. Follow-up regressions passed for a single
+  confirmed reader with other recipients pending, continued group status recovery
+  and legacy automatic-read rejection. The unchanged backend verification remains
+  applicable.
+  The messaging layout keeps technical IDs out of ordinary message headers and
+  uses bubble visibility, rather than header visibility, for the viewing dwell.
+  Timestamp formatting changes only presentation, preserving UTC history order.
+  Messaging UI regressions passed 12 Python template and 167 JavaScript cases,
+  Ruff, client syntax, whitespace and release-note checks. They cover merged SVG
+  state transitions, compact staggered checks, matching metadata text sizes, sender
+  grouping, short/multiline/long content preservation, final-line status space,
+  local timezone/locale formatting, viewport placement, mobile keyboard access,
+  backdrop/Escape closure and focus restoration. Bubble layout uses shared theme
+  rules and preserves the status control's focus/click behavior and hit area.
+  Browser rendering and real assistive-technology behavior remain unverified;
+  no browser was used.
 
 - **Client redesign, 2026-10-07:** non-browser regressions cover full participant
   values/copying, duplicate names, local-pin terminology, visible changed-key

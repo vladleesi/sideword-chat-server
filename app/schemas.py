@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -78,6 +78,7 @@ class MeResponse(BaseModel):
     access_expires_at: datetime | None = None
     server_time: datetime | None = None
     send_retry_window_seconds: int = 0
+    receipt_retention_seconds: int = 0
     session_expires_at: datetime | None = None
 
 
@@ -112,6 +113,7 @@ class TimestampedPayload(BaseModel):
 class SendMessageResponse(TimestampedPayload):
     client_message_id: str
     recipients: list[str]
+    deliveries: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
 
 
@@ -131,12 +133,15 @@ class IncomingReadReceipt(TimestampedPayload):
     client_message_id: str
     chat_id: int
     reader_public_id: str
+    message_delivery_id: str | None = None
+    view_confirmed: bool = False
     created_at: datetime
 
 
 class PollResponse(BaseModel):
     messages: list[IncomingMessage]
     read_receipts: list[IncomingReadReceipt]
+    delivery_receipts: list[IncomingReadReceipt] = Field(default_factory=list)
 
 
 class AckRequest(BaseModel):
@@ -171,12 +176,38 @@ class ExactAckRequest(BaseModel):
 
     messages: list[MessageReference] = Field(default_factory=list, max_length=100)
     receipts: list[ReceiptReference] = Field(default_factory=list, max_length=100)
+    confirm_delivery: bool = False
 
 
 class ExactMarkReadRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     messages: list[MessageReference] = Field(..., min_length=1, max_length=100)
+    viewed: bool = False
+
+
+class MessageStatusRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    client_message_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
+        min_length=1, max_length=100
+    )
+
+
+class RecipientDeliveryStatus(BaseModel):
+    public_id: str
+    delivery_id: str | None = None
+    delivered_at: datetime | None = None
+    read_at: datetime | None = None
+
+
+class MessageDeliveryStatus(TimestampedPayload):
+    client_message_id: str
+    recipients: list[RecipientDeliveryStatus]
+
+
+class MessageStatusResponse(BaseModel):
+    statuses: list[MessageDeliveryStatus]
 
 
 # ---------- admin API ----------

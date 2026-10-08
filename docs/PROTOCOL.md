@@ -121,11 +121,14 @@ it does not change message envelopes, receipts, key checks or delivery ACKs.
 See the [presence contract](API.md#participant-presence) for opt-in authentication,
 heartbeat deadlines, membership scoping and mandatory unknown/expiry behavior.
 
-Authenticate, decrypt, and commit local history before issuing either `/read/exact`
-or `/ack/exact`; both can delete queued ciphertext. Failed decryption, pin checks, or
+Authenticate, decrypt, and commit local history before `/ack/exact` with
+`confirm_delivery:true`, which removes ciphertext and confirms durable delivery.
+Use `/read/exact` with `viewed:true` only after actual viewing; it never requires
+retained ciphertext. See [delivery and viewing](API.md#durable-delivery-and-actual-viewing)
+for visibility, authorization and backward compatibility. Failed decryption, pin checks, or
 storage must leave messages retryable. Serialize incoming processing across WS
 and polling. Deduplicate messages by chat, sender public ID, and client message
-ID, and receipts by chat, reader public ID, and client message ID. SQLite row IDs
+ID; receipt identities also include the original message delivery ID and stage. SQLite row IDs
 are not durable message identities. Treat naive database timestamps as UTC.
 
 Use the [exact delivery endpoints](API.md#exact-delivery-identities), binding
@@ -133,8 +136,12 @@ Use the [exact delivery endpoints](API.md#exact-delivery-identities), binding
 delivery identity is relay metadata, outside the v1 ciphertext and HKDF context.
 It identifies one queued row and survives a full database backup/restore. Batch
 at most 100 references per list; retain failed batches for retry. A zero count
-is a successful no-op when the referenced delivery no longer exists. Exact read
-consumes a row and creates its receipt atomically, including concurrent requests.
+is a successful no-op when the referenced delivery no longer exists. Legacy exact read
+consumes a row and creates its receipt atomically. Distinct delivery/viewing
+confirmations update the bounded ledger atomically and are idempotent across
+concurrent requests. Store acceptance, per-recipient receipts, viewing intent and
+ACK markers as encrypted history metadata, not timeline messages. Legacy receipt
+entries remain available as hidden delivery evidence; they cannot confirm viewing.
 
 The legacy `/ack` takes row IDs and `/read` takes client message IDs. Delayed
 ACKs can race row-ID reuse, and colliding client message IDs from different group

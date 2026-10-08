@@ -1,134 +1,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const vm = require('node:vm');
-const { webcrypto } = require('node:crypto');
 
-// A DOM adapter tests state transitions without browser access.
-function client({ mobile = false, clipboardBlocked = false, viewportAware = false,
-  navigationState = null } = {}) {
-  const nodes = new Map();
-  let document;
-  class Node {
-    constructor(tag = 'div') {
-      this.tagName = tag;
-      this.children = [];
-      this.events = new Map();
-      this.attributes = new Map();
-      this.dataset = {};
-      this.style = {};
-      this.hidden = false;
-      this.scrollTop = 0;
-      this.clientHeight = 100;
-      this.classList = { toggle: (name, value) => this.attributes.set(name, value) };
-    }
-    get firstChild() { return this.children[0]; }
-    get scrollHeight() { return this.children.length * 100; }
-    get textContent() { return this.text || this.children.map(node => node.textContent).join(''); }
-    set textContent(value) { this.text = value; this.replaceChildren(); }
-    addEventListener(name, handler) { this.events.set(name, handler); }
-    emit(name, event = {}) { return this.events.get(name)?.(event); }
-    setAttribute(name, value) {
-      this.attributes.set(name, value);
-      if (name === 'data-mobile-view') this.dataset.mobileView = value;
-    }
-    append(...nodes) { for (const node of nodes) this.insertBefore(node, null); }
-    replaceChildren(...nodes) {
-      for (const child of [...this.children]) child.remove();
-      this.append(...nodes);
-    }
-    insertBefore(node, reference) {
-      node.remove();
-      this.children.splice(reference ? this.children.indexOf(reference) : this.children.length, 0, node);
-      node.parent = this;
-    }
-    remove() {
-      if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1);
-      this.parent = null;
-    }
-    focus(options) { document.activeElement = this; this.focusOptions = options; }
-    querySelector(selector) {
-      for (const child of this.children) {
-        if (selector === '.active' && child.className?.split(' ').includes('active')) return child;
-        const match = child.querySelector(selector);
-        if (match) return match;
-      }
-      return null;
-    }
-    showModal() { this.open = true; }
-    close() { this.open = false; this.emit('close'); }
-    requestSubmit(button) { this.submittedWith = button; }
-  }
-  document = {
-    querySelector(selector) {
-      if (!nodes.has(selector)) nodes.set(selector, new Node());
-      return nodes.get(selector);
-    },
-    createElement: tag => new Node(tag), addEventListener() {},
-    createRange: () => ({ selectNodeContents(node) { this.value = node.textContent; } }),
-  };
-  const timers = [];
-  const copied = [];
-  const selection = { removeAllRanges() {}, addRange(range) { this.value = range.value; } };
-  const confirmations = [];
-  const viewportEvents = new Map();
-  const properties = new Map();
-  document.documentElement = { style: { setProperty: (key, value) => properties.set(key, value) } };
-  const window = {
-    addEventListener() {}, matchMedia: () => ({ matches: mobile }),
-    setTimeout: handler => { timers.push(handler); },
-    clearTimeout() {},
-    setInterval() {}, clearInterval() {},
-    getSelection: () => selection,
-    confirm: message => { confirmations.push(message); return false; },
-    location: { assign: path => { window.destination = path; } },
-    visualViewport: { height: 800, scale: 1,
-      addEventListener: (event, handler) => viewportEvents.set(event, handler) },
-  };
-  let resizeMessages;
-  const history = { state: navigationState,
-    replaceState(state) { this.state = structuredClone(state); },
-  };
-  const context = vm.createContext({ TextEncoder, TextDecoder, DOMException,
-    performance: { now: () => window.now || 0 },
-    crypto: webcrypto, atob, btoa, document, window, history,
-    ResizeObserver: class {
-      constructor(handler) { resizeMessages = handler; }
-      observe() {}
-    },
-    navigator: { clipboard: { writeText: async value => {
-      if (clipboardBlocked) throw new Error('denied');
-      copied.push(value);
-    } } },
-  });
-  vm.runInContext(fs.readFileSync('app/static/client-protocol.js', 'utf8'), context);
-  vm.runInContext(fs.readFileSync('app/static/client.js', 'utf8')
-    .replace(/start\(\)\.catch[^\n]+/, ''), context);
-  const run = code => vm.runInContext(code, context);
-  if (viewportAware) {
-    const list = nodes.get('#message-list');
-    const panel = nodes.get('#client-panel');
-    let top = 0, height = 100;
-    const visible = () => !panel.hidden && (!mobile || panel.dataset.mobileView === 'conversation');
-    Object.defineProperties(list, {
-      clientHeight: { get: () => visible() ? height : 0, set: value => { height = value; } },
-      scrollHeight: { get: () => visible() ? list.children.length * 100 : 0 },
-      scrollTop: { get: () => visible() ? top : 0,
-        set: value => { top = Math.max(0, Math.min(value, list.scrollHeight - list.clientHeight)); } },
-    });
-  }
-  run(`identity = { publicId: 'me', token: 'not-for-display', privateKey: 'never-display',
-    refreshCredential: 'never-display-refresh' };
-    chats = [{ id: 7, title: '<script>chat</script>', chat_type: 'group', participants: [
-      { public_id: 'me', display_name: 'Alex', local_fingerprint: '01:'.repeat(31) + '01' },
-      { public_id: 'peer-a', display_name: 'Alex', local_fingerprint: 'ab:'.repeat(31) + 'cd' },
-      { public_id: 'peer-b', display_name: '<b>Alex</b>' },
-    ] }];
-    elements.clientPanel.dataset.mobileView = 'chats';
-    selectChat(7);`);
-  return { run, nodes, document, window, timers, copied, selection, confirmations,
-    resizeMessages, viewportEvents, properties, history };
-}
+const { client } = require('./client_dom.cjs');
 
 test('mobile opening and reopening a preselected chat lands on latest messages without observer timing', async () => {
   const app = client({ mobile: true, viewportAware: true });
@@ -151,7 +25,7 @@ test('mobile opening and reopening a preselected chat lands on latest messages w
   await app.run("appendMessage(7, { id: 'new', kind: 'theirs', text: 'latest', createdAt: 7 }, false)");
   app.nodes.get('#chat-list').children[0].children[0].emit('click');
   assert.equal(list.scrollTop, 600);
-  assert.equal(list.children[6].children[0].textContent, 'latest');
+  assert.equal(list.children[6].messageContent.textContent, 'latest');
   assert.equal(list.children[0], original[0]);
   list.scrollTop = 100;
   list.emit('scroll');
@@ -208,7 +82,7 @@ test('mobile startup restores a selected chat other than the last invite using e
   const list = app.nodes.get('#message-list');
   assert.equal(list.children.length, 6);
   assert.equal(list.scrollTop, 500);
-  assert.equal(list.children[5].children[0].textContent, 'selected 5');
+  assert.equal(list.children[5].messageContent.textContent, 'selected 5');
   assert.equal(app.run('pendingReadsByChat.size'), 0);
 });
 
@@ -637,3 +511,135 @@ test('device reset keeps its original confirmation and acts only after acceptanc
   assert.equal(app.run('cleared'), true);
   assert.equal(app.window.destination, '/client');
 });
+
+for (const mobile of [false, true]) {
+  test(`compact ${mobile ? 'mobile' : 'desktop'} messages preserve short, multiline and long content with metadata outside bubbles`, async () => {
+    const app = client({mobile});
+    if (mobile) app.nodes.get('#chat-list').children[0].children[0].emit('click');
+    const texts = ['Hi', 'First line\nSecond line', 'longword'.repeat(100) + '\n' + 'word '.repeat(100)];
+    const entries = texts.flatMap((text, index) => ['theirs', 'mine'].map((kind, side) => ({
+      id: `${kind}:layout-${index}`, kind, text, senderPublicId: kind === 'mine' ? 'me' : 'peer-b',
+      createdAt: Date.UTC(2026,9,7,12) + index * 60000 + side * 10000,
+    })));
+    await app.run(`persistHistoryEntry = async () => {};
+      messagesByChat.set(7, ${JSON.stringify(entries)}); renderMessages();`);
+    const rows = app.nodes.get('#message-list').children;
+    assert.equal(rows.length, entries.length);
+    for (const [index, row] of rows.entries()) {
+      const outgoing = entries[index].kind === 'mine';
+      assert.deepEqual(row.children, [row.messageHeader, row.messageBubble]);
+      assert.deepEqual(row.messageHeader.children, [row.messageHeader.sender, row.messageHeader.dot, row.messageHeader.timestamp]);
+      assert.equal(row.messageHeader.timestamp.tagName, 'time');
+      assert.equal(row.messageHeader.dot.textContent, '·');
+      assert.doesNotMatch(row.textContent, /peer-b|public_id|layout-/);
+      assert.equal(row.messageContent.textContent, entries[index].text);
+      assert.equal(row.messageContent.children.length, 0);
+      assert.equal(row.messageHeader.sender.children.length, 0);
+      assert.equal(row.messageHeader.sender.textContent, outgoing ? 'Alex' : '<b>Alex</b>');
+      assert.ok(row.className.split(' ').includes(entries[index].kind));
+      if (outgoing) {
+        assert.deepEqual(row.messageBubble.children, [row.messageContent, row.messageFooter]);
+        assert.equal(row.messageFooter.indicator.parent, row.messageFooter);
+        row.messageFooter.indicator.emit('click', {stopPropagation(){}});
+        assert.equal(app.nodes.get('#message-details').open, true);
+        app.nodes.get('#message-details').close();
+        assert.equal(app.document.activeElement, row.messageFooter.indicator);
+      } else {
+        assert.deepEqual(row.messageBubble.children, [row.messageContent]);
+        assert.equal(row.messageFooter, undefined);
+      }
+    }
+  });
+}
+
+test('consecutive sender grouping respects identity, elapsed time, and intervening messages', async () => {
+  const app = client();
+  await app.run(`persistHistoryEntry=async()=>{};
+    globalThis.base=Date.UTC(2026,9,7,12);
+    messagesByChat.set(7,[
+      {id:'a',kind:'theirs',senderPublicId:'peer-a',text:'first',createdAt:base},
+      {id:'b',kind:'theirs',senderPublicId:'peer-a',text:'same minute',createdAt:base+10000},
+      {id:'c',kind:'theirs',senderPublicId:'peer-a',text:'next minute',createdAt:base+60000},
+      {id:'d',kind:'mine',text:'same name, other identity',createdAt:base+70000},
+      {id:'e',kind:'theirs',senderPublicId:'peer-a',text:'interrupted',createdAt:base+80000},
+      {id:'f',kind:'theirs',senderPublicId:'peer-a',text:'later',createdAt:base+400000},
+      {id:'g',kind:'theirs',text:'unknown identity',createdAt:base+410000},
+      {id:'h',kind:'theirs',text:'also unknown',createdAt:base+420000}
+    ]); renderMessages();`);
+  const rows=app.nodes.get('#message-list').children;
+  assert.equal(rows[1].messageHeader.hidden, true);
+  assert.match(rows[1].className, /continuation/);
+  assert.equal(rows[2].messageHeader.hidden, false);
+  assert.equal(rows[2].messageHeader.sender.hidden, true);
+  assert.equal(rows[2].messageHeader.dot.hidden, true);
+  for (const index of [0,3,4,5,6,7]) {
+    assert.doesNotMatch(rows[index].className, /continuation/);
+    assert.equal(rows[index].messageHeader.sender.hidden, false);
+  }
+  assert.equal(rows[6].messageHeader.sender.textContent, 'Participant');
+});
+
+test('late messages recompute adjacent groups without replacing selected content or changing UTC order', async () => {
+  const app=client();
+  await app.run(`persistHistoryEntry=async()=>{};globalThis.base=Date.UTC(2026,9,7,12);
+    messagesByChat.set(7,[
+      {id:'a',kind:'theirs',senderPublicId:'peer-a',text:'first',createdAt:base},
+      {id:'c',kind:'theirs',senderPublicId:'peer-a',text:'third',createdAt:base+20000}
+    ]);renderMessages();`);
+  const list=app.nodes.get('#message-list');
+  const original=list.children[1]; const content=original.messageContent;
+  assert.equal(original.messageHeader.hidden,true);
+  await app.run(`appendMessage(7,{id:'b',kind:'theirs',senderPublicId:'peer-b',text:'late second',createdAt:base+10000},false)`);
+  assert.deepEqual(list.children.map(row=>row.messageContent.textContent),['first','late second','third']);
+  assert.equal(list.children[2],original);
+  assert.equal(original.messageContent,content);
+  assert.equal(original.messageHeader.hidden,false);
+  assert.equal(original.messageHeader.sender.hidden,false);
+});
+
+test('unnamed and legacy participants keep readable names and hide routing identifiers in the timeline', async () => {
+  const app=client();
+  await app.run(`persistHistoryEntry=async()=>{};
+    chats[0].participants[1].display_name=null;
+    messagesByChat.set(7,[
+      {id:'incoming:'+JSON.stringify([7,'peer-a','old']),kind:'theirs',text:'unnamed',meta:'From peer-a',createdAt:1000},
+      {id:'incoming:'+JSON.stringify([7,'former-id','old']),kind:'theirs',text:'saved',meta:'From Former Name (former-id)',createdAt:2000},
+      {id:'outgoing:old',kind:'mine',senderPublicId:'former-me',text:'saved reply',meta:'Sent by Former Me',createdAt:3000}
+    ]); renderMessages();`);
+  const rows=app.nodes.get('#message-list').children;
+  assert.deepEqual(rows.map(row=>row.messageHeader.sender.textContent),['Participant','Former Name','Former Me']);
+  assert.doesNotMatch(rows.map(row=>row.textContent).join(''), /peer-a|former-id|former-me/);
+  app.run(`chats[0].participants[0].display_name=' '; messagesByChat.set(7,[{id:'outgoing:empty',kind:'mine',text:'no name',createdAt:4000}]);renderMessages();`);
+  assert.equal(app.nodes.get('#message-list').firstChild.messageHeader.sender.textContent,'You');
+});
+
+for (const [locale,timeZone] of [['en-US','America/Los_Angeles'],['de-DE','Europe/Berlin']]) {
+  test(`message headers use browser ${locale} local time and preserve legacy UTC timestamps`, async () => {
+    const app=client({locale,timeZone});
+    await app.run(`persistHistoryEntry=async()=>{};
+      messagesByChat.set(7,[{id:'utc',kind:'theirs',senderPublicId:'peer-a',text:'UTC instant',createdAt:Date.parse('2026-10-08T00:32:43Z')}]);renderMessages();`);
+    const time=app.nodes.get('#message-list').firstChild.messageHeader.timestamp;
+    const instant=new Date('2026-10-08T00:32:43Z');
+    assert.equal(time.textContent,new Intl.DateTimeFormat(locale,{timeZone,hour:'2-digit',minute:'2-digit'}).format(instant));
+    assert.equal(time.title,new Intl.DateTimeFormat(locale,{timeZone,dateStyle:'short',timeStyle:'medium'}).format(instant));
+    assert.equal(time.dateTime,instant.toISOString());
+    assert.equal(app.run(`serverTimestamp('2026-10-08T00:32:43')`),instant.getTime());
+    for (const iso of ['2026-03-08T09:30:00Z','2026-03-08T10:30:00Z']) {
+      assert.equal(app.run(`displayTimestamp(Date.parse('${iso}'))`),
+        new Intl.DateTimeFormat(locale,{timeZone,hour:'2-digit',minute:'2-digit'}).format(new Date(iso)));
+    }
+    assert.equal(app.run('displayTimestamp(0,true)'), 'Time unavailable');
+  });
+}
+
+for (const [dialogId,buttonId] of [['#conversation-details','#conversation-details-button'],['#device-settings','#device-settings-button']]) {
+  test(`${dialogId} closes on one backdrop click or native Escape and restores focus`, () => {
+    const app=client(); const button=app.nodes.get(buttonId); const dialog=app.nodes.get(dialogId);
+    button.emit('click'); assert.equal(dialog.open,true);
+    dialog.emit('click',{target:dialog,clientX:50,clientY:50}); assert.equal(dialog.open,true);
+    dialog.emit('click',{target:dialog,clientX:200,clientY:50}); assert.equal(dialog.open,false);
+    assert.equal(app.document.activeElement,button);
+    button.emit('click'); dialog.emit('cancel'); assert.equal(dialog.open,false);
+    assert.equal(app.document.activeElement,button);
+  });
+}

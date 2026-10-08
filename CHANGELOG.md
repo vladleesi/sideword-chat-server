@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0 — 2026-10-07
+
+- Replace technical receipt messages with compact sending, sent, delivered, read and failed indicators; show orange double checks once any recipient confirms reading, with accessible per-recipient message details and expandable full identifiers.
+- Use compact, content-sized message bubbles with matching sender/time typography above each group, small overlapping checks beside the final text line, and viewport-aware desktop details or a mobile sheet.
+- Separate durable delivery acknowledgements from visibility-based viewing confirmations, removing ciphertext after encrypted local persistence while preserving retries and original group recipients.
+- Negotiate delivery/viewing support before using new request fields; keep durable deletion acknowledgements compatible with older backends without claiming unsupported confirmations.
+- Retain bounded sender-only confirmation metadata for recovery across polling, WebSockets, reloads and tabs; migrate legacy receipt history without claiming human reading and preserve existing client authentication and encryption.
+
 ## 0.8.0 — 2026-10-07
 
 - Show ephemeral participant presence and online counts in the test client using authenticated, opt-in WebSocket snapshots; handle multiple connections, reconnects, heartbeat expiry, and unknown status when connectivity is unreliable.

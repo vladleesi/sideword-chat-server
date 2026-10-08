@@ -12,8 +12,9 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import SessionLocal
+from ..delivery import queued_receipts
 from ..deps import resolve_client_user
-from ..models import PendingMessage, ReadReceipt, User
+from ..models import PendingMessage, User
 from ..schemas import IncomingMessage, IncomingReadReceipt
 from ..ws_manager import manager
 
@@ -38,7 +39,7 @@ async def _resolve_user(session: AsyncSession, token: str) -> User | None:
 
 async def _backlog_payload(
     session: AsyncSession, user: User
-) -> tuple[list[IncomingMessage], list[IncomingReadReceipt]]:
+) -> tuple[list[IncomingMessage], list[IncomingReadReceipt], list[IncomingReadReceipt]]:
     msg_res = await session.execute(
         select(PendingMessage, User)
         .join(User, User.id == PendingMessage.sender_id)
@@ -58,23 +59,8 @@ async def _backlog_payload(
         for msg, sender in msg_res.all()
     ]
 
-    r_res = await session.execute(
-        select(ReadReceipt)
-        .where(ReadReceipt.sender_id == user.id)
-        .order_by(ReadReceipt.id.asc()).limit(100)
-    )
-    receipts = [
-        IncomingReadReceipt(
-            id=r.id,
-            delivery_id=r.delivery_id,
-            client_message_id=r.client_message_id,
-            chat_id=r.chat_id,
-            reader_public_id=r.reader_public_id,
-            created_at=r.created_at,
-        )
-        for r in r_res.scalars().all()
-    ]
-    return messages, receipts
+    receipts, deliveries = await queued_receipts(session, user.id)
+    return messages, receipts, deliveries
 
 
 @router.websocket("/ws")
@@ -130,7 +116,7 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
             return
 
         try:
-            messages, receipts = await _backlog_payload(session, user)
+            messages, receipts, deliveries = await _backlog_payload(session, user)
 
             # Backlog rows are treated as delivered once streamed down.
             if messages:
@@ -150,6 +136,7 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
                     "backlog": {
                         "messages": [m.model_dump(mode="json") for m in messages],
                         "read_receipts": [r.model_dump(mode="json") for r in receipts],
+                        "delivery_receipts": [r.model_dump(mode="json") for r in deliveries],
                     },
                 }
             )

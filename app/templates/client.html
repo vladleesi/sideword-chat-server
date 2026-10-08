@@ -6,9 +6,9 @@
   <meta name="color-scheme" content="light dark">
   <title>Sideword test client</title>
   <script src="/static/appearance.js?v=1"></script>
-  <link rel="stylesheet" href="/static/client.css?v=10">
+  <link rel="stylesheet" href="/static/client.css?v=15">
   <script src="/static/client-protocol.js?v=3" defer></script>
-  <script src="/static/client.js?v=23" defer></script>
+  <script src="/static/client.js?v=28" defer></script>
 </head>
 <body class="messenger">
   <a class="skip-link" href="#workspace">Skip to workspace</a>
@@ -120,6 +120,23 @@
       <p id="details-copy-status" role="status" hidden></p>
       <div id="details-status" class="toast" role="status" hidden></div>
       <div id="details-error" class="toast error" role="alert" hidden></div>
+    </div>
+  </dialog>
+
+  <dialog id="message-details" class="context-dialog message-details" aria-labelledby="message-details-heading">
+    <div class="dialog-heading">
+      <h2 id="message-details-heading">Message details</h2>
+      <button id="close-message-details" class="button subtle" type="button" autofocus>Close</button>
+    </div>
+    <div class="dialog-content">
+      <p><strong id="message-details-status"></strong> · <time id="message-details-time"></time></p>
+      <div id="message-details-recipients"></div>
+      <p id="message-details-note" class="muted"></p>
+      <details>
+        <summary>Technical details</summary>
+        <dl id="message-details-technical" class="technical-details"></dl>
+        <p id="message-details-copy-status" role="status" hidden></p>
+      </details>
     </div>
   </dialog>
 

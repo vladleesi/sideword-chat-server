@@ -32,6 +32,7 @@ const elements = {
   messageForm: document.querySelector("#message-form"),
   messageInput: document.querySelector("#message-input"),
   messageList: document.querySelector("#message-list"),
+  messageDetails: document.querySelector("#message-details"),
   participantCount: document.querySelector("#participant-count"),
   participantKeys: document.querySelector("#participant-keys"),
   refreshButton: document.querySelector("#refresh-button"),
@@ -60,7 +61,20 @@ const seenReceiptIds = new Set();
 const processingMessageIds = new Set();
 const failedMessageReasons = new Map();
 const pendingReadsByChat = new Map();
+const pendingDeliveries = new Map();
 const pendingReceiptIds = new Map();
+const messageMetadata = new Map();
+const loadedHistoryKeys = new Set();
+const deliveryReferences = new Map();
+const acknowledgedDeliveries = new Set();
+const acknowledgedReads = new Set();
+const outgoingAttempts = new Map();
+const visibleMessageNodes = new Set();
+const viewTimers = new Map();
+let openMessageDetails = null;
+let messageDetailsTrigger = null;
+let statusPollCursor = 0;
+let messageConfirmationsSupported = false;
 const participantNodes = new Map();
 let participantChatId;
 const presenceByChat = new Map();
@@ -72,12 +86,14 @@ elements.messageList.addEventListener("scroll", () => {
   if (!conversationVisible()) return;
   const list = elements.messageList;
   followResizedMessages = list.scrollHeight - list.clientHeight - list.scrollTop <= 32;
+  refreshVisibleReads();
 });
 if (typeof ResizeObserver === "function") {
   const observer = new ResizeObserver(() => {
     if (conversationVisible() && followResizedMessages) {
       elements.messageList.scrollTop = elements.messageList.scrollHeight;
     }
+    refreshVisibleReads();
   });
   observer.observe(elements.messageList);
 }
@@ -85,16 +101,20 @@ if (typeof ResizeObserver === "function") {
 // Dynamic viewport units alone do not account for every mobile keyboard.
 function updateWorkspaceViewport() {
   const viewport = window.visualViewport;
+  positionMessageDetails();
   if (!viewport || viewport.scale !== 1) return;
   document.documentElement.style.setProperty("--visual-viewport-height", `${viewport.height}px`);
 }
 window.visualViewport?.addEventListener("resize", updateWorkspaceViewport);
+window.visualViewport?.addEventListener("scroll", positionMessageDetails);
 updateWorkspaceViewport();
 
 // Native modal dialogs provide focus containment and Escape handling.
 function bindDialog(dialog, openButton, closeButton) {
+  closeOnBackdrop(dialog);
   openButton.addEventListener("click", () => {
     if (!dialog.open) dialog.showModal();
+    refreshVisibleReads();
   });
   closeButton.addEventListener("click", () => dialog.close());
   dialog.addEventListener("close", () => {
@@ -103,10 +123,32 @@ function bindDialog(dialog, openButton, closeButton) {
     target.focus({ preventScroll: true });
   });
 }
+
+function closeOnBackdrop(dialog) {
+  dialog.addEventListener("click", event => {
+    if (event.target !== dialog) return;
+    const rect = dialog.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right
+        || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+  });
+}
 bindDialog(elements.detailsDialog, elements.detailsButton,
   document.querySelector("#close-conversation-details"));
 bindDialog(elements.deviceDialog, document.querySelector("#device-settings-button"),
   document.querySelector("#close-device-settings"));
+document.querySelector("#close-message-details").addEventListener("click", () => elements.messageDetails.close());
+elements.messageDetails.addEventListener("close", () => {
+  openMessageDetails = null;
+  const fallback = elements.messageInput.disabled ? elements.conversationTitle : elements.messageInput;
+  const target = messageDetailsTrigger?.isConnected === false ? fallback : messageDetailsTrigger;
+  target?.focus({ preventScroll: true });
+  messageDetailsTrigger = null;
+  refreshVisibleReads();
+});
+closeOnBackdrop(elements.messageDetails);
+elements.messageDetails.addEventListener("toggle", () => positionMessageDetails(), true);
+elements.detailsDialog.addEventListener("close", refreshVisibleReads);
+elements.deviceDialog.addEventListener("close", refreshVisibleReads);
 
 function mobileWorkspace() {
   return Boolean(window.matchMedia?.("(max-width: 760px)").matches);
@@ -142,6 +184,7 @@ function restoreChatView() {
 
 document.querySelector("#back-to-chats").addEventListener("click", () => {
   elements.clientPanel.dataset.mobileView = "chats";
+  refreshVisibleReads();
   rememberChatView("chats");
   (elements.chatList.querySelector(".active") || elements.refreshButton).focus({ preventScroll: true });
 });
@@ -528,8 +571,10 @@ async function persistHistoryEntry(chatId, entry) {
 
 async function loadStoredHistory() {
   if (!identity?.storageKey || !identity.publicId) return;
+  if (!messagesByChat.size) loadedHistoryKeys.clear();
   const records = await readHistoryRecords();
   for (const record of records) {
+    if (loadedHistoryKeys.has(record.key)) continue;
     try {
       const plaintext = await crypto.subtle.decrypt(
         {
@@ -542,7 +587,8 @@ async function loadStoredHistory() {
       );
       const parts = record.key.split(":");
       const chatId = Number(parts[2]);
-      appendMessage(chatId, JSON.parse(decoder.decode(plaintext)), false);
+      await appendMessage(chatId, JSON.parse(decoder.decode(plaintext)), false);
+      loadedHistoryKeys.add(record.key);
     } catch {
       // Ignore corrupted local records; authenticated decryption prevents use.
     }
@@ -654,6 +700,8 @@ class SessionExpiredError extends ClientError {}
 async function invalidateSession(reason = "Session expired") {
   if (!identity) return;
   clearPresence();
+  messageConfirmationsSupported = false;
+  refreshVisibleReads();
   if (identity.token) identity.suspendedToken = identity.token;
   identity.token = null;
   accessDeadline = null;
@@ -770,15 +818,18 @@ async function decryptMessage(message) {
 }
 
 async function appendMessage(chatId, entry, persist = true) {
+  normalizeHistoryEntry(chatId, entry);
   const entries = messagesByChat.get(chatId) || [];
   if (entry.id && entries.some((candidate) => candidate.id === entry.id)) {
     return Promise.resolve();
   }
   entry.createdAt ||= Date.now();
   if (persist && entry.id) await persistHistoryEntry(chatId, entry);
+  if (persist && entry.id && identity?.publicId) loadedHistoryKeys.add(historyKey(chatId, entry.id));
   entries.push(entry);
   entries.sort(compareHistoryEntries);
   messagesByChat.set(chatId, entries);
+  indexMessageMetadata(chatId, entry);
   if (selectedChatId === chatId) renderMessages();
 }
 
@@ -789,6 +840,138 @@ function serverTimestamp(value) {
 
 function messageKey(message) {
   return `incoming:${JSON.stringify([message.chat_id, message.sender_public_id, message.client_message_id])}`;
+}
+
+function metadataKey(chatId, messageId) {
+  return JSON.stringify([chatId, messageId]);
+}
+
+async function messageEventId(kind, fields) {
+  // Keep recipient metadata inside encrypted values, not plaintext database keys.
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(JSON.stringify(fields)));
+  return `${kind}:${bytesToBase64(new Uint8Array(digest))}`;
+}
+
+function metadataFor(chatId, messageId) {
+  const key = metadataKey(chatId, messageId);
+  if (!messageMetadata.has(key)) messageMetadata.set(key, { receipts: new Map(), acceptance: null });
+  return messageMetadata.get(key);
+}
+
+function outgoingMessageId(entry) {
+  return entry.clientMessageId || (entry.id?.startsWith("outgoing:") ? entry.id.slice(9) : null);
+}
+
+function normalizeHistoryEntry(chatId, entry) {
+  if (typeof entry.id !== "string" || !entry.id.startsWith("receipt:")) return;
+  if (entry.kind === "system") {
+    entry.kind = "receipt";
+    entry.receiptKind = "legacy";
+    entry.legacyText = entry.text;
+  }
+  if (!entry.readerPublicId || !entry.clientMessageId) {
+    try {
+      const [cid, peer, messageId] = JSON.parse(entry.id.slice(8));
+      if (cid === chatId && typeof peer === "string" && typeof messageId === "string") {
+        entry.readerPublicId = peer;
+        entry.clientMessageId = messageId;
+      }
+    } catch { /* Retain unrecognized receipt history privately, outside the timeline. */ }
+  }
+}
+
+function hiddenMessageEntry(entry) {
+  return ["receipt", "acceptance", "viewed", "read_ack", "delivery_ack", "delivery_ref", "send_failed"].includes(entry.kind)
+    || entry.id?.startsWith("receipt:");
+}
+
+function indexMessageMetadata(chatId, entry) {
+  if (entry.kind === "receipt" && entry.readerPublicId && entry.clientMessageId) {
+    const metadata = metadataFor(chatId, entry.clientMessageId);
+    metadata.receipts.set(entry.id, entry);
+    seenReceiptIds.add(entry.id);
+  } else if (entry.kind === "acceptance") {
+    const metadata = metadataFor(chatId, entry.clientMessageId);
+    if (!metadata.acceptance || Object.keys(entry.deliveries || {}).length
+        >= Object.keys(metadata.acceptance.deliveries || {}).length) metadata.acceptance = entry;
+  } else if (entry.kind === "send_failed") {
+    outgoingAttempts.set(metadataKey(chatId, entry.clientMessageId), "failed");
+  } else if (entry.kind === "delivery_ack") {
+    acknowledgedDeliveries.add(entry.delivery.delivery_id);
+    pendingDeliveries.delete(entry.delivery.delivery_id);
+  } else if (entry.kind === "read_ack") {
+    acknowledgedReads.add(entry.delivery.delivery_id);
+    pendingReadsByChat.get(chatId)?.delete(entry.delivery.delivery_id);
+  } else if (entry.kind === "viewed") {
+    queueRead(entry.delivery);
+  }
+  if (entry.kind === "theirs" || entry.kind === "delivery_ref") {
+    if (entry.kind === "theirs" && entry.id) seenMessageIds.add(entry.id);
+    if (entry.delivery) {
+      const key = entry.kind === "theirs" ? entry.id : entry.messageKey;
+      const refs = deliveryReferences.get(key) || new Map();
+      refs.set(entry.delivery.delivery_id, entry.delivery);
+      deliveryReferences.set(key, refs);
+      queueDelivery(entry.delivery);
+    }
+  }
+}
+
+function receiptTime(value) {
+  if (!value) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const parsed = Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : `${value}Z`);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function outgoingStatus(chatId, entry) {
+  const messageId = outgoingMessageId(entry);
+  const metadata = metadataFor(chatId, messageId);
+  const acceptance = metadata.acceptance;
+  const recipientIds = acceptance?.recipients || entry.recipients;
+  const recipientsKnown = Array.isArray(recipientIds) && recipientIds.length > 0
+    && new Set(recipientIds).size === recipientIds.length;
+  const ids = recipientsKnown ? recipientIds : [...new Set(
+    [...metadata.receipts.values()].map(receipt => receipt.readerPublicId))];
+  const states = ids.map(publicId => ({ publicId, delivered: false, read: false,
+    deliveredAt: null, readAt: null, legacy: false }));
+  for (const receipt of metadata.receipts.values()) {
+    const state = states.find(peer => peer.publicId === receipt.readerPublicId);
+    if (!state) continue;
+    const expected = acceptance?.deliveries?.[state.publicId];
+    if (expected && receipt.messageDeliveryId !== expected) continue;
+    const time = Object.hasOwn(receipt, "confirmedAt") ? receipt.confirmedAt : historyTimestamp(receipt);
+    state.delivered = true;
+    if (receipt.receiptKind === "read") {
+      state.read = true;
+      if (time !== null) state.readAt = state.readAt === null ? time : Math.min(state.readAt, time);
+    } else {
+      if (time !== null) state.deliveredAt = state.deliveredAt === null ? time : Math.min(state.deliveredAt, time);
+      state.legacy ||= receipt.receiptKind === "legacy";
+    }
+  }
+  const accepted = Boolean(acceptance || !entry.statusVersion || states.some(peer => peer.delivered));
+  const attempt = outgoingAttempts.get(metadataKey(chatId, messageId));
+  const readCount = states.filter(peer => peer.read).length;
+  const allRead = recipientsKnown && readCount === states.length;
+  const status = !accepted ? (attempt || "pending")
+    : readCount > 0 ? "read"
+    : recipientsKnown && states.every(peer => peer.delivered) ? "delivered" : "sent";
+  return { status, states, recipientsKnown, messageId, accepted, readCount, allRead,
+    timestamp: acceptance?.createdAt || historyTimestamp(entry) };
+}
+
+function statusLabel(status) {
+  return ({ sending: "Sending", pending: "Pending retry", failed: "Failed", sent: "Sent",
+    delivered: "Delivered", read: "Read" })[status] || "Status unknown";
+}
+
+function messageStatusLabel(state) {
+  if (state.status !== "read" || (state.recipientsKnown && state.states.length === 1)) {
+    return statusLabel(state.status);
+  }
+  return state.recipientsKnown ? `Read by ${state.readCount} of ${state.states.length} recipients`
+    : `Read by ${state.readCount} confirmed recipient${state.readCount === 1 ? "" : "s"}`;
 }
 
 function enqueueIncoming(action) {
@@ -855,6 +1038,267 @@ function messageText(chatId, entry) {
   return label && clientMessageId ? `Message ${clientMessageId} was read by ${label}.` : entry.text;
 }
 
+function readableNow(node) {
+  if (!messageConfirmationsSupported || !conversationVisible() || document.visibilityState !== "visible"
+      || typeof document.hasFocus !== "function" || !document.hasFocus()
+      || elements.detailsDialog.open || elements.deviceDialog.open || elements.messageDetails.open
+      || !visibleMessageNodes.has(node) || renderedMessages.get(node.messageEntry?.id) !== node) return false;
+  const box = node.messageBubble.getBoundingClientRect();
+  const list = elements.messageList.getBoundingClientRect();
+  const top = Math.max(box.top, list.top, 0);
+  const bottom = Math.min(box.bottom, list.bottom, window.innerHeight);
+  const width = Math.min(box.right, list.right, window.innerWidth) - Math.max(box.left, list.left, 0);
+  return box.height > 0 && width >= box.width / 2
+    && bottom - top >= Math.min(box.height / 2, 48);
+}
+
+const messageVisibilityObserver = typeof IntersectionObserver === "function"
+  ? new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) visibleMessageNodes.add(entry.target);
+      else visibleMessageNodes.delete(entry.target);
+    }
+    refreshVisibleReads();
+  }, { root: elements.messageList, threshold: [0, 0.5, 1] }) : null;
+
+function refreshVisibleReads() {
+  for (const [node, timer] of viewTimers) {
+    if (!readableNow(node)) { window.clearTimeout(timer); viewTimers.delete(node); }
+  }
+  for (const node of visibleMessageNodes) {
+    if (!readableNow(node) || viewTimers.has(node)) continue;
+    const refs = [...(deliveryReferences.get(node.messageEntry.id)?.values() || [])];
+    if (!refs.some(ref => !acknowledgedReads.has(ref.delivery_id)
+        && !pendingReadsByChat.get(ref.chat_id)?.has(ref.delivery_id))) continue;
+    viewTimers.set(node, window.setTimeout(() => {
+      viewTimers.delete(node);
+      if (!readableNow(node)) return;
+      void enqueueIncoming(async () => {
+        if (!readableNow(node)) return;
+        for (const reference of refs) {
+          // Save viewing evidence before queuing a retryable read confirmation.
+          await appendMessage(reference.chat_id, { id: `viewed:${reference.delivery_id}`,
+            kind: "viewed", delivery: reference });
+        }
+        await flushAcknowledgements();
+      }).catch(error => showToast(errorMessage(error), true));
+    }, 750));
+  }
+}
+
+function displayTimestamp(value, full = false) {
+  if (!Number.isFinite(value) || value <= 0) return "Time unavailable";
+  const options = full ? { dateStyle: "short", timeStyle: "medium" }
+    : { hour: "2-digit", minute: "2-digit" };
+  return new Intl.DateTimeFormat(undefined, options).format(new Date(value));
+}
+
+function messageSenderId(chatId, entry) {
+  if (entry.senderPublicId) return entry.senderPublicId;
+  if (entry.kind === "mine") return identity?.publicId || null;
+  if (entry.kind === "theirs" && entry.id?.startsWith("incoming:")) {
+    try {
+      const [cid, sender] = JSON.parse(entry.id.slice(9));
+      if (cid === chatId && typeof sender === "string") return sender;
+    } catch { /* Unrecognized older identities never become display names. */ }
+  }
+  return null;
+}
+
+function messageSenderName(chatId, entry) {
+  const publicId = messageSenderId(chatId, entry);
+  const peer = chats.find(chat => chat.id === chatId)?.participants
+    .find(peer => peer.public_id === publicId);
+  if (peer) return peer.display_name?.trim() || (entry.kind === "mine" ? "You" : "Participant");
+  // Preserve older saved names while keeping routing IDs out of the timeline.
+  let saved = entry.meta?.replace(/^(?:From |Sent by )/, "").trim();
+  if (publicId && saved?.endsWith(` (${publicId})`)) saved = saved.slice(0, -(publicId.length + 3));
+  if (saved && saved !== publicId && /^(?:From |Sent by )/.test(entry.meta)) return saved;
+  return entry.kind === "mine" ? "You" : "Participant";
+}
+
+function messageDisplayTime(chatId, entry) {
+  return entry.kind === "mine" ? outgoingStatus(chatId, entry).timestamp : historyTimestamp(entry);
+}
+
+function groupedWithPrevious(chatId, entry, previous) {
+  if (!previous || !["mine", "theirs"].includes(entry.kind) || entry.kind !== previous.kind) return false;
+  const sender = messageSenderId(chatId, entry);
+  const elapsed = messageDisplayTime(chatId, entry) - messageDisplayTime(chatId, previous);
+  return Boolean(sender && sender === messageSenderId(chatId, previous)
+    && elapsed >= 0 && elapsed <= 5 * 60 * 1000);
+}
+
+function deliveryIcon(status) {
+  const kind = status === "delivered" || status === "read" ? "double-check"
+    : status === "sent" ? "check" : status === "sending" ? "clock" : "warning";
+  const paths = {
+    check: ["M6 9l5 5L19 3"],
+    "double-check": ["M2 10l5 5L18 4", "M13 14l2 2 7-7"],
+    clock: ["M12 3a6 6 0 1 0 0 12a6 6 0 1 0 0-12", "M12 5v4l3 2"],
+    warning: ["M12 2l10 14H2Z", "M12 7v4", "M12 13h.01"],
+  };
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 18");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.dataset.icon = kind;
+  for (const definition of paths[kind]) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", definition);
+    svg.append(path);
+  }
+  return svg;
+}
+
+function updateMessageFooter(node, chatId, entry) {
+  if (entry.kind !== "mine") return;
+  let footer = node.messageFooter;
+  if (!footer) {
+    footer = document.createElement("span");
+    footer.className = "message-footer";
+    footer.indicator = document.createElement("button");
+    footer.indicator.type = "button";
+    footer.indicator.className = "message-status";
+    footer.indicator.addEventListener("click", event => {
+      event.stopPropagation(); showMessageDetails(chatId, entry, footer.indicator);
+    });
+    footer.append(footer.indicator);
+    node.messageFooter = footer;
+    node.messageBubble.append(footer);
+  }
+  const state = outgoingStatus(chatId, entry);
+  const label = `${messageStatusLabel(state)}. Open message details`;
+  footer.indicator.className = `message-status status-${state.status}`;
+  footer.indicator.setAttribute("aria-label", label);
+  footer.indicator.title = label;
+  const icon = deliveryIcon(state.status);
+  if (footer.indicator.dataset.icon !== icon.dataset.icon) {
+    footer.indicator.replaceChildren(icon);
+    footer.indicator.dataset.icon = icon.dataset.icon;
+  }
+}
+
+function updateMessageHeader(node, chatId, entry, previous) {
+  if (!node.messageHeader) return;
+  const header = node.messageHeader;
+  const timestamp = messageDisplayTime(chatId, entry);
+  const grouped = groupedWithPrevious(chatId, entry, previous);
+  node.className = `message ${entry.kind}${grouped ? " continuation" : ""}`;
+  header.sender.textContent = messageSenderName(chatId, entry);
+  header.sender.hidden = grouped;
+  header.dot.hidden = grouped;
+  header.timestamp.textContent = displayTimestamp(timestamp);
+  header.timestamp.title = displayTimestamp(timestamp, true);
+  if (timestamp > 0) header.timestamp.dateTime = new Date(timestamp).toISOString();
+  header.hidden = grouped && Math.floor(timestamp / 60000)
+    === Math.floor(messageDisplayTime(chatId, previous) / 60000);
+  node.setAttribute("aria-label", `Message from ${header.sender.textContent}`);
+  updateMessageFooter(node, chatId, entry);
+}
+
+function detailsParticipantLabel(chatId, publicId) {
+  const chat = chats.find(chat => chat.id === chatId);
+  const peer = chat?.participants.find(peer => peer.public_id === publicId);
+  const name = peer?.display_name?.trim();
+  if (!name) return publicId;
+  const duplicate = chat.participants.some(candidate => candidate.public_id !== publicId
+    && candidate.display_name?.trim() === name);
+  return duplicate ? `${name} (${publicId})` : name;
+}
+
+function refreshMessageDetails() {
+  if (!openMessageDetails) return;
+  const { chatId, entry } = openMessageDetails;
+  const state = outgoingStatus(chatId, entry);
+  document.querySelector("#message-details-status").textContent = messageStatusLabel(state);
+  document.querySelector("#message-details-time").textContent = displayTimestamp(state.timestamp, true);
+  const groups = document.querySelector("#message-details-recipients");
+  groups.replaceChildren();
+  for (const [label, peers, timeField] of [
+    ["Read by", state.states.filter(peer => peer.read), "readAt"],
+    ["Delivered to", state.states.filter(peer => peer.delivered && !peer.read), "deliveredAt"],
+    ["Pending", state.states.filter(peer => !peer.delivered), null],
+  ]) {
+    const section = document.createElement("section");
+    const heading = document.createElement("h3"); heading.textContent = label;
+    const list = document.createElement("ul");
+    for (const peer of peers) {
+      const row = document.createElement("li");
+      const name = document.createElement("span"); name.textContent = detailsParticipantLabel(chatId, peer.publicId);
+      row.append(name);
+      if (timeField) {
+        const time = document.createElement("span"); time.className = "receipt-time";
+        time.textContent = displayTimestamp(peer[timeField], true); row.append(time);
+      }
+      list.append(row);
+    }
+    if (!peers.length) { const empty = document.createElement("li"); empty.textContent = "None confirmed"; list.append(empty); }
+    section.append(heading, list); groups.append(section);
+  }
+  const note = document.querySelector("#message-details-note");
+  note.textContent = !state.recipientsKnown ? "The original recipient list is unavailable. Full delivery and reading cannot be confirmed."
+    : state.states.some(peer => peer.legacy) ? "Older confirmations show receipt on a device; they do not confirm viewing."
+    : "Pending means delivery has not been confirmed. Confirmations may be delayed.";
+  // Keep technical controls and focus stable as receipt updates arrive.
+  const technical = document.querySelector("#message-details-technical");
+  const signature = JSON.stringify([state.messageId, state.states.map(peer => peer.publicId)]);
+  if (technical.dataset.signature !== signature) {
+    technical.dataset.signature = signature;
+    technical.replaceChildren();
+    const feedback = document.querySelector("#message-details-copy-status");
+    for (const [label, value] of [["Message ID", state.messageId],
+      ["Sender public ID", entry.senderPublicId || identity.publicId],
+      ...state.states.map(peer => ["Participant public ID", peer.publicId])]) {
+      const detail = publicDetail(label, value, feedback);
+      technical.append(detail.term, detail.description);
+    }
+  }
+  positionMessageDetails();
+}
+
+function positionMessageDetails() {
+  const dialog = elements.messageDetails;
+  if (!dialog.open || !messageDetailsTrigger) return;
+  if (mobileWorkspace()) {
+    dialog.style.left = "";
+    dialog.style.top = "";
+    dialog.style.maxWidth = "";
+    dialog.style.maxHeight = "";
+    return;
+  }
+  const viewport = window.visualViewport;
+  const left = (viewport?.offsetLeft || 0) + 12;
+  const top = (viewport?.offsetTop || 0) + 12;
+  const right = left + (viewport?.width || window.innerWidth) - 24;
+  const bottom = top + (viewport?.height || window.innerHeight) - 24;
+  dialog.style.maxWidth = `${Math.max(0, right - left)}px`;
+  dialog.style.maxHeight = `${Math.max(0, bottom - top)}px`;
+  const box = messageDetailsTrigger.getBoundingClientRect();
+  const rect = dialog.getBoundingClientRect();
+  const below = box.bottom + 8;
+  const preferredTop = below + rect.height <= bottom ? below : box.top - rect.height - 8;
+  dialog.style.left = `${Math.max(left, Math.min(box.right - rect.width, right - rect.width))}px`;
+  dialog.style.top = `${Math.max(top, Math.min(preferredTop, bottom - rect.height))}px`;
+}
+
+function showMessageDetails(chatId, entry, trigger) {
+  openMessageDetails = { chatId, entry };
+  messageDetailsTrigger = trigger;
+  document.querySelector("#message-details-copy-status").hidden = true;
+  refreshMessageDetails();
+  const dialog = elements.messageDetails;
+  if (!dialog.open) dialog.showModal();
+  positionMessageDetails();
+  document.querySelector("#close-message-details").focus({ preventScroll: true });
+  refreshVisibleReads();
+}
+
 function renderMessages(openAtLatest = false) {
   if (!conversationVisible()) return;
   const list = elements.messageList;
@@ -862,11 +1306,19 @@ function renderMessages(openAtLatest = false) {
   const followLatest = openAtLatest || changedChat || list.scrollHeight - list.clientHeight - list.scrollTop <= 32;
   followResizedMessages = followLatest;
   if (changedChat) {
+    messageVisibilityObserver?.disconnect();
+    visibleMessageNodes.clear();
+    refreshVisibleReads();
     list.replaceChildren();
     renderedMessages.clear();
     renderedChatId = selectedChatId;
   }
-  const entries = [...(messagesByChat.get(selectedChatId) || [])].sort(compareHistoryEntries);
+  const entries = [...(messagesByChat.get(selectedChatId) || [])]
+    .filter(entry => !hiddenMessageEntry(entry)).sort((left, right) => {
+      const timestamp = entry => entry.kind === "mine"
+        ? outgoingStatus(selectedChatId, entry).timestamp : historyTimestamp(entry);
+      return timestamp(left) - timestamp(right) || compareHistoryEntries(left, right);
+    });
   if (!entries.length) {
     if (list.firstChild && !renderedMessages.size) return;
     list.replaceChildren();
@@ -882,38 +1334,73 @@ function renderMessages(openAtLatest = false) {
   for (const [key, node] of renderedMessages) {
     if (!keys.has(key)) {
       node.remove();
+      messageVisibilityObserver?.unobserve(node);
+      visibleMessageNodes.delete(node);
       renderedMessages.delete(key);
     }
   }
   let position = 0;
   for (const entry of entries) {
     const key = entry.id || entry;
-    const metaText = messageMeta(selectedChatId, entry);
     const messageTextContent = messageText(selectedChatId, entry);
+    const previous = entries[position - 1];
     const existing = renderedMessages.get(key);
     if (existing) {
-      if (existing.children[0].textContent !== messageTextContent) existing.children[0].textContent = messageTextContent;
-      if (existing.children[1]) existing.children[1].textContent = metaText || "";
+      if (existing.messageContent.textContent !== messageTextContent) existing.messageContent.textContent = messageTextContent;
+      updateMessageHeader(existing, selectedChatId, entry, previous);
       if (list.children[position] !== existing) list.insertBefore(existing, list.children[position] || null);
       position++;
       continue;
     }
     const message = document.createElement("div");
     message.className = `message ${entry.kind}`;
+    message.messageEntry = entry;
+    const chatId = selectedChatId;
+    if (["mine", "theirs"].includes(entry.kind)) {
+      const header = document.createElement("div");
+      header.className = "message-header";
+      header.sender = document.createElement("span");
+      header.sender.className = "message-sender";
+      header.dot = document.createElement("span");
+      header.dot.className = "message-separator";
+      header.dot.textContent = "·";
+      header.dot.setAttribute("aria-hidden", "true");
+      header.timestamp = document.createElement("time");
+      header.append(header.sender, header.dot, header.timestamp);
+      message.messageHeader = header;
+      message.append(header);
+      message.setAttribute("role", "group");
+    }
+    const bubble = document.createElement("div");
+    bubble.className = "message-bubble";
+    message.messageBubble = bubble;
     const text = document.createElement("span");
+    text.className = "message-content";
     text.textContent = messageTextContent;
-    message.append(text);
-    if (metaText) {
-      const meta = document.createElement("span");
-      meta.className = "message-meta";
-      meta.textContent = metaText;
-      message.append(meta);
+    message.messageContent = text;
+    bubble.append(text);
+    message.append(bubble);
+    updateMessageHeader(message, chatId, entry, previous);
+    if (entry.kind === "mine") {
+      message.tabIndex = 0;
+      message.setAttribute("aria-haspopup", "dialog");
+      message.addEventListener("click", event => {
+        if (event.target?.tagName === "BUTTON" || window.getSelection()?.toString()) return;
+        showMessageDetails(chatId, entry, message);
+      });
+      message.addEventListener("keydown", event => {
+        if (event.target !== message || !["Enter", " "].includes(event.key)) return;
+        event.preventDefault(); showMessageDetails(chatId, entry, message);
+      });
     }
     list.insertBefore(message, list.children[position] || null);
     renderedMessages.set(key, message);
+    if (entry.kind === "theirs") messageVisibilityObserver?.observe(message);
     position++;
   }
   if (followLatest) list.scrollTop = list.scrollHeight;
+  refreshMessageDetails();
+  refreshVisibleReads();
 }
 
 function chatName(chat) {
@@ -963,6 +1450,7 @@ function renderChats() {
 function selectChat(chatId, openAtLatest = false) {
   const changedChat = renderedChatId !== chatId;
   selectedChatId = chatId;
+  if (openMessageDetails && openMessageDetails.chatId !== chatId) elements.messageDetails.close();
   const chat = chats.find((candidate) => candidate.id === chatId);
   elements.conversationKind.textContent = chat?.chat_type || "Conversation";
   elements.conversationTitle.textContent = chat ? chatName(chat) : "No conversation selected";
@@ -1027,6 +1515,9 @@ async function loadChats() {
   }
   identity.publicId = data.user.public_id;
   identity.retryWindowSeconds = data.send_retry_window_seconds;
+  identity.receiptRetentionSeconds = data.receipt_retention_seconds || 0;
+  messageConfirmationsSupported = Number.isSafeInteger(data.receipt_retention_seconds)
+    && data.receipt_retention_seconds > 0;
   await writeIdentity(identity);
   chats = checkedChats;
   if (selectedChatId && !chats.some((chat) => chat.id === selectedChatId)) {
@@ -1063,29 +1554,49 @@ function deliveryReference(delivery, peerField) {
 }
 
 function queueRead(message) {
+  if (acknowledgedReads.has(message.delivery_id)) return;
   const reference = deliveryReference(message, "sender_public_id");
   const ids = pendingReadsByChat.get(message.chat_id) || new Map();
   ids.set(message.delivery_id, reference);
   pendingReadsByChat.set(message.chat_id, ids);
 }
 
-async function flushDeliveryBatch(path, field, pending) {
+function queueDelivery(message) {
+  if (acknowledgedDeliveries.has(message.delivery_id)) return;
+  pendingDeliveries.set(message.delivery_id, deliveryReference(message, "sender_public_id"));
+}
+
+async function flushDeliveryBatch(path, field, pending, extra = {}, marker = null) {
   // Keep each failed batch queued. Delete only the successful snapshot so a
   // delivery added during the request cannot be lost.
   while (pending.size) {
     const batch = [...pending.values()].slice(0, 100);
     await api(path, {
       method: "POST",
-      body: JSON.stringify({ [field]: batch }),
+      body: JSON.stringify({ [field]: batch, ...extra }),
     });
-    for (const reference of batch) pending.delete(reference.delivery_id);
+    for (const reference of batch) {
+      if (marker) await appendMessage(reference.chat_id, {
+        id: `${marker}:${reference.delivery_id}`, kind: marker, delivery: reference,
+      });
+      pending.delete(reference.delivery_id);
+    }
   }
 }
 
+async function flushDurableDeliveries() {
+  await flushDeliveryBatch("/api/v1/ack/exact", "messages", pendingDeliveries,
+    messageConfirmationsSupported ? { confirm_delivery: true } : {}, "delivery_ack");
+}
+
 async function flushAcknowledgements() {
-  for (const [chatId, ids] of pendingReadsByChat) {
-    await flushDeliveryBatch(`/api/v1/chats/${chatId}/read/exact`, "messages", ids);
-    pendingReadsByChat.delete(chatId);
+  await flushDurableDeliveries();
+  if (messageConfirmationsSupported) {
+    for (const [chatId, ids] of pendingReadsByChat) {
+      await flushDeliveryBatch(`/api/v1/chats/${chatId}/read/exact`, "messages", ids,
+        { viewed: true }, "read_ack");
+      pendingReadsByChat.delete(chatId);
+    }
   }
   await flushDeliveryBatch("/api/v1/ack/exact", "receipts", pendingReceiptIds);
 }
@@ -1099,7 +1610,13 @@ async function processMessages(messages) {
   for (const message of messages) {
     const key = messageKey(message);
     if (seenMessageIds.has(key)) {
-      queueRead(message);
+      const reference = deliveryReference(message, "sender_public_id");
+      if (!deliveryReferences.get(key)?.has(reference.delivery_id)) {
+        await appendMessage(message.chat_id, { id: `delivery_ref:${reference.delivery_id}`,
+          kind: "delivery_ref", messageKey: key, delivery: reference });
+      }
+      queueDelivery(message);
+      refreshVisibleReads();
       continue;
     }
     if (processingMessageIds.has(key)) continue;
@@ -1113,12 +1630,13 @@ async function processMessages(messages) {
         senderPublicId: message.sender_public_id,
         meta: `From ${message.sender_public_id}`,
         createdAt: serverTimestamp(message.created_at),
+        delivery: deliveryReference(message, "sender_public_id"),
       };
       entry.meta = messageMeta(message.chat_id, entry);
       await appendMessage(message.chat_id, entry);
       seenMessageIds.add(key);
       failedMessageReasons.delete(key);
-      queueRead(message);
+      queueDelivery(message);
     } catch (error) {
       const reason = errorMessage(error);
       if (failedMessageReasons.get(key) !== reason) {
@@ -1134,23 +1652,26 @@ async function processMessages(messages) {
   }
 }
 
-async function processReceipts(receipts) {
+async function processReceipts(receipts, delivered = false) {
   for (const receipt of receipts) {
     const reference = deliveryReference(receipt, "reader_public_id");
-    const key = `receipt:${JSON.stringify([receipt.chat_id, receipt.reader_public_id, receipt.client_message_id])}`;
+    const stage = delivered ? "delivered" : receipt.view_confirmed ? "read" : "legacy";
+    const key = await messageEventId("receipt", [receipt.chat_id, receipt.reader_public_id,
+      receipt.client_message_id, receipt.message_delivery_id || null, stage]);
     if (seenReceiptIds.has(key)) {
       pendingReceiptIds.set(receipt.delivery_id, reference);
       continue;
     }
     const entry = {
       id: key,
-      kind: "system",
+      kind: "receipt",
+      receiptKind: stage,
+      messageDeliveryId: receipt.message_delivery_id || null,
       readerPublicId: receipt.reader_public_id,
       clientMessageId: receipt.client_message_id,
-      text: `Message ${receipt.client_message_id} was read by ${receipt.reader_public_id}.`,
-      createdAt: serverTimestamp(receipt.created_at),
+      confirmedAt: receiptTime(receipt.created_at),
+      createdAt: receiptTime(receipt.created_at) || Date.now(),
     };
-    entry.text = messageText(receipt.chat_id, entry);
     await appendMessage(receipt.chat_id, entry);
     seenReceiptIds.add(key);
     pendingReceiptIds.set(receipt.delivery_id, reference);
@@ -1159,6 +1680,9 @@ async function processReceipts(receipts) {
 
 async function processIncoming(data) {
   await processMessages(data.messages || []);
+  // Unrelated receipt-storage failures must not retain already durable ciphertext.
+  await flushDurableDeliveries();
+  await processReceipts(data.delivery_receipts || [], true);
   await processReceipts(data.read_receipts || []);
   await flushAcknowledgements();
 }
@@ -1168,10 +1692,12 @@ async function synchronize() {
   synchronizing = true;
   try {
     await loadChats();
+    await loadStoredHistory(); // Immutable encrypted events merge safely across tabs.
     try { await flushOutbox(); } catch (error) { showToast(errorMessage(error), true); }
     await renderOutbox();
     const data = await api("/api/v1/poll");
     await enqueueIncoming(() => processIncoming(data));
+    await enqueueIncoming(recoverMessageStatuses);
   } catch (error) {
     showToast(errorMessage(error), true);
   } finally {
@@ -1207,6 +1733,9 @@ async function handleSocketPayload(payload) {
     await flushAcknowledgements();
   } else if (payload.type === "read") {
     await processReceipts([payload.read]);
+    await flushAcknowledgements();
+  } else if (payload.type === "delivered") {
+    await processReceipts([payload.delivery], true);
     await flushAcknowledgements();
   }
 }
@@ -1357,6 +1886,19 @@ elements.activationForm.addEventListener("submit", async (event) => {
       seenMessageIds.clear();
       seenReceiptIds.clear();
       pendingReadsByChat.clear();
+      pendingDeliveries.clear();
+      if (elements.messageDetails.open) elements.messageDetails.close();
+      messageMetadata.clear();
+      loadedHistoryKeys.clear();
+      deliveryReferences.clear();
+      acknowledgedDeliveries.clear();
+      acknowledgedReads.clear();
+      outgoingAttempts.clear();
+      messageConfirmationsSupported = false;
+      visibleMessageNodes.clear();
+      messageVisibilityObserver?.disconnect();
+      for (const timer of viewTimers.values()) window.clearTimeout(timer);
+      viewTimers.clear();
       pendingReceiptIds.clear();
       failedMessageReasons.clear();
     }
@@ -1467,22 +2009,82 @@ async function flushOutbox() {
       const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: stored.value.iv,
         additionalData: encoder.encode(stored.key) }, identity.storageKey, stored.value.ciphertext);
       const record = JSON.parse(decoder.decode(plaintext));
-      if (record.expiresAt <= Date.now()) {
-        throw new ClientError("An outgoing retry expired. The message is still saved locally; uploading it now could duplicate a message already delivered.");
+      await storeOutgoing(record);
+      const attemptKey = metadataKey(record.chatId, record.messageId);
+      outgoingAttempts.set(attemptKey, "sending");
+      renderMessages();
+      try {
+        if (record.expiresAt <= Date.now()) {
+          throw new ClientError("An outgoing retry expired. The message is still saved locally; uploading it now could duplicate a message already delivered.");
+        }
+        const result = await api(`/api/v1/chats/${record.chatId}/messages`, {
+          method: "POST", body: JSON.stringify({ client_message_id: record.messageId,
+            envelopes: record.envelopes }),
+        });
+        await storeAcceptance(record.chatId, record.messageId, result);
+        await removeOutbox(stored.key); // Acceptance and history commit before retry removal.
+        outgoingAttempts.delete(attemptKey);
+      } catch (error) {
+        try {
+          await appendMessage(record.chatId, { id: `send_failed:${record.messageId}`,
+            kind: "send_failed", clientMessageId: record.messageId });
+        } catch { /* Keep the original failure and the encrypted outbox retry. */ }
+        outgoingAttempts.set(attemptKey, "failed");
+        renderMessages();
+        throw error;
       }
-      const result = await api(`/api/v1/chats/${record.chatId}/messages`, {
-        method: "POST", body: JSON.stringify({ client_message_id: record.messageId,
-          envelopes: record.envelopes }),
-      });
-      const entry = { id: `outgoing:${record.messageId}`, kind: "mine",
-        senderPublicId: identity.publicId,
-        text: record.plaintext, meta: `Sent by ${identity.publicId}`,
-        createdAt: serverTimestamp(result.created_at) };
-      entry.meta = messageMeta(record.chatId, entry);
-      await appendMessage(record.chatId, entry);
-      await removeOutbox(stored.key); // History must commit before removing retry state.
     }
   });
+}
+
+async function storeOutgoing(record) {
+  const entry = { id: `outgoing:${record.messageId}`, kind: "mine",
+    statusVersion: 1, clientMessageId: record.messageId,
+    recipients: record.envelopes.map(envelope => envelope.recipient_public_id),
+    senderPublicId: identity.publicId,
+    text: record.plaintext, meta: `Sent by ${identity.publicId}`,
+    createdAt: record.createdAt };
+  entry.meta = messageMeta(record.chatId, entry);
+  await appendMessage(record.chatId, entry);
+}
+
+async function storeAcceptance(chatId, messageId, result) {
+  const key = await messageEventId("acceptance", [messageId,
+    [...(result.recipients || [])].sort(), Object.entries(result.deliveries || {}).sort()]);
+  await appendMessage(chatId, { id: key, kind: "acceptance",
+    clientMessageId: messageId, recipients: result.recipients,
+    deliveries: result.deliveries || {}, createdAt: receiptTime(result.created_at) || Date.now() });
+}
+
+async function recoverMessageStatuses() {
+  if (!messageConfirmationsSupported || !identity?.receiptRetentionSeconds || !selectedChatId) return;
+  const entries = (messagesByChat.get(selectedChatId) || []).filter(entry => entry.kind === "mine"
+    && Date.now() - historyTimestamp(entry) < identity.receiptRetentionSeconds * 1000
+    && !outgoingStatus(selectedChatId, entry).allRead);
+  if (!entries.length) return;
+  const start = statusPollCursor % entries.length;
+  const batch = [...entries.slice(start), ...entries.slice(0, start)].slice(0, 100);
+  statusPollCursor += batch.length;
+  const chatId = selectedChatId;
+  const result = await api(`/api/v1/chats/${chatId}/messages/status`, { method: "POST",
+    body: JSON.stringify({ client_message_ids: batch.map(outgoingMessageId) }) });
+  for (const message of result.statuses || []) {
+    await storeAcceptance(chatId, message.client_message_id, { created_at: message.created_at,
+      recipients: message.recipients.map(peer => peer.public_id),
+      deliveries: Object.fromEntries(message.recipients.filter(peer => peer.delivery_id)
+        .map(peer => [peer.public_id, peer.delivery_id])) });
+    for (const peer of message.recipients) {
+      for (const [stage, time] of [["delivered", peer.delivered_at], ["read", peer.read_at]]) {
+        if (!time) continue;
+        const key = await messageEventId("receipt", [chatId, peer.public_id,
+          message.client_message_id, peer.delivery_id || null, stage]);
+        await appendMessage(chatId, { id: key, kind: "receipt",
+          receiptKind: stage, readerPublicId: peer.public_id,
+          clientMessageId: message.client_message_id, messageDeliveryId: peer.delivery_id || null,
+          confirmedAt: receiptTime(time), createdAt: receiptTime(time) || Date.now() });
+      }
+    }
+  }
 }
 
 elements.messageForm.addEventListener("submit", async (event) => {
@@ -1509,6 +2111,7 @@ elements.messageForm.addEventListener("submit", async (event) => {
         throw new ClientError("This device has too many saved outgoing messages awaiting confirmation. Another message cannot be added to the local outbox.");
       }
       await persistOutbox(record);
+      await storeOutgoing(record);
     });
     elements.messageInput.value = "";
     try {
@@ -1606,6 +2209,7 @@ window.addEventListener("online", () => {
 });
 window.addEventListener("offline", clearPresence);
 document.addEventListener("visibilitychange", () => {
+  refreshVisibleReads();
   if (document.visibilityState === "visible") {
     // Timers can be suspended in background tabs. Expired leases remain unknown
     // until a fresh snapshot arrives; request one on the existing socket.
@@ -1614,6 +2218,15 @@ document.addEventListener("visibilitychange", () => {
     connectSocket();
     void synchronize();
   }
+});
+window.addEventListener("focus", refreshVisibleReads);
+window.addEventListener("blur", () => {
+  for (const timer of viewTimers.values()) window.clearTimeout(timer);
+  viewTimers.clear();
+});
+window.addEventListener("resize", () => {
+  refreshVisibleReads();
+  positionMessageDetails();
 });
 
 function showStartupError(error) {

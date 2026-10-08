@@ -240,6 +240,16 @@ def test_legacy_queue_migration_and_backup_preserve_delivery_ids(tmp_path, monke
                 await conn.execute(text(f"INSERT INTO {table} (id) VALUES (1), (2)"))
         await db.init_db()
 
+        async with db.engine.connect() as conn:
+            receipt_columns = {row[1] for row in await conn.execute(text(
+                "PRAGMA table_info(read_receipts)"))}
+            ledger_columns = {row[1] for row in await conn.execute(text(
+                "PRAGMA table_info(send_records)"))}
+            assert "message_delivery_id" in receipt_columns
+            assert "receipt_state_json" in ledger_columns
+            assert list((await conn.execute(text(
+                "SELECT message_delivery_id FROM read_receipts"))).scalars()) == [None, None]
+
         async def identifiers():
             async with db.engine.connect() as conn:
                 return [list((await conn.execute(text(

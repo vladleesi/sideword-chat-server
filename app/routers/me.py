@@ -51,4 +51,7 @@ async def me(
         session_expires_at=session_expiry,
         server_time=datetime.now(timezone.utc),
         send_retry_window_seconds=get_settings().send_idempotency_days * 86400,
+        receipt_retention_seconds=max(
+            get_settings().send_idempotency_days, get_settings().message_ttl_days
+        ) * 86400,
     )

@@ -58,7 +58,7 @@ def test_client_retains_controls_accessibility_and_separate_mobile_views():
     warning = tree.by_id("key-change-warning")
     assert warning["attrs"]["role"] == "alert"
     assert all(node["tag"] != "dialog" for node in warning["parents"])
-    for identifier in ("device-settings", "conversation-details"):
+    for identifier in ("device-settings", "conversation-details", "message-details"):
         dialog = tree.by_id(identifier)
         assert dialog["tag"] == "dialog"
         tree.by_id(dialog["attrs"]["aria-labelledby"])
@@ -195,3 +195,46 @@ def test_group_invite_preserves_type_and_optional_password_guidance():
     )
     assert "<b>group</b> invite link" in html
     assert "The room also requires a phrase or password." not in html
+
+
+def test_message_details_structure_and_theme_confirmation_styles():
+    tree = Structure((ROOT / "app/templates/client.html").read_text())
+    details = tree.by_id("message-details")
+    assert details["tag"] == "dialog"
+    for identifier in ("message-details-status", "message-details-time",
+                       "message-details-recipients", "message-details-technical"):
+        assert details in tree.by_id(identifier)["parents"]
+    technical = tree.by_id("message-details-technical")
+    assert any(parent["tag"] == "details" for parent in technical["parents"])
+    css = (ROOT / "app/static/client.css").read_text()
+    assert ".message-status.status-read { color: var(--signature); }" in css
+    assert "--signature: #E5482D" in css
+    assert ".message-details::backdrop" in css
+    assert "max-height: 80dvh" in css
+    assert "font-family: var(--sans)" in css
+
+
+def test_editorial_message_layout_uses_compact_bubbles_and_integrated_svg_indicators():
+    css = (ROOT / "app/static/client.css").read_text()
+    assert ".message.mine { align-self: flex-end; align-items: flex-end; }" in css
+    assert ".message-header" in css and ".message-sender" in css
+    assert ".message-sender { min-width: 0; font-size: .675rem;" in css
+    assert (".message-header time, .message-separator { flex-shrink: 0; "
+            "color: var(--muted); font-size: .675rem;") in css
+    assert "width: fit-content" in css and "max-width: min(88%, 38rem)" in css
+    assert ".message-content { display: inline; white-space: pre-wrap" in css
+    assert ".message-bubble { position: relative; width: fit-content; min-width: 0;" in css
+    assert '.message.mine .message-content::after { content: ""; display: inline-block;' in css
+    assert "width: calc(28px + .35em); height: 1em;" in css
+    assert ".message-footer { position: absolute;" in css
+    assert "min-height: 20px; margin-top: .1rem" not in css
+    assert "background: var(--mine); padding-bottom:" not in css
+    assert ".message.continuation { margin-top: .25rem; }" in css
+    assert ".message-status svg { display: block; width: 20px; height: 15px" in css
+    assert ('svg[data-icon="check"], .message-status svg[data-icon="double-check"] '
+            '{ width: 14px; height: 10.5px; }') in css
+    assert "border-radius: 2px" in css
+    assert "border-radius: 3px 3px 0 0" in css
+    assert "avatar" not in css
+    assert "border-right: 2px solid var(--accent)" not in css
+    assert "box-shadow" not in css

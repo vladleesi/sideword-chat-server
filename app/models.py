@@ -136,7 +136,7 @@ class PendingMessage(Base):
     """Ciphertext waiting for a specific recipient.
 
     Only opaque ciphertext is stored; the server cannot decrypt it.
-    After the recipient marks read, the row is deleted — there is no permanent archive.
+    Durable ACK, legacy read or expiry deletes the row; viewing never delays deletion.
     """
 
     __tablename__ = "pending_messages"
@@ -165,7 +165,7 @@ class PendingMessage(Base):
     )
     delivered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
-    )
+    )  # Legacy streaming timestamp, not a durable-delivery acknowledgement.
     read_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -196,6 +196,7 @@ class ReadReceipt(Base):
     )
     reader_public_id: Mapped[str] = mapped_column(String(64), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False, default="read")
+    message_delivery_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
@@ -228,6 +229,7 @@ class SendRecord(Base):
     client_message_id: Mapped[str] = mapped_column(String(64))
     payload_hash: Mapped[str] = mapped_column(String(64))
     recipients_json: Mapped[str] = mapped_column(Text)
+    receipt_state_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
