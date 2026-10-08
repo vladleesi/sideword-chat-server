@@ -1,6 +1,6 @@
 # Security review
 
-Current code: 0.9.2. Invite/session/membership lifecycle reviewed 2026-10-08; static asset transport/cache boundaries, client UI, sender/reader labels, P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
+Current code: 0.10.0. Explicit conversation closure and invite/session/membership lifecycle reviewed 2026-10-08; static asset transport/cache boundaries, client UI, sender/reader labels, P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
 This is a source review with regression tests, not an independent audit.
 Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 
@@ -12,6 +12,7 @@ Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 | Delivery | Exact acknowledgements cannot delete a newer delivery after SQLite row-ID reuse. Durable delivery and actual viewing are distinct, bound to original recipients and delivery IDs; legacy read deletion and receipt creation still commit together. Identical uploads reuse the original result within a bounded retry window. |
 | Administration | Signed, cookie-bound form tokens prevent cross-site request forgery (CSRF). Login limits persist across processes/restarts. Logout and password resets revoke registered sessions; concurrent old-password logins cannot escape a reset. |
 | Client sessions | Short access tokens, hashed refresh credentials, rotation/replay detection, per-device revocation and explicit legacy cutoff controls. Issuance rechecks user/invite validity under the database write reservation. |
+| Conversation closure | Persisted, reversible `closed_at` blocks new admissions and live messaging across every session while retaining authorized roster/archive access. Shared checks cover sends/read/status, poll/backlog receipts and ciphertext, live push and presence. Closure and sends serialize on SQLite's write reservation; closure never deletes local history or server queues. |
 | Transport and capacity | HTTPS/WSS outside loopback, private administration by default, bounded HTTP/WS traffic and database queues. Shared runner/Docker suppress raw access and WS INFO logs. |
 | Device state | Non-exportable private keys, locally calculated fingerprints, atomic first-use peer pins, encrypted history/outbox and persistence before deletion acknowledgements. A separate committed identity read precedes invite admission; unreadable saved identities are preserved and cannot be overwritten by routine/activation writes. |
 | P-256 boundary | Native non-exportable ECDH identity/ephemeral keys; validated uncompressed 65-byte P-256 public points. Retired keys cannot authenticate, issue/refresh sessions, or share a room with new clients. Configuration imports reject invalid keys before replacement/deletion. The new browser database is separate from prior test data, with no old-format decryption or key conversion. |
@@ -71,6 +72,15 @@ another authorized invite activation can therefore redisplay an old chat.
 Admin revocation revalidates each affected socket instead of closing valid
 sessions from other invites. Unrelated anonymous admission creates a different
 public identity and cannot recover old membership using only its public key.
+For room-wide shutdown without deletion, administrators explicitly close the
+conversation. Authenticated members retain its roster and saved local history;
+other conversations and sessions remain usable. Live messaging stays blocked
+regardless of which invite authenticates the user. Closing does not extend queued
+data retention or revoke already held plaintext. Same-process sockets receive a
+`chat_state` update; other workers observe state through their database checks and
+polling. Requests authorized before closure and small check/send races cannot be
+retracted. Late ownership-checked durable ACKs remain permitted, preserving the
+persist-before-deletion contract.
 See [lifecycle analysis and operational controls](SESSION_LIFECYCLE.md).
 WebSockets revalidate before delivery/backlog, on incoming frames and every
 30 seconds while idle. Checks cannot retract a response already authorized or
@@ -121,8 +131,9 @@ Compatibility and recovery boundaries:
   recovery into a fresh session. Revoke/delete the invite if those secrets leak.
   This blocks recovery through that invite, not access through other live
   sessions. Deactivate a compromised user to block its identity across chats.
-- There is no room-specific removal or non-destructive room termination control.
-  Invite revocation is not a participant ban; explicit chat deletion destroys
+- There is no room-specific participant removal control. Invite revocation is
+  not a participant ban; conversation closure blocks live messaging for all
+  participants without changing membership. Explicit chat deletion destroys
   server relay data but cannot erase local message history or external copies.
 
 Admin cookies are HttpOnly/SameSite=Strict and Secure on HTTPS or a configured
@@ -271,6 +282,22 @@ Review upgrade/rollback before rollout: never reset ratchet state or reuse keys.
 Old messages gain no retroactive forward secrecy.
 
 ## Latest verification record
+
+- **Conversation closure, 2026-10-08:** prepared 0.10.0 passed all 265 isolated
+  Python tests on Python 3.13 and all 172 JavaScript tests, plus Ruff, compilation,
+  client/link-form syntax, whitespace, affected documentation links and release
+  section validation. New cases cover other-invite sessions, stale-client sends,
+  archive/queue preservation, new-invite transitions, reconnects, live push and
+  presence suppression, late durable ACKs, explicit own-outbox deletion,
+  reopening, export/import validation and isolated additive migration. Client
+  regressions retain encrypted history/non-exportable storage keys and pause
+  ciphertext retries without blocking other rooms. Public listener tests include
+  the new private admin paths. A local restart verified 0.10.0 health on both
+  listeners, the Close route, blocked public administration, the additive
+  migration and preserved conversation/participant counts. No production
+  rollout or browser evidence was obtained. A read-only production check
+  confirmed the supplied invite was revoked; the deleted identity's former
+  session cannot be reconstructed.
 
 - **Invite/session lifecycle, 2026-10-08:** 0.9.2 passed all 256 isolated Python
   tests on Python 3.13 and all 168 JavaScript tests, plus Ruff, compilation,

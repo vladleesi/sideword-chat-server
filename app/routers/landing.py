@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_session
-from ..models import Link, LinkType
+from ..models import Chat, Link, LinkType
 from ..templates import templates
 
 router = APIRouter(tags=["landing"])
@@ -53,6 +53,10 @@ async def landing(
             status = "revoked"
         elif expired:
             status = "expired"
+        elif link.chat_id is not None and (
+            chat := await session.get(Chat, link.chat_id)
+        ) is not None and chat.closed_at is not None:
+            status = "closed"
         elif link.max_uses and link.uses_count >= link.max_uses:
             status = "used"
         elif not link.is_active:

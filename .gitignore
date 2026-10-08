@@ -10,6 +10,7 @@ env/
 .env.local
 .env.*
 !.env.example
+gha-creds-*.json
 /.tools/
 /.runtime/
 /.cloudflared/

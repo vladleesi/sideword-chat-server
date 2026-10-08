@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.0 — 2026-10-08
+
+- Add reversible conversation closure that blocks new joins, sends, queued delivery and presence through every session while preserving memberships, local history and pending messages.
+- Keep closed conversations available as saved history, pause their outgoing retries, and retain messaging in other conversations; administrators can reopen without changing invite revocation.
+- Clarify that invite revocation disables its admissions and issuing sessions while conversation closure controls all participants; preserve closure state in configuration exports and imports.
+- Compact the admin Chats table with expandable member counts, stacked type tags and shorter Close/Reopen labels; keep invite actions on one row.
+
 ## 0.9.2 — 2026-10-08
 
 - Revalidate each affected WebSocket on invite revocation or deletion, preserving connections authenticated through other valid invites.

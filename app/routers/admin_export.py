@@ -83,6 +83,7 @@ async def export_bundle(
                 "chat_type": c.chat_type.value,
                 "title": c.title,
                 "created_at": _dt_iso(c.created_at),
+                "closed_at": _dt_iso(c.closed_at),
                 "members": [
                     {
                         "public_id": m.user.public_id,
@@ -171,6 +172,11 @@ async def import_bundle(
         if protected and not valid_verifier(verifier):
             raise HTTPException(400, "Invalid or missing room password verifier.")
     for raw_chat in data.get("chats", []):
+        closed_at = raw_chat.get("closed_at")
+        if closed_at is not None and (
+            not isinstance(closed_at, str) or _parse_dt(closed_at) is None
+        ):
+            raise HTTPException(400, "Invalid conversation closure timestamp.")
         for raw_member in raw_chat.get("members", []):
             value = raw_member.get("resume_hash")
             if value is not None and (
@@ -223,6 +229,7 @@ async def import_bundle(
         chat_type = ChatType(raw_chat.get("chat_type", "personal"))
         chat = Chat(
             chat_type=chat_type,
+            closed_at=_parse_dt(raw_chat.get("closed_at")),
             title=raw_chat.get("title"),
             created_at=_parse_dt(raw_chat.get("created_at"))
             or datetime.now(timezone.utc),

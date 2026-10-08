@@ -389,6 +389,38 @@ for (const failed of [false, true]) {
   });
 }
 
+test('closed-room retries remain encrypted and paused while other-room retries and reopening work', async () => {
+  const run = client();
+  await run(`(async () => {
+    identity = {token:'test-token', publicId:'alice', storageKey:
+      await crypto.subtle.generateKey({name:'AES-GCM', length:256}, false, ['encrypt','decrypt'])};
+    chats = [{id:7, closed_at:'2026-10-08T00:00:00Z', participants:[]},
+      {id:8, closed_at:null, participants:[]}];
+    deviceLock = async (_, action) => action();
+    globalThis.records = new Map(); globalThis.requests = [];
+    putDatabaseValue = async (key,value) => records.set(key,value);
+    readHistoryRecords = async () => [...records].filter(([key]) => key.startsWith('outbox:'))
+      .map(([key,value]) => ({key,value}));
+    removeOutbox = async key => records.delete(key);
+    api = async (path, options) => { requests.push({path,body:JSON.parse(options.body)});
+      return {created_at:'2026-10-08T00:00:00Z'}; };
+    for (const chatId of [7,8]) await persistOutbox({chatId, messageId:'stable-'+chatId,
+      envelopes:[{recipient_public_id:'peer', ciphertext:'stable-ciphertext'}],
+      plaintext:'private pending text', createdAt:Date.now(), expiresAt:Date.now()+60000});
+    await flushOutbox();
+  })()`);
+  const requests = () => JSON.parse(run('JSON.stringify(requests)'));
+  assert.deepEqual(requests().map(request => request.path), ['/api/v1/chats/8/messages']);
+  assert.equal(run('[...records.keys()].filter(key => key.startsWith("outbox:")).length'), 1);
+  assert.equal(run('JSON.stringify([...records]).includes("private pending text")'), false);
+  await run('chats[0].closed_at = null; flushOutbox();');
+  assert.deepEqual(requests().map(request => request.path),
+    ['/api/v1/chats/8/messages', '/api/v1/chats/7/messages']);
+  assert.equal(requests()[1].body.client_message_id, 'stable-7');
+  assert.equal(requests()[1].body.envelopes[0].ciphertext, 'stable-ciphertext');
+  assert.equal(run('[...records.keys()].filter(key => key.startsWith("outbox:")).length'), 0);
+});
+
 test('encrypted outbox survives upload response loss and history-save failure', async () => {
   const run = client();
   await run(`(async () => {

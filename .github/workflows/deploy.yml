@@ -1,0 +1,97 @@
+name: Deploy backend manually
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    # Promotion/release cannot move the checked main commit during activation.
+    concurrency:
+      group: promote-main
+      cancel-in-progress: false
+    env:
+      TESTED_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify the checked commit is still current
+        id: current
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main develop
+          if [ "$(git rev-parse origin/main)" = "$TESTED_SHA" ] && \
+             [ "$(git rev-parse origin/develop)" = "$TESTED_SHA" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::The selected commit is no longer current; skipping deployment."
+          fi
+      - name: Verify both CI checks on the exact commit
+        if: steps.current.outputs.deploy == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python -m scripts.deploy ci --sha "$TESTED_SHA"
+      - name: Validate deployment configuration
+        if: steps.current.outputs.deploy == 'true'
+        # Environment-scoped variables become available after the job starts.
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_ZONE: ${{ vars.GCP_ZONE }}
+          GCP_INSTANCE: ${{ vars.GCP_INSTANCE }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          SIDEWORD_DEPLOY_COMPOSE: ${{ vars.SIDEWORD_DEPLOY_COMPOSE }}
+        run: python -m scripts.deploy validate
+      - name: Build and package the selected backend
+        if: steps.current.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --tag "sideword-ci:$TESTED_SHA" --label "org.opencontainers.image.revision=$TESTED_SHA" .
+          sideword_image_id=$(docker image inspect --format '{{.Id}}' "sideword-ci:$TESTED_SHA")
+          docker run --rm --network none --entrypoint python "$sideword_image_id" -m pip check
+          mkdir -m 700 "$RUNNER_TEMP/sideword-deploy"
+          docker save "$sideword_image_id" | gzip > "$RUNNER_TEMP/sideword-deploy/image.tar.gz"
+          sideword_checksum=$(python -c 'import hashlib, sys; print(hashlib.file_digest(open(sys.argv[1], "rb"), "sha256").hexdigest())' "$RUNNER_TEMP/sideword-deploy/image.tar.gz")
+          sideword_version=$(python -c 'import runpy; print(runpy.run_path("app/version.py")["__version__"])')
+          echo "IMAGE_ID=$sideword_image_id" >> "$GITHUB_ENV"
+          echo "IMAGE_CHECKSUM=$sideword_checksum" >> "$GITHUB_ENV"
+          echo "BACKEND_VERSION=$sideword_version" >> "$GITHUB_ENV"
+      - name: Verify the archive before authenticating
+        if: steps.current.outputs.deploy == 'true'
+        run: python -m scripts.deploy verify --archive "$RUNNER_TEMP/sideword-deploy/image.tar.gz" --sha "$TESTED_SHA" --image-id "$IMAGE_ID" --checksum "$IMAGE_CHECKSUM" --version "$BACKEND_VERSION"
+      - name: Authenticate with short-lived Google credentials
+        if: steps.current.outputs.deploy == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Set up Google Cloud CLI
+        if: steps.current.outputs.deploy == 'true'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Transfer and activate the checked image through IAP
+        if: steps.current.outputs.deploy == 'true'
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_ZONE: ${{ vars.GCP_ZONE }}
+          GCP_INSTANCE: ${{ vars.GCP_INSTANCE }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          SIDEWORD_DEPLOY_COMPOSE: ${{ vars.SIDEWORD_DEPLOY_COMPOSE }}
+        run: python -m scripts.deploy vm --archive "$RUNNER_TEMP/sideword-deploy/image.tar.gz" --sha "$TESTED_SHA" --image-id "$IMAGE_ID" --checksum "$IMAGE_CHECKSUM" --version "$BACKEND_VERSION"

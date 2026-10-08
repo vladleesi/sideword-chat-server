@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
@@ -541,6 +541,7 @@ async def chats_list(
             "id": c.id,
             "chat_type": c.chat_type.value,
             "title": c.title,
+            "closed_at": c.closed_at,
             "created_at": c.created_at,
             "members": [m.user.public_id for m in c.members if m.user is not None],
             "pending": pending_by_chat.get(c.id, 0),
@@ -552,6 +553,29 @@ async def chats_list(
         "chats.html",
         {"admin": admin, "chats": rows},
     )
+
+
+@router.post("/chats/{chat_id}/close")
+@router.post("/chats/{chat_id}/reopen")
+async def set_chat_state(
+    chat_id: int,
+    request: Request,
+    admin: Admin = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    # Serialize closure with sends, including across independent workers.
+    await session.execute(text("BEGIN IMMEDIATE"))
+    chat = await session.get(Chat, chat_id)
+    if chat is None:
+        raise HTTPException(404, "chat not found")
+    if request.url.path.endswith("/close"):
+        if chat.closed_at is None:
+            chat.closed_at = datetime.now(timezone.utc)
+    else:
+        chat.closed_at = None
+    await session.commit()
+    await ws_manager.notify_chat_state(chat_id)
+    return RedirectResponse("/admin/chats", status_code=303)
 
 
 @router.post("/chats/{chat_id}/purge")

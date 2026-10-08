@@ -61,6 +61,9 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        columns = await conn.execute(text("PRAGMA table_info(chats)"))
+        if "closed_at" not in {row[1] for row in columns}:
+            await conn.execute(text("ALTER TABLE chats ADD COLUMN closed_at DATETIME"))
         # Delivery identities survive row-ID reuse and remain stable across
         # restarts/backups. Existing queued rows are backfilled exactly once.
         for table in ("pending_messages", "read_receipts"):

@@ -45,7 +45,7 @@ from ..schemas import (
     SendMessageResponse,
     _decode_b64,
 )
-from ..services import chat_members, ensure_chat_member, load_chat_info
+from ..services import chat_members, ensure_chat_member, load_chat_info, open_chat_ids
 from ..ws_manager import manager as ws_manager
 
 router = APIRouter(prefix="/api/v1", tags=["chats"])
@@ -59,7 +59,7 @@ async def get_chat(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ChatInfo:
-    chat = await ensure_chat_member(session, chat_id, user)
+    chat = await ensure_chat_member(session, chat_id, user, allow_closed=True)
     return await load_chat_info(session, chat)
 
 
@@ -247,7 +247,8 @@ async def _fetch_poll(session: AsyncSession, user: User) -> PollResponse:
     result = await session.execute(
         select(PendingMessage, User)
         .join(User, User.id == PendingMessage.sender_id)
-        .where(PendingMessage.recipient_id == user.id)
+        .where(PendingMessage.recipient_id == user.id,
+               PendingMessage.chat_id.in_(open_chat_ids(user.id)))
         .order_by(PendingMessage.id.asc()).limit(100)
     )
     pending_rows = result.all()
@@ -563,7 +564,7 @@ async def drop_undelivered(
 ) -> dict[str, int]:
     """Drop this user's own unread ciphertext still queued on the server."""
 
-    await ensure_chat_member(session, chat_id, user)
+    await ensure_chat_member(session, chat_id, user, allow_closed=True)
     res = await session.execute(
         delete(PendingMessage).where(
             PendingMessage.chat_id == chat_id,

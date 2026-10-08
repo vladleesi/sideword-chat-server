@@ -59,6 +59,7 @@ async def _run(output: Path) -> int:
                 "chat_type": c.chat_type.value,
                 "title": c.title,
                 "created_at": _dt_iso(c.created_at),
+                "closed_at": _dt_iso(c.closed_at),
                 "members": [
                     {
                         "public_id": m.user.public_id,

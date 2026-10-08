@@ -60,6 +60,7 @@ class ChatInfo(BaseModel):
     chat_type: Literal["personal", "group"]
     title: str | None = None
     created_at: datetime
+    closed_at: datetime | None = None
     participants: list[ParticipantInfo]
 
 
@@ -284,6 +285,7 @@ class ExportedChat(BaseModel):
     chat_type: Literal["personal", "group"]
     title: str | None
     created_at: datetime
+    closed_at: datetime | None = None
     members: list[ExportedChatMember]
 
 

@@ -252,6 +252,12 @@ table.data .date-cell { white-space: nowrap; }
 table.data th, table.data td { border: 0; }
 table.data tbody tr + tr > td { border-top: 1px solid var(--border); }
 .table-scroll { overflow-x: auto; }
+.type-tags { display: flex; flex-direction: column; align-items: flex-start; gap: .2rem; }
+.chat-members > summary { cursor: pointer; white-space: nowrap; }
+.chat-members > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.chat-member-list { list-style: none; margin: .5rem 0 0; padding: 0; max-height: 12rem; max-width: 20rem; overflow: auto; }
+.chat-member-list li + li { margin-top: .25rem; }
+.chat-member-list .pill { overflow-wrap: anywhere; }
 table.links-table { table-layout: fixed; font-size: .85rem; }
 .links-select-column { width: 2.25rem; }
 .links-type-column { width: 9rem; }
@@ -259,17 +265,17 @@ table.links-table { table-layout: fixed; font-size: .85rem; }
 .links-uses-column { width: 6rem; }
 .links-status-column { width: 6rem; }
 .links-date-column { width: 10rem; }
-/* 60% of the former URL space: 86% of the table minus 53.75rem of fixed columns. */
-.links-url-column { width: calc(51.6% - 32.25rem); }
+/* 60% of the former URL space: 86% of the table minus 58.25rem of fixed columns. */
+.links-url-column { width: calc(51.6% - 34.95rem); }
 .links-note-column { width: auto; }
-.links-actions-column { width: 5.5rem; }
+.links-actions-column { width: 10rem; }
 table.links-table th, table.links-table td { overflow-wrap: anywhere; white-space: normal; }
 table.links-table .date-cell, table.links-table td[data-label="Type"] { white-space: nowrap; }
 .links-table td[data-label="Type"] .badge { white-space: nowrap; }
-.links-table .badge { white-space: normal; margin-bottom: .2rem; }
-.links-table td[data-label="Type"] .badge { display: block; width: fit-content; }
+.links-table .badge { white-space: normal; }
 table.links-table td:last-child { white-space: normal; text-align: left; }
-.links-table .row-actions { flex-wrap: wrap; justify-content: flex-start; gap: .3rem; }
+.links-table .row-actions { flex-wrap: nowrap; justify-content: flex-start; gap: .3rem; }
+.links-table .row-actions form { flex-shrink: 0; }
 .invite-url { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: .85em; }
 @media (max-width: 1300px) {
   table.links-table, .links-table tbody { display: block; }

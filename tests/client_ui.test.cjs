@@ -4,6 +4,65 @@ const fs = require('node:fs');
 
 const { client } = require('./client_dom.cjs');
 
+test('closed conversations retain readable encrypted history and disable messaging until reopened', async () => {
+  const app = client({ observeVisibility: true });
+  await app.run(`(async () => {
+    identity.storageKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    globalThis.records = [];
+    putDatabaseValue = async (key, value) => records.push({key, value});
+    readHistoryRecords = async () => records;
+    await appendMessage(7, { id: 'retained', kind: 'theirs', text: 'retained local history', createdAt: 1 });
+    chats[0].closed_at = '2026-10-08T00:00:00Z';
+    messagesByChat.clear(); loadedHistoryKeys.clear();
+    await loadStoredHistory(); selectChat(7);
+  })()`);
+  const input = app.nodes.get('#message-input');
+  assert.equal(input.disabled, true);
+  assert.equal(app.nodes.get('#send-button').disabled, true);
+  assert.match(app.nodes.get('#composer-help').textContent, /closed.*history.*kept/i);
+  assert.match(app.nodes.get('#chat-list').textContent, /Closed/);
+  assert.equal(app.nodes.get('#message-list').firstChild.messageContent.textContent, 'retained local history');
+  assert.equal(app.run('records.length'), 1);
+  assert.equal(app.run('identity.storageKey.extractable'), false);
+  app.run("elements.messageInput.value = 'must not submit';");
+  await app.nodes.get('#message-form').emit('submit', { preventDefault() {} });
+  assert.equal(input.value, 'must not submit');
+  app.run('chats[0].closed_at = null; selectChat(7);');
+  assert.equal(input.disabled, false);
+  assert.equal(app.nodes.get('#send-button').disabled, false);
+  assert.equal(app.nodes.get('#message-list').firstChild.messageContent.textContent, 'retained local history');
+  assert.equal(app.run('records.length'), 1);
+});
+
+test('chat state notifications refresh archive permissions and leave other conversations usable', async () => {
+  const app = client();
+  app.run(`identity.publicKey = 'own-key';
+    globalThis.archived = { ...chats[0], closed_at: '2026-10-08T00:00:00Z' };
+    globalThis.active = { ...chats[0], id: 8, title: 'Other room', closed_at: null };
+    api = async () => ({user: {public_id:'me', public_key:'own-key'}, chats:[archived, active]});
+    writeIdentity = async () => {}; observePeerKey = async peer => peer;
+    renderOutbox = async () => {};`);
+  await app.run("handleSocketPayload({type:'chat_state', chat_id:7});");
+  assert.equal(app.run('selectedChatId'), 7);
+  assert.equal(app.nodes.get('#message-input').disabled, true);
+  assert.equal(app.run('identity.token'), 'not-for-display');
+  app.run('selectChat(8);');
+  assert.equal(app.nodes.get('#message-input').disabled, false);
+});
+
+test('closed archives never emit new viewing confirmations or query live status', async () => {
+  const app = client({ observeVisibility: true });
+  app.run(`chats[0].closed_at = '2026-10-08T00:00:00Z';
+    globalThis.apiCalls = [];
+    api = async (...args) => { apiCalls.push(args); return {}; };
+    pendingReadsByChat.set(7, new Map([['saved', {chat_id:7}]]));
+    identity.receiptRetentionSeconds = 86400;`);
+  await app.run('flushAcknowledgements(); recoverMessageStatuses();');
+  assert.equal(app.run('apiCalls.length'), 0);
+  assert.equal(app.run('pendingReadsByChat.get(7).size'), 1);
+});
+
 test('mobile opening and reopening a preselected chat lands on latest messages without observer timing', async () => {
   const app = client({ mobile: true, viewportAware: true });
   await app.run(`(async () => {

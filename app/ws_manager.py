@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from datetime import timezone
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -13,7 +14,8 @@ from sqlalchemy import select
 
 from .config import get_settings
 from .db import SessionLocal
-from .models import ChatMember, User
+from .models import Chat, ChatMember, User
+from .services import open_chat_ids
 
 HEARTBEAT_TIMEOUT_SECONDS = 75
 
@@ -131,7 +133,8 @@ class ConnectionManager:
             async with SessionLocal() as session:
                 memberships = (await session.execute(
                     select(ChatMember.user_id, ChatMember.chat_id)
-                    .where(ChatMember.user_id.in_(observers))
+                    .where(ChatMember.user_id.in_(observers),
+                           ChatMember.chat_id.in_(open_chat_ids()))
                 )).all()
                 chat_ids = {chat_id for _, chat_id in memberships}
                 peers = (await session.execute(
@@ -181,6 +184,17 @@ class ConnectionManager:
             await self.refresh_presence()
 
     async def send_json(self, user_id: int, payload: dict[str, Any]) -> None:
+        event = payload.get("message") or payload.get("read") or payload.get("delivery") or payload
+        chat_id = event.get("chat_id") if isinstance(event, dict) else None
+        if chat_id is not None:
+            async with SessionLocal() as session:
+                query = select(ChatMember.id).where(
+                    ChatMember.user_id == user_id, ChatMember.chat_id == chat_id,
+                )
+                if payload.get("type") != "chat_state":
+                    query = query.where(ChatMember.chat_id.in_(open_chat_ids()))
+                if await session.scalar(query) is None:
+                    return
         sockets = list(self._connections.get(user_id, ()))
         for ws in sockets:
             try:
@@ -188,6 +202,22 @@ class ConnectionManager:
                     await asyncio.wait_for(ws.send_json(payload), timeout=5)
             except Exception:
                 await self.disconnect(user_id, ws)
+
+    async def notify_chat_state(self, chat_id: int) -> None:
+        async with SessionLocal() as session:
+            chat = await session.get(Chat, chat_id)
+            if chat is None:
+                return
+            closed_at = (chat.closed_at.replace(tzinfo=timezone.utc).isoformat()
+                         if chat.closed_at is not None else None)
+            users = list((await session.scalars(select(ChatMember.user_id).where(
+                ChatMember.chat_id == chat_id,
+            ))).all())
+        for user_id in users:
+            await self.send_json(user_id, {
+                "type": "chat_state", "chat_id": chat_id, "closed_at": closed_at,
+            })
+        await self.refresh_presence()
 
     async def revoke(self, user_ids: set[int]) -> None:
         """Recheck affected users; close only sockets whose credentials are invalid."""

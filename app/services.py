@@ -53,6 +53,8 @@ async def load_chat_info(session: AsyncSession, chat: Chat) -> ChatInfo:
         chat_type=chat.chat_type.value,
         title=chat.title,
         created_at=chat.created_at,
+        closed_at=(chat.closed_at.replace(tzinfo=timezone.utc)
+                   if chat.closed_at is not None else None),
         participants=[user_to_participant(u) for u in members],
     )
 
@@ -131,6 +133,8 @@ async def activate_link(
                 await session.commit()
                 return member.user, chat, link
 
+    if chat is not None and chat.closed_at is not None:
+        raise HTTPException(410, "conversation closed")
     capacity = 2 if link.link_type is LinkType.personal else link.max_uses
     if not link.is_active or (capacity and max(link.uses_count, len(members)) >= capacity):
         raise HTTPException(410, "room sealed; reconnect with your saved session")
@@ -177,7 +181,7 @@ async def get_user_chats(session: AsyncSession, user: User) -> list[Chat]:
 
 
 async def ensure_chat_member(
-    session: AsyncSession, chat_id: int, user: User
+    session: AsyncSession, chat_id: int, user: User, *, allow_closed: bool = False,
 ) -> Chat:
     result = await session.execute(
         select(Chat)
@@ -187,7 +191,19 @@ async def ensure_chat_member(
     chat = result.scalars().first()
     if chat is None:
         raise HTTPException(status_code=404, detail="chat not found")
+    if not allow_closed and chat.closed_at is not None:
+        raise HTTPException(410, "conversation closed")
     return chat
+
+
+def open_chat_ids(user_id: int | None = None):
+    """Shared delivery/presence authorization; closing never removes membership."""
+    query = select(Chat.id).where(Chat.closed_at.is_(None))
+    if user_id is not None:
+        query = query.where(Chat.id.in_(
+            select(ChatMember.chat_id).where(ChatMember.user_id == user_id),
+        ))
+    return query
 
 
 async def chat_members(session: AsyncSession, chat_id: int) -> list[User]:

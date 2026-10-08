@@ -4,6 +4,7 @@
 {% block container_class %}links-container{% endblock %}
 {% block content %}
 <h1>Invite links</h1>
+<p class="muted">Revoking an invite blocks joins and sessions issued through it. Existing members with another valid session retain access. To stop messaging for everyone without deleting history, <a href="/admin/chats">close the conversation</a>.</p>
 <section id="created-invite-panel" class="card created-invite" aria-labelledby="created-invite-heading" {% if not created_invite %}hidden{% endif %}>
   <div class="section-heading">
     <h2 id="created-invite-heading" tabindex="-1">Invite created</h2>
@@ -132,9 +133,11 @@
       <tr data-link-id="{{ link.id }}">
         {{ select_row('links', link.id) }}
         <td data-label="Type">
+          <div class="type-tags">
           {% if link.link_type == "personal" %}<span class="badge">personal</span>
           {% else %}<span class="badge alt">group</span>{% endif %}
           {% if link.password_required %}<span class="badge">password protected</span>{% endif %}
+          </div>
         </td>
         <td data-label="URL">
           <a class="invite-url" href="{{ link.url }}" target="_blank" rel="noopener noreferrer">{{ link.url }}</a>

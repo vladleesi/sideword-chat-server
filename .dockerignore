@@ -1,6 +1,7 @@
 .git
 .env
 .env.*
+gha-creds-*.json
 .venv
 .runtime
 .cloudflared

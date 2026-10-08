@@ -10,7 +10,8 @@ async def origin(scope, receive, send):
     await PlainTextResponse("origin reached")(scope, receive, send)
 
 
-@pytest.mark.parametrize("path", ["/admin/login", "/admin/api/export", "/docs", "/openapi.json"])
+@pytest.mark.parametrize("path", ["/admin/login", "/admin/api/export", "/docs", "/openapi.json",
+                                  "/admin/chats/7/close", "/admin/chats/7/reopen"])
 def test_public_listener_blocks_private_http_routes(path):
     response = TestClient(PublicListener(origin)).get(path)
     assert response.status_code == 404

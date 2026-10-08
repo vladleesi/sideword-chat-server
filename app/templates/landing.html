@@ -34,6 +34,9 @@
         </details>
       {% elif status == "expired" %}
         <p>This link expired. Ask your administrator for a fresh invite.</p>
+      {% elif status == "closed" %}
+        <p>This conversation is closed. Existing participants keep their saved history; new participants cannot join.</p>
+        <a class="button primary" href="/client?invite={{ token }}">Open saved conversation</a>
       {% elif status == "used" %}
         <p>This room is sealed. All participant slots are filled.</p>
         <a class="button primary" href="/client?invite={{ token }}">Reconnect from your joined browser</a>

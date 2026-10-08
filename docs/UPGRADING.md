@@ -57,6 +57,7 @@ SQLite 3.35+ is required for atomic read deletion/receipt creation.
 
 | Upgrade | Required action / boundary |
 | --- | --- |
+| Conversation closure (0.10.0) | Startup adds nullable `chats.closed_at`; existing conversations remain open, including those with revoked invites. Deploy all backend writers and matching client assets together, then reload clients. No keys, sessions or history are replaced. Admin > Chats can close/reopen a conversation independently of its invites. Closure preserves membership and queued data but normal TTL retention continues; reopening can deliver retained queues. Export/import includes closure state. Older servers and clients do not implement this control; do not mix workers or roll back to code that ignores closed state while access is open. |
 | Browser key pinning | Deploy `client-protocol.js`, `client.js` and `client.html` together. Existing keys/history remain usable; additive `peer:` records hold pins. Verify peers out of band. Do not clear history to dismiss a changed-key warning. |
 | Exact acknowledgements | Upgrade the server before clients. Startup backfills random delivery IDs, preserving ciphertext/timestamps. The bundled client requires exact endpoints and retains failed acknowledgements instead of falling back to legacy deletion. |
 | Registered sessions (0.3.0) | Startup adds retry/session/rotation/login-limit tables. Admins using old stateless tokens must log in again; cookie-based forms/APIs need CSRF tokens. Browser session/outbox coordination requires Web Locks and fails closed without them. |
@@ -104,7 +105,7 @@ credentials revoked after the snapshot. Before reopening access:
 2. Rotate `SIDEWORD_SECRET_KEY` and configure the new value on every worker.
 3. In one database transaction, delete restored `refresh_uses`, then
    `client_sessions`, then `admin_sessions`.
-4. Reapply later invite revocations, user deactivations and admin password resets.
+4. Reapply later invite revocations, conversation closures, user deactivations and admin password resets.
    The snapshot rolled these back too; session cleanup cannot reconstruct them.
 5. Restart and verify old admin/client tokens and refresh credentials are rejected.
    Admins log in again; clients recover through still-authorized saved invite

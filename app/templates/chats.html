@@ -3,6 +3,7 @@
 {% block title %}Chats · Sideword{% endblock %}
 {% block content %}
 <h1>Chats</h1>
+<p class="muted">Close a conversation to pause joins and messaging for every participant without deleting data. Reopen it to resume. Invite revocation only disables access through that invite.</p>
 <section class="card">
   {% if chats %}
   {{ selection_toolbar('chats', 'Delete the selected chats, memberships, queued messages and receipts? Their invite links will also be deleted. This cannot be undone.') }}
@@ -26,17 +27,39 @@
         {{ select_row('chats', c.id) }}
         <td>#{{ c.id }}</td>
         <td>
+          <div class="type-tags">
           {% if c.chat_type == "personal" %}<span class="badge">personal</span>
           {% else %}<span class="badge alt">group</span>{% endif %}
+          {% if c.closed_at %}<span class="badge">closed</span>{% endif %}
+          </div>
         </td>
         <td>{{ c.title or "-" }}</td>
         <td>
-          {% for pid in c.members %}<span class="pill mono">{{ pid }}</span>{% endfor %}
+          {% if c.members %}
+          <details class="chat-members">
+            <summary>{{ c.members|length }} {{ 'user' if c.members|length == 1 else 'users' }}</summary>
+            <ul class="chat-member-list">
+              {% for pid in c.members %}<li><span class="pill mono">{{ pid }}</span></li>{% endfor %}
+            </ul>
+          </details>
+          {% else %}0 users{% endif %}
         </td>
         <td>{{ c.pending }}</td>
         <td class="date-cell">{{ c.created_at|fmt_dt }}</td>
         <td>
           <div class="row-actions">
+          {% if c.closed_at %}
+          <form method="post" action="/admin/chats/{{ c.id }}/reopen">
+            <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+            <button>Reopen</button>
+          </form>
+          {% else %}
+          <form method="post" action="/admin/chats/{{ c.id }}/close"
+                data-confirm="Pause joining and messaging for everyone in this conversation? Local history and queued data are preserved; you can reopen it.">
+            <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+            <button>Close</button>
+          </form>
+          {% endif %}
           <form method="post" action="/admin/chats/{{ c.id }}/purge"
                 data-confirm="Delete all undelivered ciphertext for this chat?" data-confirm-label="Clear queue">
     <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">

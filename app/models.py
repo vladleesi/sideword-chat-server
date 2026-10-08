@@ -68,6 +68,7 @@ class Chat(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     members: Mapped[list["ChatMember"]] = relationship(
         back_populates="chat", cascade="all, delete-orphan"

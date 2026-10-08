@@ -5,6 +5,13 @@ to build a new cryptographic protocol. It is unaudited, has no recipient forward
 secrecy or post-compromise recovery, and is not the Signal Protocol. See the
 [security review and migration plan](SECURITY_REVIEW.md).
 
+Conversation closure does not change encryption or keys. Respect `closed_at` in
+the authenticated roster: keep local history readable, pause outgoing retries and
+viewing confirmations, and refresh roster state on `chat_state` updates. The
+server independently rejects live messaging for a closed conversation. Reopening
+preserves original ciphertext/message IDs and normal retry deadlines; never
+delete or re-encrypt saved messages merely because a conversation was closed.
+
 The backend's `/api/v1` version, backend release version, and ciphertext version
 are independent. The backend handles opaque ciphertext, never message plaintext
 or private keys. Clients using different envelope formats cannot interoperate

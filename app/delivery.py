@@ -7,8 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import get_settings
-from .models import ChatMember, ReadReceipt, SendRecord
+from .models import ReadReceipt, SendRecord
 from .schemas import IncomingReadReceipt, MessageDeliveryStatus, RecipientDeliveryStatus
+from .services import open_chat_ids
 
 
 def utc(value: datetime) -> datetime:
@@ -77,9 +78,7 @@ async def queued_receipts(session: AsyncSession, user_id: int) -> tuple[list, li
             select(ReadReceipt)
             .where(
                 ReadReceipt.sender_id == user_id,
-                ReadReceipt.chat_id.in_(
-                    select(ChatMember.chat_id).where(ChatMember.user_id == user_id)
-                ),
+                ReadReceipt.chat_id.in_(open_chat_ids(user_id)),
                 ReadReceipt.kind == "delivered" if delivered else ReadReceipt.kind != "delivered",
             )
             .order_by(ReadReceipt.id.asc())

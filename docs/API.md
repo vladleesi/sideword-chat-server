@@ -85,8 +85,10 @@ and deadline fields described there; omitting it uses legacy activation until su
 - A valid existing bearer session reuses its current user when joining another chat.
   Sessions authenticate that identity across all its memberships. Revoking or
   expiring one issuing invite does not remove those memberships; another valid
-  session can still list, read and send in those chats. An unrelated invite or
-  public key alone cannot recover them. See [lifecycle rules](SESSION_LIFECYCLE.md)
+  session can still list, read and send in open chats. Explicit conversation
+  closure blocks live messaging for every session while retaining saved history.
+  An unrelated invite or public key alone cannot recover them. See
+  [lifecycle rules](SESSION_LIFECYCLE.md)
   for local history, participant removal and conversation termination.
 
 Omit `Authorization` for a new anonymous join or credential-only recovery. If
@@ -133,6 +135,23 @@ Authorization: Bearer <JWT>
 
 Returns the current user, chats, and each participant’s public key (used to encrypt outbound envelopes).
 
+Each chat includes nullable `closed_at` (a UTC timestamp). Closed conversations
+remain in this roster and `GET /api/v1/chats/{chat_id}` for authenticated members
+so clients can read their saved history. They reject sends, new admissions,
+viewing/read requests, retry uploads and message-status queries with
+`410 {"detail":"conversation closed"}`. Their pending ciphertext and queued
+receipts are excluded from polling, WebSocket backlog/live delivery and presence.
+Late ownership-checked durable ACKs remain allowed for messages persisted before
+closure; members may also explicitly delete their own queued outbox ciphertext.
+Closure never deletes memberships, local history, outboxes or relay rows;
+normal server retention still applies.
+
+Authenticated administration can POST `/admin/chats/{chat_id}/close` or `/reopen`
+with the usual CSRF protections. Closure is serialized with sends across workers.
+Reopening resumes authorized delivery of retained queues, subject to their TTL,
+and leaves invite revocation/expiry and session validity unchanged. Old clients
+cannot bypass server closure by ignoring the new field.
+
 ## Send message
 
 ```
@@ -167,6 +186,13 @@ Rules:
 
    Immediately send `{"type":"auth","token":"<JWT>"}` as the first frame.
    The `hello` frame includes backlog; `message`, `delivered` and `read` events follow live.
+   Same-process admin closure/reopening sends
+   `{"type":"chat_state","chat_id":7,"closed_at":"<UTC timestamp>"}`
+   only to current members (`closed_at` is null on reopening).
+   Refresh `/me` to obtain authoritative state; ignore
+   unknown event types for forward compatibility. Periodic `/me` refresh also
+   observes changes from other workers. Session authentication and closure
+   authorization remain server-enforced even if a client misses the event.
    Legacy `/ws?token=<JWT>` and `sideword.auth.<JWT>` subprotocol authentication
    remain supported, but can expose credentials to URL/header logs.
 
@@ -181,6 +207,7 @@ Rules:
 
 ## Participant presence
 
+Closed conversations are excluded from presence snapshots.
 Presence is optional and uses the existing `/ws` connection. Send
 `{"type":"auth","token":"<JWT>","presence":true}` as the first frame to opt in.
 After `hello`, the server sends complete `presence` snapshots:

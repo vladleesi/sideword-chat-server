@@ -16,6 +16,7 @@ from ..delivery import queued_receipts
 from ..deps import resolve_client_user
 from ..models import PendingMessage, User
 from ..schemas import IncomingMessage, IncomingReadReceipt
+from ..services import open_chat_ids
 from ..ws_manager import manager
 
 router = APIRouter()
@@ -43,7 +44,8 @@ async def _backlog_payload(
     msg_res = await session.execute(
         select(PendingMessage, User)
         .join(User, User.id == PendingMessage.sender_id)
-        .where(PendingMessage.recipient_id == user.id)
+        .where(PendingMessage.recipient_id == user.id,
+               PendingMessage.chat_id.in_(open_chat_ids(user.id)))
         .order_by(PendingMessage.id.asc()).limit(100)
     )
     messages = [

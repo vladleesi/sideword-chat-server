@@ -14,6 +14,8 @@ This application intentionally allows one identity to belong to several chats.
 | Revoke/expire a session | Invalidates that session, not other sessions or invite resume credentials. Session refresh does not extend its absolute lifetime. |
 | Deactivate a user | Blocks that identity's sessions, refresh and invite resumption across chats. This is account-wide, not removal from one room. Reactivation can restore unexpired access. |
 | Delete a user | Explicit destructive administration removes the identity and associated membership/relay data. Other identities on the same device are separate. |
+| Close a conversation | Blocks new participants and live sending, queued delivery, viewing/read updates and presence through every session. Keeps memberships, the roster, saved local history and pending messages. Other conversations remain usable. |
+| Reopen a conversation | Resumes live access through otherwise valid sessions and invites. Retained queued messages may be delivered before their ordinary TTL expires. Does not restore revoked/expired invites or sessions. |
 | Delete a chat | Explicit destructive administration removes the server conversation, memberships and associated relay records and tombstones its invites. It cannot erase participants' local history or copies. |
 
 ## Why an old chat can appear after a new invite
@@ -88,16 +90,23 @@ Preserve the existing invite-bound session policy for compatibility: expiry and
 revocation invalidate sessions issued through that invite, while other valid
 sessions retain membership. Do not present invite revocation as a guaranteed room
 shutdown or participant ban. For a compromised identity, deactivate the user;
-for a leaked admission/resume credential, revoke its invite. For ending a room,
-the current admin control is explicit chat deletion, with server data loss.
+for a leaked admission/resume credential, revoke its invite. To stop messaging
+for everyone without deleting data, close the conversation in Admin > Chats.
+The client labels it closed, disables sends, pauses its outgoing retries and
+keeps local messages readable. Explicit chat deletion remains a separate
+destructive action.
 
-Room-specific participant removal and non-destructive conversation termination
-are not implemented. If added, they need explicit per-room authorization state
-enforced on send, polling, receipts, backlog and live delivery, updated recipient
-rosters, and preserved local archives. E2EE removal must stop encrypting future
-messages to removed participants; it cannot revoke old message keys. A frozen
-room should preserve history and reject new sends without deleting data. These
-are separate features, not implicit effects of revoking an invite.
+Closure uses persistent per-room state enforced on sends, polling, receipts,
+backlog, live delivery and presence. Authenticated members can still reconnect
+to read their saved archive; new participants cannot join a closed room. Normal
+server queue TTL still applies while it is closed. Closing/reopening preserves
+the invite's separate revocation/expiry state. It does not silently sign out
+sessions that may be needed for other rooms.
+
+Room-specific participant removal remains unimplemented. It would require
+updated recipient rosters and preserved local archives. E2EE removal must stop
+encrypting future messages to removed participants; it cannot revoke old message
+keys. This is separate from conversation closure and invite revocation.
 
 The current test E2EE protocol has no recipient forward secrecy or post-compromise
 recovery. A production privacy-focused messenger needs a reviewed ratchet/group
@@ -116,3 +125,10 @@ device keys/history. Existing session, presence, delivery and crypto suites cove
 session expiry/replay, membership boundaries, local encrypted persistence and
 non-exportable keys. These are isolated automated checks, not browser/device or
 production deployment evidence.
+
+`tests/test_conversation_closure.py` covers cross-invite closure enforcement,
+stale-client sends, queue/archive preservation, joining a new invite while an
+older room is closed, HTTP/WS reconnects, live/presence isolation, reopening,
+configuration transfer, admin authorization and isolated additive migration.
+Client tests cover encrypted history, paused retries, state notifications and
+unchanged access to other conversations without browser automation.

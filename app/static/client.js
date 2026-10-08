@@ -642,6 +642,7 @@ function requestError(status, detail, context = "Chat request failed") {
     "link not found": "This invite does not exist on this service.",
     "link expired": "This invite has expired.",
     "link revoked": "The administrator disabled this invite.",
+    "conversation closed": "This conversation is closed. Your saved history and pending messages are kept; other conversations remain available.",
     "room sealed; reconnect with your saved session": "This room is full or closed to new devices. Joining again cannot recover an existing participant slot.",
     "This room uses retired encryption. Create a new invite.": "This room was created with the old test encryption and cannot accept P-256 devices.",
     "The room phrase or password is incorrect.": "The room password does not match, or a required password was left empty.",
@@ -1039,7 +1040,8 @@ function messageText(chatId, entry) {
 }
 
 function readableNow(node) {
-  if (!messageConfirmationsSupported || !conversationVisible() || document.visibilityState !== "visible"
+  if (chats.find(chat => chat.id === selectedChatId)?.closed_at
+      || !messageConfirmationsSupported || !conversationVisible() || document.visibilityState !== "visible"
       || typeof document.hasFocus !== "function" || !document.hasFocus()
       || elements.detailsDialog.open || elements.deviceDialog.open || elements.messageDetails.open
       || !visibleMessageNodes.has(node) || renderedMessages.get(node.messageEntry?.id) !== node) return false;
@@ -1428,7 +1430,7 @@ function renderChats() {
     const title = document.createElement("strong");
     title.textContent = chatName(chat);
     const detail = document.createElement("span");
-    detail.textContent = `${chat.chat_type} · ${chat.participants.length} participant${chat.participants.length === 1 ? "" : "s"}`;
+    detail.textContent = `${chat.closed_at ? "Closed · " : ""}${chat.chat_type} · ${chat.participants.length} participant${chat.participants.length === 1 ? "" : "s"}`;
     button.append(title, detail);
     button.addEventListener("click", () => {
       elements.clientPanel.dataset.mobileView = "conversation";
@@ -1452,7 +1454,8 @@ function selectChat(chatId, openAtLatest = false) {
   selectedChatId = chatId;
   if (openMessageDetails && openMessageDetails.chatId !== chatId) elements.messageDetails.close();
   const chat = chats.find((candidate) => candidate.id === chatId);
-  elements.conversationKind.textContent = chat?.chat_type || "Conversation";
+  elements.conversationKind.textContent = chat?.closed_at
+    ? "Closed · Saved history" : chat?.chat_type || "Conversation";
   elements.conversationTitle.textContent = chat ? chatName(chat) : "No conversation selected";
   elements.detailsButton.disabled = !chat;
   const changedKey = Boolean(chat?.participants.some(item => item.key_changed));
@@ -1462,10 +1465,12 @@ function selectChat(chatId, openAtLatest = false) {
     : "";
   if (elements.keyWarning.textContent !== warningText) elements.keyWarning.textContent = warningText;
   renderParticipantDetails(chat);
-  const canSend = Boolean(chat && !chat.participants.some(item => item.key_changed)
+  const canSend = Boolean(chat && !chat.closed_at && !chat.participants.some(item => item.key_changed)
     && chat.participants.some((item) => item.public_id !== identity.publicId));
   elements.messageInput.disabled = !canSend;
   elements.sendButton.disabled = !canSend;
+  document.querySelector("#composer-help").textContent = chat?.closed_at
+    ? "Conversation closed. Saved history is kept; messaging is paused." : "Shift+Enter to send";
   renderChats();
   renderMessages(openAtLatest);
   if (canSend && changedChat && !elements.detailsDialog.open && !elements.deviceDialog.open
@@ -1593,6 +1598,7 @@ async function flushAcknowledgements() {
   await flushDurableDeliveries();
   if (messageConfirmationsSupported) {
     for (const [chatId, ids] of pendingReadsByChat) {
+      if (chats.find(chat => chat.id === chatId)?.closed_at) continue;
       await flushDeliveryBatch(`/api/v1/chats/${chatId}/read/exact`, "messages", ids,
         { viewed: true }, "read_ack");
       pendingReadsByChat.delete(chatId);
@@ -1728,6 +1734,9 @@ async function handleSocketPayload(payload) {
     updateConnectionState(true);
     await loadChats();
     await processIncoming(payload.backlog || {});
+  } else if (payload.type === "chat_state") {
+    await loadChats();
+    await renderOutbox();
   } else if (payload.type === "message") {
     await processMessages([payload.message]);
     await flushAcknowledgements();
@@ -1955,7 +1964,9 @@ async function renderOutbox() {
       const decoded = await crypto.subtle.decrypt({ name: "AES-GCM", iv: stored.value.iv,
         additionalData: encoder.encode(stored.key) }, identity.storageKey, stored.value.ciphertext);
       const record = JSON.parse(decoder.decode(decoded));
-      row.textContent = `${record.expiresAt <= Date.now() ? "Retry expired" : "Pending"}: ${record.plaintext} `;
+      const state = chats.find(chat => chat.id === record.chatId)?.closed_at
+        ? "Paused (conversation closed)" : record.expiresAt <= Date.now() ? "Retry expired" : "Pending";
+      row.textContent = `${state}: ${record.plaintext} `;
     } catch { row.textContent = "Unreadable pending message. "; }
     const discard = document.createElement("button");
     discard.type = "button";
@@ -2010,6 +2021,7 @@ async function flushOutbox() {
         additionalData: encoder.encode(stored.key) }, identity.storageKey, stored.value.ciphertext);
       const record = JSON.parse(decoder.decode(plaintext));
       await storeOutgoing(record);
+      if (chats.find(chat => chat.id === record.chatId)?.closed_at) continue;
       const attemptKey = metadataKey(record.chatId, record.messageId);
       outgoingAttempts.set(attemptKey, "sending");
       renderMessages();
@@ -2057,7 +2069,8 @@ async function storeAcceptance(chatId, messageId, result) {
 }
 
 async function recoverMessageStatuses() {
-  if (!messageConfirmationsSupported || !identity?.receiptRetentionSeconds || !selectedChatId) return;
+  if (!messageConfirmationsSupported || !identity?.receiptRetentionSeconds || !selectedChatId
+      || chats.find(chat => chat.id === selectedChatId)?.closed_at) return;
   const entries = (messagesByChat.get(selectedChatId) || []).filter(entry => entry.kind === "mine"
     && Date.now() - historyTimestamp(entry) < identity.receiptRetentionSeconds * 1000
     && !outgoingStatus(selectedChatId, entry).allRead);
@@ -2091,7 +2104,7 @@ elements.messageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const plaintext = elements.messageInput.value.trim();
   const chat = chats.find((candidate) => candidate.id === selectedChatId);
-  if (!plaintext || !chat) return;
+  if (!plaintext || !chat || chat.closed_at) return;
   elements.sendButton.disabled = true;
   try {
     const messageId = crypto.randomUUID();
