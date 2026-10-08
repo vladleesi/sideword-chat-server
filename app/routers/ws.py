@@ -93,29 +93,33 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
         auth_token = payload["token"]
         presence_requested = payload.get("presence") is True
 
-    async with SessionLocal() as session:
-        user = await _resolve_user(session, auth_token)
-        if user is None:
-            if websocket.application_state.name == "CONNECTED":
-                await websocket.send_json({"type": "auth_error", "reason": "invalid session"})
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
-        user.last_seen_at = datetime.now(timezone.utc)
-        await session.commit()
+    connected_user_id: int | None = None
+    try:
+        async with SessionLocal() as session:
+            user = await _resolve_user(session, auth_token)
+            if user is None:
+                if websocket.application_state.name == "CONNECTED":
+                    await websocket.send_json({"type": "auth_error", "reason": "invalid session"})
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
+            user.last_seen_at = datetime.now(timezone.utc)
+            await session.commit()
 
-        if websocket.application_state.name != "CONNECTED":
-            await websocket.accept(subprotocol=accepted_protocol)
-        async def validate_session() -> bool:
-            # A fresh session avoids stale ORM state after remote revocation.
-            async with SessionLocal() as current:
-                return await _resolve_user(current, auth_token) is not None
+            if websocket.application_state.name != "CONNECTED":
+                await websocket.accept(subprotocol=accepted_protocol)
+            async def validate_session() -> bool:
+                # A fresh session avoids stale ORM state after remote revocation.
+                async with SessionLocal() as current:
+                    return await _resolve_user(current, auth_token) is not None
 
-        try:
-            await manager.connect(user.id, websocket, validate_session, public_id=user.public_id)
-        except WebSocketDisconnect:
-            return
+            try:
+                await manager.connect(
+                    user.id, websocket, validate_session, public_id=user.public_id
+                )
+            except WebSocketDisconnect:
+                return
 
-        try:
+            connected_user_id = user.id
             messages, receipts, deliveries = await _backlog_payload(session, user)
 
             # Backlog rows are treated as delivered once streamed down.
@@ -145,14 +149,7 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
                 await manager.enable_presence(websocket)
             else:
                 await manager.refresh_presence()
-        except WebSocketDisconnect:
-            await manager.disconnect(user.id, websocket)
-            return
-        except BaseException:
-            await manager.disconnect(user.id, websocket)
-            raise
 
-    try:
         while True:
             # Clients may send ping frames; accept simple textual pings too.
             try:
@@ -175,6 +172,8 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
     except WebSocketDisconnect:
         pass
     finally:
-        # ASGI task cancellation must not abandon the offline notification.
-        with CancelScope(shield=True):
-            await manager.disconnect(user.id, websocket)
+        # Cleanup covers cancellation during hello/presence setup as well as
+        # the receive loop; a cancelled observer cannot abandon peer updates.
+        if connected_user_id is not None:
+            with CancelScope(shield=True):
+                await manager.disconnect(connected_user_id, websocket)

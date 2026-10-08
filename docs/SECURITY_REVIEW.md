@@ -85,12 +85,14 @@ Presence regression coverage in `tests/test_presence.py` and
 `tests/client_ui.test.cjs` covers membership scoping/removal, legacy compatibility,
 invalid authentication, consumed invites, separate-session revocation, multiple
 connections, renewable-session expiry, disconnect/reconnect, cancelled-socket
-cleanup, stale cleanup, replacement public identities, paused client timers,
+cleanup (including cancellation before/after initial presence publication), stale
+cleanup, replacement public identities, paused client timers,
 unknown status, malformed snapshots and delivery-queue isolation. Verification on
 2026-10-07 passed all 210 isolated Python cases (including 24 focused
 presence/authentication cases), all 118 JavaScript cases, Ruff, compilation,
 client/form syntax, release metadata, changed documentation links and diff
-whitespace checks. The 0.8.0 feature has not been deployed; browser QA was excluded.
+whitespace checks. These checks did not verify a production rollout; browser QA
+was excluded.
 
 Renewable access defaults to 15 minutes; sessions have an absolute 30-day limit,
 capped by invite expiry. Refresh never extends the stored lifetime. Old refresh
@@ -239,6 +241,18 @@ Old messages gain no retroactive forward secrecy.
 
 ## Latest verification record
 
+- **Presence cancellation follow-up, 2026-10-07:** CI exposed cancellation during
+  authenticated WebSocket setup, outside the previous receive-loop cleanup guard.
+  One shielded finalizer now covers every successfully registered connection,
+  including hello/backlog/presence initialization and authentication-session exit.
+  It removes only that socket and publishes refreshed, authorized peer snapshots;
+  cancellation still propagates after cleanup. Deterministic regressions pause
+  setup before and after initial presence publication and verify offline updates,
+  registry cleanup and continued observer ping/presence behavior. Local Python
+  3.13 validation passed 229 isolated tests and 30 cancellation cases across ten
+  independent runs, with Ruff, compilation, whitespace and release-note checks.
+  Linux/Python 3.12 CI and production rollout were outside this local verification.
+
 - **Message confirmations, 2026-10-07:** implementation separates durable delivery
   and visibility-based viewing, retains original recipient identities and stores
   immutable receipt metadata encrypted in browser history. Focused regressions
@@ -254,8 +268,8 @@ Old messages gain no retroactive forward secrecy.
   confirmation; group labels expose the read count and recovery continues for
   remaining original recipients. Follow-up regressions passed for a single
   confirmed reader with other recipients pending, continued group status recovery
-  and legacy automatic-read rejection. The unchanged backend verification remains
-  applicable.
+  and legacy automatic-read rejection. The presence cancellation follow-up below
+  supersedes the earlier backend cancellation coverage.
   The messaging layout keeps technical IDs out of ordinary message headers and
   uses bubble visibility, rather than header visibility, for the viewing dwell.
   Timestamp formatting changes only presentation, preserving UTC history order.

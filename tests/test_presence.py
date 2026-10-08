@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import pytest
+from anyio import sleep_forever
 from csrf_client import TestClient
 from starlette.websockets import WebSocketDisconnect
 from test_ws_auth import _create_websocket_user
@@ -136,6 +137,33 @@ def test_cancelled_socket_still_notifies_remaining_observers():
             snapshot(b, cid, [alice, bob])
             snapshot(a, cid, [alice, bob])
         # TestClient cancels the ASGI task immediately after sending disconnect.
+        snapshot(a, cid, [alice])
+
+
+@pytest.mark.parametrize("phase", ["before_presence", "after_presence"])
+def test_cancelled_socket_during_initialization_cleans_up_and_notifies(monkeypatch, phase):
+    cid, _, alice, bob, _, al, bl, _ = asyncio.run(room())
+    enable_presence = manager.enable_presence
+
+    async def pause_initialization(websocket):
+        is_bob = manager._public_ids.get(websocket) == bob.public_id
+        if is_bob and phase == "before_presence":
+            await sleep_forever()
+        await enable_presence(websocket)
+        if is_bob and phase == "after_presence":
+            await sleep_forever()
+
+    monkeypatch.setattr(manager, "enable_presence", pause_initialization)
+    with TestClient(create_app()) as client, connect(client, alice, al) as a:
+        snapshot(a, cid, [alice])
+        with connect(client, bob, bl) as b:
+            if phase == "after_presence":
+                snapshot(b, cid, [alice, bob])
+                snapshot(a, cid, [alice, bob])
+        assert not client.portal.call(manager.is_online, bob.id)
+        snapshot(a, cid, [alice])
+        a.send_text("ping")
+        assert a.receive_text() == "pong"
         snapshot(a, cid, [alice])
 
 
