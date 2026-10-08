@@ -6,24 +6,17 @@ HTTP API requests require `Authorization: Bearer <JWT>`.
 
 For password-protected rooms, include `password` in activation. Persist a random
 `resume_credential` before the first activation request so retries reuse the same
-participant slot. See [invites and chats](../README.md#invites-and-chats) for
-room limits, password handling, expiration, and browser use.
+participant slot. See [activation rules](#activate-link) for room limits,
+passwords and access expiry, and [invites and chats](../README.md#invites-and-chats)
+for browser use.
 
 ## Bundled test web client
 
-`/client` exchanges encrypted messages using the unaudited [v1 wire format](PROTOCOL.md)
-on localhost or HTTPS. It is not compatible with NaCl `crypto_box` without an
-interoperability layer. See [invites and chats](../README.md#invites-and-chats) for
-use/reset behavior and [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for trust boundaries.
-`/l/{token}` is the invite landing page and links to `/client?invite={token}`.
-Incoming group messages show the sender's `display_name` from the chat roster
-alongside `sender_public_id`, falling back to the public ID when unnamed. The
-client saves this label in encrypted local history; message envelopes are unchanged.
-Existing history uses current roster names when saved sender routing metadata is
-available. Reload the client to load the updated script URL.
-After reload, restored history opens at the latest messages even if server
-synchronization fails. Incoming messages preserve the position when reading older history.
-Display names are not authenticated by the encryption protocol.
+`/client` is a reference client for the unaudited [v1 wire format](PROTOCOL.md),
+using HTTPS or localhost. `/l/{token}` links to `/client?invite={token}`.
+See [invites and chats](../README.md#invites-and-chats) for usage and reset warnings,
+and [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for trust boundaries. Display names
+are unauthenticated labels; message and receipt identities use public IDs.
 
 ## Activate link
 
@@ -63,6 +56,10 @@ This is the only activation route. The former
 must send the invite secret in the JSON body. The invite landing paths
 `/l/{token}` and `/client?invite={token}` remain unchanged and still require URL
 log protection.
+
+Room passwords are optional. The admin can generate a 16-character password or
+set a custom phrase of 8–32 characters, matched exactly including case and whitespace.
+Share passwords separately from invite links.
 
 `display_name` is optional; include `password` for protected rooms. The response
 contains a client JWT, user identity, and chat participants. `session_credential`

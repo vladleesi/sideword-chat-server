@@ -32,11 +32,14 @@ python -m ruff check .
 python -m compileall -q app scripts tests
 python -m pytest
 node --check app/static/client.js
+node --check app/static/appearance.js
 node --check app/static/client-protocol.js
 node --check app/static/link-form.js
 node --check app/static/admin-links.js
 node --check app/static/invite-vault.js
-node --test tests/client_retry.test.cjs tests/client_delivery.test.cjs tests/client_crypto.test.cjs tests/client_identity.test.cjs tests/admin_links.test.cjs tests/invite_vault.test.cjs
+node --check docs/theme.js
+node --test tests/client_retry.test.cjs tests/client_delivery.test.cjs tests/client_crypto.test.cjs tests/client_identity.test.cjs tests/client_ui.test.cjs tests/client_theme.test.cjs tests/admin_links.test.cjs tests/invite_vault.test.cjs
+node --test tests/site_theme.test.cjs
 docker build -t sideword-chat-server:test .
 ```
 
@@ -48,6 +51,9 @@ PROTOCOL for wire/client requirements, UPGRADING for operator procedures, and
 SECURITY_REVIEW for current protections, remaining work and latest verification.
 Link to the owning document instead of repeating it; keep release history in
 CHANGELOG and replace obsolete status notes rather than appending work diaries.
+Before preparing a commit, review all repository documentation against the final
+changes and correct stale guidance, duplication and affected links. Reuse valid
+review evidence for unchanged material, and finish edits before final checks.
 
 ## Pull requests and releases
 

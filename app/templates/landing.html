@@ -1,31 +1,54 @@
-{% extends "base.html" %}
-{% block title %}Sideword invite{% endblock %}
-{% block content %}
-<section class="card center">
-  <h1>Sideword invite</h1>
-  {% if status == "active" %}
-    {% if details.is_personal %}
-    <p>This is a <b>personal</b> link for a private 1:1 chat.</p>
-    {% else %}
-    <p>This is a <b>group</b> invite link.</p>
-    {% endif %}
-    <p>Open it in a compatible Sideword client to activate.</p>
-    {% if details.password_required %}<p>The room also requires a phrase or password. Ask the creator for it separately.</p>{% endif %}
-    <p>Opening this page does not reserve a participant slot.</p>
-    <p><a class="button primary" href="/client?invite={{ token }}">Open test web client</a></p>
-    <p class="muted small">The bundled browser client is intended for testing and is not independently audited.</p>
-    <div class="token-box">
-      <code>{{ token }}</code>
-    </div>
-  {% elif status == "expired" %}
-    <p>This link expired. Ask your administrator for a fresh invite.</p>
-  {% elif status == "used" %}
-    <p>This room is sealed. All participant slots are filled.</p>
-    <p><a class="button primary" href="/client?invite={{ token }}">Reconnect from your joined browser</a></p>
-  {% elif status == "revoked" %}
-    <p>This link was revoked by an administrator.</p>
-  {% else %}
-    <p>This invite token does not exist.</p>
-  {% endif %}
-</section>
-{% endblock %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Sideword invite</title>
+  <script src="/static/appearance.js?v=1"></script>
+  <link rel="stylesheet" href="/static/client.css?v=10">
+</head>
+<body class="auth-page">
+  <header class="client-header">
+    <a class="client-brand" href="/client">Sideword<span aria-hidden="true"> /</span></a>
+    <span class="test-badge">Test client · unaudited</span>
+  </header>
+  <main class="auth-main">
+    <section class="setup-panel invite-panel" aria-labelledby="invite-heading">
+      <p class="eyebrow">Join a conversation</p>
+      <h1 id="invite-heading">Sideword invite</h1>
+      {% if status == "active" %}
+        {% if details.is_personal %}
+        <p>This is a <b>personal</b> link for a private 1:1 chat.</p>
+        {% else %}
+        <p>This is a <b>group</b> invite link.</p>
+        {% endif %}
+        <p>Open it in a compatible Sideword client to activate.</p>
+        {% if details.password_required %}<p>The room also requires a phrase or password. Ask the creator for it separately.</p>{% endif %}
+        <p class="muted">Opening this page does not reserve a participant slot.</p>
+        <a class="button primary" href="/client?invite={{ token }}">Open test web client</a>
+        <p class="muted small">The bundled browser client is intended for testing and is not independently audited.</p>
+        <details class="invite-token">
+          <summary>Invite token</summary>
+          <code class="technical-value">{{ token }}</code>
+        </details>
+      {% elif status == "expired" %}
+        <p>This link expired. Ask your administrator for a fresh invite.</p>
+      {% elif status == "used" %}
+        <p>This room is sealed. All participant slots are filled.</p>
+        <a class="button primary" href="/client?invite={{ token }}">Reconnect from your joined browser</a>
+      {% elif status == "revoked" %}
+        <p>This link was revoked by an administrator.</p>
+      {% else %}
+        <p>This invite token does not exist.</p>
+      {% endif %}
+      <fieldset class="appearance-controls">
+        <legend>Appearance</legend>
+        <label><input type="radio" name="appearance" value="light">Light</label>
+        <label><input type="radio" name="appearance" value="dark">Dark</label>
+        <label><input type="radio" name="appearance" value="system" checked>System</label>
+      </fieldset>
+    </section>
+  </main>
+</body>
+</html>

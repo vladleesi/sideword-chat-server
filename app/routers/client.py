@@ -12,7 +12,7 @@ router = APIRouter(tags=["test-client"])
 _CLIENT_HEADERS = {
     "Cache-Control": "no-store",
     "Content-Security-Policy": (
-        "default-src 'none'; script-src 'self'; style-src 'self'; "
+        "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; "
         "img-src 'self' data:; connect-src 'self'; base-uri 'none'; "
         "form-action 'self'; frame-ancestors 'none'; object-src 'none'"
     ),

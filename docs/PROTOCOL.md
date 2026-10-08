@@ -109,17 +109,10 @@ The preflight still detects failed storage round trips before admission. It cann
 repair browser storage or recover inaccessible keys. Startup failures remain visible
 on the activation form. Storage and platform behavior still require device QA.
 
-The bundled client stores incoming group sender labels with each new history
-entry, using the roster's display name and public ID, or just the ID if unnamed.
-When a roster is available, history renders current sender labels using the
-saved sender public ID or the original composite incoming identity. Legacy records
-without that identity and records without a matching roster keep their saved labels.
-This does not rewrite stored history or change delivery identities.
-Names are server-provided metadata,
-not authenticated by the encrypted envelope.
-History rendering waits until the client panel is visible so its first render
-can scroll to the latest message, including when initial synchronization fails.
-Later incoming delivery preserves the position when reading older history.
+History stores participant labels alongside routing identities. Current roster
+names can update displayed labels without changing stored history, delivery IDs
+or acknowledgements; records without a matching roster keep their saved labels.
+Display names are server-provided metadata, unauthenticated by the envelope.
 
 ## Delivery requirements for future clients
 

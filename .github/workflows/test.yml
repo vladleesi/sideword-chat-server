@@ -30,12 +30,13 @@ jobs:
       - run: python -m ruff check .
       - run: python -m compileall -q app scripts tests
       - run: node --check app/static/client.js
+      - run: node --check app/static/appearance.js
       - run: node --check app/static/client-protocol.js
       - run: node --check app/static/admin-links.js
       - run: node --check app/static/invite-vault.js
       - run: node --check app/static/link-form.js
       - run: node --check docs/theme.js
-      - run: node --test tests/client_retry.test.cjs tests/client_delivery.test.cjs tests/client_crypto.test.cjs tests/client_identity.test.cjs tests/admin_links.test.cjs tests/invite_vault.test.cjs
+      - run: node --test tests/client_retry.test.cjs tests/client_delivery.test.cjs tests/client_crypto.test.cjs tests/client_identity.test.cjs tests/client_ui.test.cjs tests/client_theme.test.cjs tests/admin_links.test.cjs tests/invite_vault.test.cjs
       - run: node --test tests/site_theme.test.cjs
       - run: python -m pytest
 

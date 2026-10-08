@@ -2,114 +2,160 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
   <meta name="color-scheme" content="light dark">
   <title>Sideword test client</title>
-  <link rel="stylesheet" href="/static/client.css?v=6">
+  <script src="/static/appearance.js?v=1"></script>
+  <link rel="stylesheet" href="/static/client.css?v=10">
   <script src="/static/client-protocol.js?v=3" defer></script>
-  <script src="/static/client.js?v=19" defer></script>
+  <script src="/static/client.js?v=23" defer></script>
 </head>
-<body>
+<body class="messenger">
+  <a class="skip-link" href="#workspace">Skip to workspace</a>
   <header class="client-header">
-    <div>
-      <a class="client-brand" href="/client">Sideword</a>
-      <span class="test-badge">Test client</span>
+    <div class="brand-line">
+      <a class="client-brand" href="/client">Sideword<span aria-hidden="true"> /</span></a>
+      <span class="test-badge">Test client · unaudited</span>
     </div>
-    <div class="identity-line">
-      <span id="connection-state" class="status-dot" aria-hidden="true"></span>
-      <span id="identity-label">No local identity</span>
-      <span id="session-countdown" class="muted" hidden></span>
-      <button id="reset-button" class="button subtle" type="button">Reset device</button>
+    <div class="header-controls">
+      <span class="connection-label" role="status"><span id="connection-state" class="status-dot" aria-hidden="true"></span><span id="connection-label">Loading</span></span>
+      <button id="device-settings-button" class="button subtle" type="button" aria-label="Device settings" aria-haspopup="dialog" aria-controls="device-settings">
+        <svg class="mobile-control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--bg)"/><circle cx="15" cy="17" r="3" fill="var(--bg)"/>
+        </svg>
+        <span class="control-label">Device settings</span>
+      </button>
     </div>
   </header>
 
-  <main class="client-shell">
-    <section class="security-notice" aria-labelledby="security-heading">
-      <div>
-        <strong id="security-heading">Testing only</strong>
-        <span>Keys stay in this browser and messages are encrypted before upload.</span>
-      </div>
-      <p>This client is not independently audited. Use HTTPS anywhere except localhost.</p>
+  <main id="workspace" class="client-shell" tabindex="-1">
+    <section id="loading-panel" class="setup-panel" aria-labelledby="loading-heading" role="status" aria-live="polite">
+      <p class="eyebrow">This device</p>
+      <h1 id="loading-heading">Opening Sideword</h1>
+      <p class="muted">Loading saved keys and local history…</p>
     </section>
-
-    <section id="setup-panel" class="setup-panel" aria-labelledby="setup-heading">
-      <div>
-        <p class="eyebrow">Join a conversation</p>
-        <h1 id="setup-heading">Activate an invite</h1>
-        <p class="muted">A P-256 device identity is generated locally. The private key never leaves this browser. Rooms created before the P-256 update require a new invite.</p>
-      </div>
+    <section id="setup-panel" class="setup-panel" aria-labelledby="setup-heading" hidden>
+      <p class="eyebrow">Join a conversation</p>
+      <h1 id="setup-heading">Activate an invite</h1>
+      <p class="muted">A P-256 device identity is generated locally. The private key never leaves this browser. Rooms created before the P-256 update require a new invite.</p>
       <form id="activation-form" class="activation-form">
-        <label>
-          Invite token
-          <input id="invite-token" name="invite" value="{{ invite_token }}" maxlength="128"
-                 autocomplete="off" spellcheck="false" required>
-        </label>
-        <label>
-          Display name
-          <input id="display-name" name="display_name" maxlength="64"
-                 autocomplete="nickname" placeholder="Your name" required
-                 aria-describedby="display-name-error">
-          <small id="display-name-error" role="alert" hidden></small>
-        </label>
-        <label>
-          Room phrase or password (if protected)
-          <input id="join-password" type="password" name="room_password" maxlength="128"
-                 autocomplete="off" aria-describedby="activation-error">
-        </label>
+        <label for="invite-token">Invite token</label>
+        <input id="invite-token" name="invite" value="{{ invite_token }}" maxlength="128"
+               autocomplete="off" spellcheck="false" required>
+        <label for="display-name">Display name</label>
+        <input id="display-name" name="display_name" maxlength="64"
+               autocomplete="nickname" placeholder="Your name" required aria-describedby="display-name-error">
+        <small id="display-name-error" role="alert" hidden></small>
+        <label for="join-password">Room phrase or password (if protected)</label>
+        <input id="join-password" type="password" name="room_password" maxlength="128"
+               autocomplete="off" aria-describedby="activation-error">
         <small id="activation-error" role="alert" hidden></small>
         <button class="button primary" type="submit">Join room</button>
         <button id="reconnect-session" class="button subtle" type="button" hidden>Reconnect saved session</button>
       </form>
+      <div class="setup-security">
+        <strong>Testing only · not independently audited</strong>
+        <p>Keys stay in this browser and messages are encrypted before upload. Use HTTPS anywhere except localhost.</p>
+      </div>
     </section>
 
-    <div id="client-panel" class="client-grid" hidden>
+    <div id="client-panel" class="client-grid" data-mobile-view="chats" hidden>
       <aside class="chat-sidebar" aria-labelledby="chats-heading">
         <div class="panel-heading">
-          <div>
-            <p class="eyebrow">Conversations</p>
-            <h2 id="chats-heading">Chats</h2>
-          </div>
+          <h2 id="chats-heading">Conversations</h2>
           <button id="refresh-button" class="button subtle" type="button">Refresh</button>
         </div>
         <div id="chat-list" class="chat-list" role="list"></div>
-        <section id="pending-sends" hidden aria-labelledby="pending-sends-title">
-          <h3 id="pending-sends-title">Pending sends</h3>
-          <ul id="pending-send-list"></ul>
-          <button id="retry-pending-sends" class="button" type="button">Retry pending sends</button>
-        </section>
       </aside>
-
       <section class="conversation" aria-labelledby="conversation-title">
         <div class="conversation-heading">
-          <div>
-            <p id="conversation-kind" class="eyebrow">Select a chat</p>
-            <h2 id="conversation-title">No conversation selected</h2>
-            <p id="participant-keys" class="key-line"></p>
-            <p class="key-line">Compare each full fingerprint with its owner over a separate trusted channel. First-use key pinning is not identity verification. Changed keys block messaging.</p>
+          <button id="back-to-chats" class="button subtle mobile-back" type="button" aria-label="Back to conversations">← Back</button>
+          <div class="conversation-label">
+            <h2 id="conversation-title" tabindex="-1">No conversation selected</h2>
+            <p class="conversation-meta"><span id="conversation-kind">Select a chat</span><span id="participant-count"></span></p>
           </div>
-          <span id="participant-count" class="muted"></span>
+          <button id="conversation-details-button" class="button subtle" type="button" aria-label="Conversation details" aria-haspopup="dialog" aria-controls="conversation-details" disabled>
+            <svg class="mobile-control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7v.5"/>
+            </svg>
+            <span class="control-label">Conversation details</span>
+          </button>
         </div>
-
-        <div id="message-list" class="message-list" role="log" aria-live="polite">
+        <p id="key-change-warning" class="security-warning" role="alert" hidden></p>
+        <div id="message-list" class="message-list" role="log" aria-live="polite" aria-label="Messages" tabindex="0">
           <p class="empty-state">Choose a conversation to view messages.</p>
         </div>
-
-
         <form id="message-form" class="composer">
           <label class="sr-only" for="message-input">Message</label>
-          <textarea id="message-input" maxlength="16000" rows="2"
-                    placeholder="Write a message · Shift+Enter to send" disabled></textarea>
+          <textarea id="message-input" maxlength="16000" rows="2" aria-describedby="composer-help key-change-warning"
+                    placeholder="Write a message" disabled></textarea>
           <button id="send-button" class="button primary" type="submit" disabled>Send</button>
+          <small id="composer-help">Shift+Enter to send</small>
         </form>
       </section>
+      <section id="pending-sends" class="pending-sends" hidden aria-labelledby="pending-sends-title">
+        <div class="pending-heading">
+          <h3 id="pending-sends-title">Pending sends</h3>
+          <button id="retry-pending-sends" class="button subtle" type="button">Retry pending sends</button>
+        </div>
+        <ul id="pending-send-list" tabindex="0" aria-label="Saved outgoing retries"></ul>
+      </section>
     </div>
-
-    <div id="status-message" class="toast" role="status" aria-live="polite" hidden></div>
-    <div id="error-message" class="toast error" role="alert" hidden></div>
+    <div class="notifications">
+      <div id="status-message" class="toast" role="status" aria-live="polite" hidden></div>
+      <div id="error-message" class="toast error" role="alert" tabindex="0" hidden></div>
+    </div>
   </main>
 
-  <footer class="client-footer">
-    Local history is encrypted on this device. Reset device permanently removes it and the private key.
-  </footer>
+  <dialog id="conversation-details" class="context-dialog" aria-labelledby="details-heading" aria-describedby="key-guidance">
+    <div class="dialog-heading">
+      <h2 id="details-heading">Conversation details</h2>
+      <button id="close-conversation-details" class="button subtle" type="button" autofocus>Close</button>
+    </div>
+    <div class="dialog-content">
+      <p id="details-conversation-title" class="muted"></p>
+      <p id="key-guidance">Compare each full fingerprint with its owner over a separate trusted channel. First-use key pinning is not identity verification. Changed keys block messaging.</p>
+      <p class="muted">Display names are labels, not verified identities. Use public IDs to distinguish participants with the same name.</p>
+      <div id="participant-keys" class="participant-list"></div>
+      <p id="details-copy-status" role="status" hidden></p>
+      <div id="details-status" class="toast" role="status" hidden></div>
+      <div id="details-error" class="toast error" role="alert" hidden></div>
+    </div>
+  </dialog>
+
+  <dialog id="device-settings" class="context-dialog" aria-labelledby="device-settings-heading">
+    <div class="dialog-heading">
+      <h2 id="device-settings-heading">Device settings</h2>
+      <button id="close-device-settings" class="button subtle" type="button" autofocus>Close</button>
+    </div>
+    <div class="dialog-content">
+      <section aria-labelledby="device-heading">
+        <h3 id="device-heading">Device and session</h3>
+        <p id="identity-label" class="muted">No local identity</p>
+        <dl class="technical-details">
+          <dt>Device public ID</dt>
+          <dd><code id="device-public-id" tabindex="0">No local identity</code></dd>
+        </dl>
+        <p id="session-countdown" class="technical-value" hidden></p>
+        <p>Local history is encrypted on this device. Reset device permanently removes it and the private key.</p>
+        <button id="reset-button" class="button danger" type="button">Reset device</button>
+      </section>
+      <fieldset class="appearance-controls">
+        <legend>Appearance</legend>
+        <label><input type="radio" name="appearance" value="light">Light</label>
+        <label><input type="radio" name="appearance" value="dark">Dark</label>
+        <label><input type="radio" name="appearance" value="system" checked>System</label>
+      </fieldset>
+      <section aria-labelledby="security-heading">
+        <h3 id="security-heading">Security information</h3>
+        <p><strong>Testing only. This client is not independently audited.</strong> Use HTTPS anywhere except localhost.</p>
+        <p>Keys stay in this browser and messages are encrypted before upload. The private key never leaves this browser. Local history is encrypted on this device.</p>
+        <p>Compare each full fingerprint with its owner over a separate trusted channel. First-use key pinning is not identity verification. Changed keys block messaging.</p>
+        <p class="muted">A local pin detects later key changes, not an initial key substitution. Encryption cannot protect against malicious code delivered by this site's server or a compromised device.</p>
+      </section>
+      <div id="device-status" class="toast" role="status" hidden></div>
+      <div id="device-error" class="toast error" role="alert" hidden></div>
+    </div>
+  </dialog>
 </body>
 </html>

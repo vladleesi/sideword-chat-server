@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0 — 2026-10-07
+
+- Show sender names beneath outgoing and personal-chat messages, and reader names with public IDs on read receipts; fall back to public IDs for unnamed participants and refresh labels in saved history when the roster is available.
+- Prevent selecting the Send button label and refresh client scripts and styles on reload.
+- Redesign the test client as a compact messaging workspace with separate mobile conversation views, visible pending retries, and accessible conversation and device dialogs.
+- Keep full participant IDs and fingerprints available for comparison and copying, distinguish local pins from identity verification, and show changed-key messaging blocks outside the details dialog.
+- Match client activation and invite landing pages to the Sideword visual identity with bundled IBM Plex fonts and persistent Light, Dark, and System appearance preferences; keep admin sign-in unchanged.
+- Show a loading state during saved-device restoration so refreshing a chat does not briefly display the invite activation form.
+- Compact the mobile client headers with visible Back navigation and labeled settings/details icons, preserving the desktop layout and visible connection/security information.
+- Restore the selected mobile conversation and view after refresh, open conversations at their latest messages, and preserve older reading positions during polling and viewport changes.
+
 ## 0.6.0 — 2026-10-07
 
 - Replace the test encryption protocol with native non-exportable P-256 ECDH keys, keeping HKDF-SHA-256, AES-256-GCM, local key pinning, encrypted history, and durable delivery safeguards.

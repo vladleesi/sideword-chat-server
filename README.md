@@ -144,65 +144,21 @@ proxy trust, log suppression, resource limits and backup protection.
 
 ## Invites and chats
 
-In **Admin > Invite links > Create link**, choose a personal room with two
-participant slots or a group with an optional limit. Server capacity limits
-also apply; see [activation rules](docs/API.md#activate-link).
-You can leave the room unprotected, generate a 16-character password, or set a
-custom phrase of 8-32 characters. Custom phrases match exactly, including case
-and whitespace. Share passwords separately from invite links.
+Create a personal room (two participants) or a group in **Admin > Invite links**,
+with an optional password. Share passwords separately. Opening a link does not
+claim a slot; participants, including the creator, must activate it.
+See [activation rules](docs/API.md#activate-link) for limits and reconnects.
 
-Opening an invitation or a link preview does not claim a slot; participants
-must explicitly activate it, including the creator if they want to join.
-Opening a different invite in the test client shows its join form and pauses
-background chat activity in that tab until activation. Successful activation
-selects the invited room. The same invite or `/client` resumes the saved room;
-device keys and encrypted history are preserved without using **Reset device**.
-The 0.6.0 test protocol uses native P-256 ECDH with non-exportable private keys.
-It replaces the prior test format completely: existing rooms need new invites
-and clients get fresh identities. Prior browser data is left untouched in its old
-database; it is not imported or decrypted by the new client. See the
-[breaking upgrade procedure](docs/UPGRADING.md#compatibility-notes).
-Before activation, the client checks that saved device keys can be read back from
-local storage. Browsers that cannot restore non-exportable P-256 keys are blocked
-before admission, with an inline storage error. Unreadable existing device records
-are preserved; do not reset them to dismiss the error. This check detects an
-incompatible browser/storage implementation; it does not repair it or recover lost keys.
-Client errors explain whether a failure comes from saved device data, changed
-keys, login, an invite, or the service. Rejected requests show their HTTP status;
-raw server validation values and browser exception details are not displayed.
-Full rooms stop accepting new participants, while authenticated reconnects
-reuse existing slots. Revocation, deletion, participant deactivation, and
-expiry invalidate access. Losing browser credentials does not free a slot.
+To test, open the invite in two separate browser profiles and compare peer key
+fingerprints out of band using **Conversation details**; local pins do not verify
+identity. `/client` requires HTTPS or localhost; keys and history
+stay in the browser. **Reset device** or clearing site data can permanently lose
+access. Do not reset to dismiss key or storage errors.
 
-Incoming group messages in the bundled client show the sender's chosen name
-alongside their public ID, or just the ID if no name is set. The label is saved
-with encrypted local history; existing messages also use current names when their
-saved sender identity is available. Reload the client to fetch updated assets.
-Names are participant labels, not verified identities;
-compare peer key fingerprints out of band.
-Refreshing the client opens restored chat history at the latest messages.
-Incoming messages preserve your position when you scroll up to read older messages.
-
-To test a chat, open the invite in two separate browser profiles or a normal and
-private window, activate both participants, and compare peer key fingerprints
-out of band. Device keys and decrypted history stay in the browser; **Reset
-device** permanently removes them. The latest protected invite is saved encrypted
-in the same tab for up to 24 hours, including across refreshes, but closing the
-tab or clearing browser data can lose it.
-
-Peer pinning detects later key changes, not initial substitution or malicious
-served code. V1 has no recipient forward secrecy or post-compromise recovery;
-see the [security review](docs/SECURITY_REVIEW.md) for current protections and open work.
-Room passwords control admission, not encryption; the server/TLS terminator sees
-them. Every activation requires HTTPS outside loopback, including unprotected
-rooms. Invalid supplied bearer authentication returns 401 without claiming a
-participant slot; credential-only recovery must omit that header.
-The bundled client sends invite tokens in the JSON body of
-`POST /api/v1/links/activate`, the only activation route. Clients using the old
-path-based route must migrate; it returns 404. Invite landing URLs and request
-bodies still require log suppression or redaction.
-See [activation rules](docs/API.md#activate-link) for verification, throttling
-and reconnect credentials.
+Rooms from before the P-256 update (0.6.0) require fresh invites and identities;
+see [upgrade guidance](docs/UPGRADING.md#compatibility-notes). This is a reference
+client; see the [protocol](docs/PROTOCOL.md) and
+[security review](docs/SECURITY_REVIEW.md) for its limitations.
 
 ## Further documentation
 

@@ -14,12 +14,19 @@ const elements = {
   chatList: document.querySelector("#chat-list"),
   clientPanel: document.querySelector("#client-panel"),
   connectionState: document.querySelector("#connection-state"),
+  connectionLabel: document.querySelector("#connection-label"),
+  detailsButton: document.querySelector("#conversation-details-button"),
+  detailsDialog: document.querySelector("#conversation-details"),
+  deviceDialog: document.querySelector("#device-settings"),
+  devicePublicId: document.querySelector("#device-public-id"),
+  keyWarning: document.querySelector("#key-change-warning"),
   conversationKind: document.querySelector("#conversation-kind"),
   conversationTitle: document.querySelector("#conversation-title"),
   displayName: document.querySelector("#display-name"),
   error: document.querySelector("#error-message"),
   identityLabel: document.querySelector("#identity-label"),
   inviteToken: document.querySelector("#invite-token"),
+  loadingPanel: document.querySelector("#loading-panel"),
   roomPassword: document.querySelector("#join-password"),
   activationError: document.querySelector("#activation-error"),
   messageForm: document.querySelector("#message-form"),
@@ -54,6 +61,167 @@ const processingMessageIds = new Set();
 const failedMessageReasons = new Map();
 const pendingReadsByChat = new Map();
 const pendingReceiptIds = new Map();
+const participantNodes = new Map();
+let participantChatId;
+let followResizedMessages = true;
+
+elements.messageList.addEventListener("scroll", () => {
+  if (!conversationVisible()) return;
+  const list = elements.messageList;
+  followResizedMessages = list.scrollHeight - list.clientHeight - list.scrollTop <= 32;
+});
+if (typeof ResizeObserver === "function") {
+  const observer = new ResizeObserver(() => {
+    if (conversationVisible() && followResizedMessages) {
+      elements.messageList.scrollTop = elements.messageList.scrollHeight;
+    }
+  });
+  observer.observe(elements.messageList);
+}
+
+// Dynamic viewport units alone do not account for every mobile keyboard.
+function updateWorkspaceViewport() {
+  const viewport = window.visualViewport;
+  if (!viewport || viewport.scale !== 1) return;
+  document.documentElement.style.setProperty("--visual-viewport-height", `${viewport.height}px`);
+}
+window.visualViewport?.addEventListener("resize", updateWorkspaceViewport);
+updateWorkspaceViewport();
+
+// Native modal dialogs provide focus containment and Escape handling.
+function bindDialog(dialog, openButton, closeButton) {
+  openButton.addEventListener("click", () => {
+    if (!dialog.open) dialog.showModal();
+  });
+  closeButton.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => {
+    const target = openButton === elements.detailsButton && elements.clientPanel.hidden
+      ? elements.inviteToken : openButton;
+    target.focus({ preventScroll: true });
+  });
+}
+bindDialog(elements.detailsDialog, elements.detailsButton,
+  document.querySelector("#close-conversation-details"));
+bindDialog(elements.deviceDialog, document.querySelector("#device-settings-button"),
+  document.querySelector("#close-device-settings"));
+
+function mobileWorkspace() {
+  return Boolean(window.matchMedia?.("(max-width: 760px)").matches);
+}
+
+function conversationVisible() {
+  return !elements.clientPanel.hidden
+    && (!mobileWorkspace() || elements.clientPanel.dataset.mobileView === "conversation");
+}
+
+function rememberChatView(view, chatId = selectedChatId) {
+  if (!mobileWorkspace() || !identity?.publicId || !globalThis.history?.replaceState) return;
+  try {
+    // Per-tab navigation only: never copy identity keys, credentials or messages.
+    history.replaceState({ ...history.state,
+      sidewordChatView: { publicId: identity.publicId, chatId, view } }, "");
+  } catch { /* Navigation remains usable if the browser refuses a state save. */ }
+}
+
+function restoreChatView() {
+  selectedChatId = identity?.activeInviteChatId || null;
+  if (!mobileWorkspace() || !identity?.publicId) return;
+  const saved = globalThis.history?.state?.sidewordChatView;
+  const validId = saved?.chatId === null || (Number.isSafeInteger(saved?.chatId) && saved.chatId > 0);
+  const validView = saved?.view === "chats" || (saved?.view === "conversation" && saved.chatId !== null);
+  if (saved?.publicId === identity?.publicId && validId && validView) {
+    selectedChatId = saved.chatId;
+    elements.clientPanel.setAttribute("data-mobile-view", saved.view);
+  } else if (selectedChatId && identity?.token) {
+    elements.clientPanel.setAttribute("data-mobile-view", "conversation");
+  }
+}
+
+document.querySelector("#back-to-chats").addEventListener("click", () => {
+  elements.clientPanel.dataset.mobileView = "chats";
+  rememberChatView("chats");
+  (elements.chatList.querySelector(".active") || elements.refreshButton).focus({ preventScroll: true });
+});
+
+function publicDetail(label, value, feedback) {
+  const term = document.createElement("dt");
+  term.textContent = label;
+  const description = document.createElement("dd");
+  const code = document.createElement("code");
+  code.textContent = value;
+  code.tabIndex = 0;
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "button subtle";
+  copy.textContent = `Copy ${label.toLowerCase()}`;
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(code.textContent);
+      feedback.textContent = `${label} copied.`;
+    } catch {
+      // No fallback upload or hidden form: leave the complete value selectable.
+      code.focus({ preventScroll: true });
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      feedback.textContent = "Copy unavailable. The full value is selected; copy it manually.";
+    }
+    feedback.hidden = false;
+  });
+  description.append(code, copy);
+  return { term, description, code, copy };
+}
+
+function renderParticipantDetails(chat) {
+  if (participantChatId !== chat?.id) {
+    elements.participantKeys.replaceChildren();
+    participantNodes.clear();
+    participantChatId = chat?.id;
+    document.querySelector("#details-copy-status").hidden = true;
+  }
+  document.querySelector("#details-conversation-title").textContent = chat ? chatName(chat) : "";
+  const ids = new Set(chat?.participants.map(peer => peer.public_id) || []);
+  for (const [id, item] of participantNodes) {
+    if (!ids.has(id)) { item.node.remove(); participantNodes.delete(id); }
+  }
+  for (const [index, peer] of (chat?.participants || []).entries()) {
+    let item = participantNodes.get(peer.public_id);
+    if (!item) {
+      const node = document.createElement("details");
+      node.className = "participant";
+      const summary = document.createElement("summary");
+      const name = document.createElement("span");
+      name.className = "participant-name";
+      const publicId = document.createElement("span");
+      publicId.className = "participant-identity";
+      publicId.textContent = peer.public_id;
+      const state = document.createElement("span");
+      summary.append(name, publicId, state);
+      const values = document.createElement("dl");
+      values.className = "technical-details";
+      const feedback = document.querySelector("#details-copy-status");
+      const id = publicDetail("Public ID", peer.public_id, feedback);
+      const fingerprint = publicDetail("Fingerprint", "", feedback);
+      values.append(id.term, id.description, fingerprint.term, fingerprint.description);
+      node.append(summary, values);
+      item = { node, name, state, fingerprint };
+      participantNodes.set(peer.public_id, item);
+    }
+    const own = peer.public_id === identity?.publicId;
+    item.name.textContent = `${peer.display_name?.trim() || "Unnamed participant"}${own ? " (this device)" : ""}`;
+    item.state.textContent = peer.key_changed ? "KEY CHANGED; blocked"
+      : !peer.local_fingerprint ? "Unchecked key"
+      : own ? "This device key" : "Locally pinned · identity not verified";
+    item.state.className = `key-state${peer.key_changed ? " changed" : ""}`;
+    item.fingerprint.code.textContent = peer.local_fingerprint || "not checked";
+    item.fingerprint.copy.disabled = !peer.local_fingerprint;
+    if (elements.participantKeys.children[index] !== item.node) {
+      elements.participantKeys.insertBefore(item.node, elements.participantKeys.children[index] || null);
+    }
+  }
+}
 
 // Only locally written explanations may reach the UI; request bodies and raw
 // browser/server exception text can contain credentials or message data.
@@ -327,8 +495,17 @@ function showToast(message, isError = false) {
   other.hidden = true;
   target.textContent = message;
   target.hidden = false;
+  // Keep the same announcement visible when a modal makes the workspace inert.
+  const dialogPrefix = elements.deviceDialog.open ? "device" : elements.detailsDialog.open ? "details" : null;
+  const dialogTarget = dialogPrefix ? document.querySelector(`#${dialogPrefix}-${isError ? "error" : "status"}`) : null;
+  if (dialogTarget) {
+    document.querySelector(`#${dialogPrefix}-${isError ? "status" : "error"}`).hidden = true;
+    dialogTarget.textContent = message;
+    dialogTarget.hidden = false;
+  }
   window.setTimeout(() => {
     target.hidden = true;
+    if (dialogTarget) dialogTarget.hidden = true;
   }, isError ? 7000 : 3500);
 }
 
@@ -568,9 +745,20 @@ function compareHistoryEntries(left, right) {
   return String(left.id || "").localeCompare(String(right.id || ""));
 }
 
-function messageMeta(chatId, entry) {
+function participantLabel(chatId, publicId, includePublicId = true) {
   const chat = chats.find((candidate) => candidate.id === chatId);
-  if (entry.kind !== "theirs" || chat?.chat_type !== "group") return entry.meta;
+  const participant = chat?.participants.find((peer) => peer.public_id === publicId);
+  if (!participant) return null;
+  const name = participant.display_name?.trim();
+  return name ? (includePublicId ? `${name} (${publicId})` : name) : publicId;
+}
+
+function messageMeta(chatId, entry) {
+  if (entry.kind === "mine") {
+    const label = participantLabel(chatId, entry.senderPublicId || identity?.publicId, false);
+    return label ? `Sent by ${label}` : entry.meta;
+  }
+  if (entry.kind !== "theirs") return entry.meta;
   let senderPublicId = entry.senderPublicId;
   if (!senderPublicId && typeof entry.id === "string" && entry.id.startsWith("incoming:")) {
     try {
@@ -580,17 +768,35 @@ function messageMeta(chatId, entry) {
       // Older history without a routing identity keeps its saved label.
     }
   }
-  const sender = chat.participants.find((participant) => participant.public_id === senderPublicId);
-  if (!sender) return entry.meta;
-  const name = sender.display_name?.trim();
-  return name ? `From ${name} (${senderPublicId})` : `From ${senderPublicId}`;
+  const label = participantLabel(chatId, senderPublicId);
+  return label ? `From ${label}` : entry.meta;
 }
 
-function renderMessages() {
-  if (elements.clientPanel.hidden) return;
+function messageText(chatId, entry) {
+  if (entry.kind !== "system") return entry.text;
+  let readerPublicId = entry.readerPublicId;
+  let clientMessageId = entry.clientMessageId;
+  if (!readerPublicId && typeof entry.id === "string" && entry.id.startsWith("receipt:")) {
+    try {
+      const [storedChatId, storedReaderId, storedMessageId] = JSON.parse(entry.id.slice("receipt:".length));
+      if (storedChatId === chatId) {
+        readerPublicId = storedReaderId;
+        clientMessageId = storedMessageId;
+      }
+    } catch {
+      // Older history without a routing identity keeps its saved text.
+    }
+  }
+  const label = participantLabel(chatId, readerPublicId);
+  return label && clientMessageId ? `Message ${clientMessageId} was read by ${label}.` : entry.text;
+}
+
+function renderMessages(openAtLatest = false) {
+  if (!conversationVisible()) return;
   const list = elements.messageList;
   const changedChat = renderedChatId !== selectedChatId;
-  const followLatest = changedChat || list.scrollHeight - list.clientHeight - list.scrollTop <= 32;
+  const followLatest = openAtLatest || changedChat || list.scrollHeight - list.clientHeight - list.scrollTop <= 32;
+  followResizedMessages = followLatest;
   if (changedChat) {
     list.replaceChildren();
     renderedMessages.clear();
@@ -619,8 +825,10 @@ function renderMessages() {
   for (const entry of entries) {
     const key = entry.id || entry;
     const metaText = messageMeta(selectedChatId, entry);
+    const messageTextContent = messageText(selectedChatId, entry);
     const existing = renderedMessages.get(key);
     if (existing) {
+      if (existing.children[0].textContent !== messageTextContent) existing.children[0].textContent = messageTextContent;
       if (existing.children[1]) existing.children[1].textContent = metaText || "";
       if (list.children[position] !== existing) list.insertBefore(existing, list.children[position] || null);
       position++;
@@ -629,7 +837,7 @@ function renderMessages() {
     const message = document.createElement("div");
     message.className = `message ${entry.kind}`;
     const text = document.createElement("span");
-    text.textContent = entry.text;
+    text.textContent = messageTextContent;
     message.append(text);
     if (metaText) {
       const meta = document.createElement("span");
@@ -651,6 +859,7 @@ function chatName(chat) {
 }
 
 function renderChats() {
+  const focusedChatId = document.activeElement?.dataset?.chatId;
   elements.chatList.replaceChildren();
   if (!chats.length) {
     const empty = document.createElement("p");
@@ -663,46 +872,63 @@ function renderChats() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `chat-button${chat.id === selectedChatId ? " active" : ""}`;
-    button.setAttribute("role", "listitem");
+    button.dataset.chatId = String(chat.id);
+    button.setAttribute("aria-current", chat.id === selectedChatId ? "true" : "false");
     const title = document.createElement("strong");
     title.textContent = chatName(chat);
     const detail = document.createElement("span");
     detail.textContent = `${chat.chat_type} · ${chat.participants.length} participant${chat.participants.length === 1 ? "" : "s"}`;
     button.append(title, detail);
-    button.addEventListener("click", () => selectChat(chat.id));
-    elements.chatList.append(button);
+    button.addEventListener("click", () => {
+      elements.clientPanel.dataset.mobileView = "conversation";
+      selectChat(chat.id, mobileWorkspace());
+      rememberChatView("conversation", chat.id);
+      if (mobileWorkspace()) {
+        if (!elements.messageInput.disabled) elements.messageInput.focus({ preventScroll: true });
+        else elements.conversationTitle.focus({ preventScroll: true });
+      }
+    });
+    const row = document.createElement("div");
+    row.setAttribute("role", "listitem");
+    row.append(button);
+    elements.chatList.append(row);
+    if (focusedChatId === String(chat.id)) button.focus({ preventScroll: true });
   }
 }
 
-function selectChat(chatId) {
+function selectChat(chatId, openAtLatest = false) {
   const changedChat = renderedChatId !== chatId;
   selectedChatId = chatId;
   const chat = chats.find((candidate) => candidate.id === chatId);
   elements.conversationKind.textContent = chat?.chat_type || "Conversation";
   elements.conversationTitle.textContent = chat ? chatName(chat) : "No conversation selected";
-  elements.participantCount.textContent = chat ? `${chat.participants.length} participants` : "";
-  elements.participantKeys.textContent = chat
-    ? chat.participants
-        .map((item) => {
-          const label = item.public_id === identity.publicId ? " (this device)" : "";
-          const warning = item.key_changed ? " — KEY CHANGED; blocked" : "";
-          return `${item.public_id}${label}: ${item.local_fingerprint || "not checked"}${warning}`;
-        })
-        .join(" · ")
+  elements.participantCount.textContent = chat ? `${chat.participants.length} participant${chat.participants.length === 1 ? "" : "s"}` : "";
+  elements.detailsButton.disabled = !chat;
+  const changedKey = Boolean(chat?.participants.some(item => item.key_changed));
+  elements.keyWarning.hidden = !changedKey;
+  const warningText = changedKey
+    ? "KEY CHANGED; blocked. A participant's encryption key changed and no longer matches the fingerprint saved on this device. Sending and decryption are blocked. Keep this device's history."
     : "";
+  if (elements.keyWarning.textContent !== warningText) elements.keyWarning.textContent = warningText;
+  renderParticipantDetails(chat);
   const canSend = Boolean(chat && !chat.participants.some(item => item.key_changed)
     && chat.participants.some((item) => item.public_id !== identity.publicId));
   elements.messageInput.disabled = !canSend;
   elements.sendButton.disabled = !canSend;
   renderChats();
-  renderMessages();
-  if (canSend && changedChat) elements.messageInput.focus({ preventScroll: true });
+  renderMessages(openAtLatest);
+  if (canSend && changedChat && !elements.detailsDialog.open && !elements.deviceDialog.open
+      && (!mobileWorkspace() || elements.clientPanel.dataset.mobileView === "conversation")) {
+    elements.messageInput.focus({ preventScroll: true });
+  }
 }
 
 function updateIdentityUi() {
   const active = Boolean(!invitePending && identity?.token && identity?.publicId);
+  elements.loadingPanel.hidden = true;
   elements.setupPanel.hidden = active;
   elements.clientPanel.hidden = !active;
+  if (!active && elements.detailsDialog.open) elements.detailsDialog.close();
   document.querySelector("#reconnect-session").hidden = invitePending || active || !identity?.suspendedToken;
   updateConnectionState(false);
   if (active) renderMessages();
@@ -714,6 +940,8 @@ function updateConnectionState(connected) {
   elements.identityLabel.textContent = active
     ? `Device ${identity.publicId} · ${connected ? "Live" : "Polling"}`
     : "No local identity";
+  elements.connectionLabel.textContent = active ? (connected ? "Live" : "Polling") : "Offline";
+  elements.devicePublicId.textContent = identity?.publicId || "No local identity";
 }
 
 async function loadChats() {
@@ -737,10 +965,16 @@ async function loadChats() {
   identity.retryWindowSeconds = data.send_retry_window_seconds;
   await writeIdentity(identity);
   chats = checkedChats;
-  if (selectedChatId && !chats.some((chat) => chat.id === selectedChatId)) selectedChatId = null;
+  if (selectedChatId && !chats.some((chat) => chat.id === selectedChatId)) {
+    selectedChatId = null;
+    if (mobileWorkspace()) {
+      elements.clientPanel.setAttribute("data-mobile-view", "chats");
+      rememberChatView("chats", null);
+    }
+  }
   if (!selectedChatId && chats.length) selectedChatId = chats[0].id;
   if (selectedChatId) selectChat(selectedChatId);
-  else renderChats();
+  else selectChat(null);
 }
 
 function senderKeyIsLoaded(message) {
@@ -844,12 +1078,16 @@ async function processReceipts(receipts) {
       pendingReceiptIds.set(receipt.delivery_id, reference);
       continue;
     }
-    await appendMessage(receipt.chat_id, {
+    const entry = {
       id: key,
       kind: "system",
+      readerPublicId: receipt.reader_public_id,
+      clientMessageId: receipt.client_message_id,
       text: `Message ${receipt.client_message_id} was read by ${receipt.reader_public_id}.`,
       createdAt: serverTimestamp(receipt.created_at),
-    });
+    };
+    entry.text = messageText(receipt.chat_id, entry);
+    await appendMessage(receipt.chat_id, entry);
     seenReceiptIds.add(key);
     pendingReceiptIds.set(receipt.delivery_id, reference);
   }
@@ -1059,7 +1297,9 @@ elements.activationForm.addEventListener("submit", async (event) => {
     updateIdentityUi();
     await refresh();
     connectSocket();
-    selectChat(result.chat.id);
+    elements.clientPanel.setAttribute("data-mobile-view", "conversation");
+    selectChat(result.chat.id, mobileWorkspace());
+    rememberChatView("conversation", result.chat.id);
     showToast("Invite activated. This device key is stored locally.");
   } catch (error) {
     elements.activationError.textContent = errorMessage(error);
@@ -1152,9 +1392,12 @@ async function flushOutbox() {
         method: "POST", body: JSON.stringify({ client_message_id: record.messageId,
           envelopes: record.envelopes }),
       });
-      await appendMessage(record.chatId, { id: `outgoing:${record.messageId}`, kind: "mine",
-        text: record.plaintext, meta: `Sent ? ${record.messageId.slice(0, 8)}`,
-        createdAt: serverTimestamp(result.created_at) });
+      const entry = { id: `outgoing:${record.messageId}`, kind: "mine",
+        senderPublicId: identity.publicId,
+        text: record.plaintext, meta: `Sent by ${identity.publicId}`,
+        createdAt: serverTimestamp(result.created_at) };
+      entry.meta = messageMeta(record.chatId, entry);
+      await appendMessage(record.chatId, entry);
       await removeOutbox(stored.key); // History must commit before removing retry state.
     }
   });
@@ -1194,7 +1437,7 @@ elements.messageForm.addEventListener("submit", async (event) => {
   } catch (error) {
     showToast(errorMessage(error), true);
   } finally {
-    elements.sendButton.disabled = false;
+    elements.sendButton.disabled = Boolean(elements.messageInput.disabled);
     elements.messageInput.focus({ preventScroll: true });
   }
 });
@@ -1240,7 +1483,7 @@ async function start() {
   identity = await readIdentity();
   const requestedInvite = (elements.inviteToken.value || "").trim();
   invitePending = Boolean(requestedInvite && requestedInvite !== identity?.activeInviteToken);
-  if (!invitePending) selectedChatId = identity?.activeInviteChatId || null;
+  if (!invitePending) restoreChatView();
   await ensureStorageKey();
   if (!invitePending) await loadStoredHistory();
   updateIdentityUi();
@@ -1287,6 +1530,9 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function showStartupError(error) {
+  elements.loadingPanel.hidden = true;
+  elements.setupPanel.hidden = false;
+  elements.clientPanel.hidden = true;
   elements.activationError.textContent = errorMessage(error);
   elements.activationError.hidden = false;
   showToast(errorMessage(error), true);

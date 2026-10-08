@@ -1,6 +1,6 @@
 # Security review
 
-Current code: 0.6.0. P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
+Current code: 0.7.0. Client UI, sender/reader labels, P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
 This is a source review with regression tests, not an independent audit.
 Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 
@@ -16,7 +16,8 @@ Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 | Device state | Non-exportable private keys, locally calculated fingerprints, atomic first-use peer pins, encrypted history/outbox and persistence before deletion acknowledgements. A separate committed identity read precedes invite admission; unreadable saved identities are preserved and cannot be overwritten by routine/activation writes. |
 | P-256 boundary | Native non-exportable ECDH identity/ephemeral keys; validated uncompressed 65-byte P-256 public points. Retired keys cannot authenticate, issue/refresh sessions, or share a room with new clients. Configuration imports reject invalid keys before replacement/deletion. The new browser database is separate from prior test data, with no old-format decryption or key conversion. |
 | Client errors | Fixed local/protocol explanations and allowlisted server-detail translations distinguish storage, identity, login, invite and HTTP failures. Raw server validation inputs, status text, response bodies and unknown exception messages are not displayed. No diagnostic upload, reporting controls or new telemetry is added. |
-| Group sender labels | Incoming messages use the matching participant's display name and public ID, saved in encrypted history and rendered with `textContent`. Existing history can resolve current roster names by its saved routing identity without changing delivery IDs or acknowledging old messages again. Names are server-provided labels, not authenticated identities; unnamed senders fall back to public IDs. |
+| Participant labels | Names come from the matching chat roster, are saved in encrypted history and rendered with `textContent`. Names are unauthenticated labels; public IDs remain the routing identities. Relabeling history does not change delivery IDs or acknowledge old deliveries. |
+| Client UI | Full public IDs and locally calculated fingerprints remain selectable and copyable in participant details. Local pins are explicitly not verified identities; changed-key warnings and blocked sending remain in the active conversation. Pending retries stay accessible across mobile views. Device settings expose public identity and session timing, never private keys or credentials. Appearance storage contains only a theme preference. Mobile navigation uses per-tab history state containing only the device public ID, chat ID and view; restoration checks device scope and roster membership. No keys, credentials or plaintext enter that state. Native modal dialogs contain focus and support Escape; client CSP allows bundled same-origin fonts without inline code or remote resources. Saved-device restoration keeps activation hidden until local reads complete; storage failures reveal the existing inline error. Invite landing pages preserve admission/status guidance and only reveal the existing token on expansion. Admin sign-in keeps its original template and styles. |
 | Recovery | Isolated restore tests verify that both signing-key rotation and removal of restored session records are needed to invalidate old credentials. |
 
 Implementation does not prove that deployment settings are correct or that the
@@ -127,6 +128,8 @@ Records are scoped by participant public ID for later authorized reconnects.
 The last activated invite/room is stored with the session, and routine identity
 writes preserve newer session/invite state from another tab. Switching invites
 is not a privacy wipe; Reset device explicitly clears local storage.
+The latest protected invite is saved encrypted in the same tab for up to 24 hours;
+closing the tab or clearing browser data can lose it.
 
 Backend 0.6.0 intentionally replaces the test encryption format without backwards
 support. The browser uses `sideword-test-client-p256`; prior device data is neither
@@ -203,25 +206,45 @@ Old messages gain no retroactive forward secrecy.
 
 ## Latest verification record
 
-- **0.6.0 code, 2026-10-07:** Ruff, dependency consistency, Python compilation,
-  client/protocol/form syntax, release notes and whitespace checks passed.
-  Python regression coverage totals 189 passing cases across the full run and
-  affected-test rerun; JavaScript coverage totals 76 passing cases across the full
-  run and affected-test reruns. Coverage includes native point
+- **Client redesign, 2026-10-07:** non-browser regressions cover full participant
+  values/copying, duplicate names, local-pin terminology, visible changed-key
+  blocks (including during a send), native dialog opening/focus restoration,
+  mobile view/draft preservation, viewport resizing, appearance persistence/OS
+  changes, unchanged errors, pending retries and reset safeguards. Entry regressions
+  cover slow saved identity/history reads without activation-form flashes, fresh
+  devices, visible storage errors and all invite statuses/personal/group/password
+  guidance. Admin sign-in matches its original template exactly. Integration checks
+  cover inline alerts, preserved admin CSRF/fields and bundled fonts under the
+  client CSP. The full redesign run passed 199 isolated Python and 105 JavaScript
+  cases; subsequent affected checks passed all 94 client JavaScript cases and 26
+  Python template/smoke/release cases. The unchanged non-client JavaScript results
+  remain valid. Ruff, compilation, script syntax, documentation links and
+  whitespace passed. Read-only local HTTP checks confirm the running server
+  serves the updated client/invite pages and original admin sign-in without a restart.
+  Mobile header controls retain accessible names, decorative icons and 40px touch
+  targets; connection/security labels stay visible. Desktop styling is preserved.
+  Mobile navigation/scroll regressions model hidden zero-size message panels and
+  clamped scroll ranges, selected-chat reloads using encrypted history (including
+  offline restoration), latest-message opening/reopening, Back-view restoration,
+  foreign/malformed/unavailable navigation state and continued invite activation.
+  Polling and viewport changes preserve older reading positions while active.
+  Existing error mappings and error strings were compared with the base source
+  and are unchanged. Browser rendering, real keyboard/assistive technology
+  behavior and WCAG conformance have not been independently verified.
+- **Unchanged protocol protections, 2026-10-07:** previously passing dependency,
+  compilation and regression checks remain valid. Coverage includes native point
   validation, independent OpenSSL encryption/decryption, non-exportable keys,
   malformed and retired-key rejection, blocked mixed rooms, failed-storage
   admission and import rejection before replace-mode mutation. No browser
   verification was performed; Docker was unavailable for a local container build.
-  Clearer-error verification passed client/protocol syntax, 64 affected JavaScript
-  cases (with 18 retry cases rerun after an outdated wording assertion), the Python
-  smoke test, release-note generation and whitespace checks. Error regressions
-  verify HTTP explanations, private validation-value filtering, unknown exceptions,
+  Current client error regressions verify HTTP explanations,
+  private validation-value filtering, unknown exceptions,
   storage/encryption failures and retained refresh proposals after a lost response.
 - **Release automation:** version/notes validation, workflow configuration,
   Bash syntax and nine mocked publication scenarios passed locally, including
   outdated commits, existing releases, conflicting tags and command failures.
-  The workflow has not yet run on GitHub; repository permissions and successful
-  remote publication remain unverified.
+  Repository permissions and remote publication were not verified in that local
+  review.
 - **Coverage:** crypto interoperability/tampering, key pinning, persistence failures,
   exact delivery and retry races, CSRF/admin revocation, client refresh/issuance
   boundaries, isolated restore scenarios, transport limits and invite navigation.
@@ -249,7 +272,7 @@ Old messages gain no retroactive forward secrecy.
   service journals showed no matching application exceptions. Application logging
   is disabled; nginx access logging is off and errors are discarded, so logs
   cannot establish the user-device failure's cause. The cloud backend runs
-  independently of the local admin tunnel. The 0.6.0 change has not been deployed.
+  independently of the local admin tunnel. The 0.6.0 and 0.7.0 changes have not been deployed.
 - **Limits:** tests use isolated databases and Node adapters for browser storage,
   not a live browser. They do not establish native interoperability, production
   configuration, penetration/load-test results, a full dependency audit or a

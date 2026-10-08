@@ -23,7 +23,7 @@ function inviteClient() {
       if (!nodes.has(selector)) nodes.set(selector, {
         value: '', hidden: false, disabled: false,
         addEventListener(event, handler) { handlers.set(`${selector}:${event}`, handler); },
-        classList: { toggle() {} }, setAttribute() {}, focus() {},
+        classList: { toggle() {} }, setAttribute(name, value) { this[name] = value; }, focus() {},
         querySelector() { return this; },
       });
       return nodes.get(selector);
@@ -32,6 +32,9 @@ function inviteClient() {
   } });
   run(`
     globalThis.events = [];
+    elements.loadingPanel.hidden = false;
+    elements.setupPanel.hidden = true;
+    elements.clientPanel.hidden = true;
     globalThis.saved = { publicId: 'alice', publicKey: 'device-public-key',
       privateKey: { device: true }, storageKey: { history: true }, token: 'old-access',
       activeInviteToken: 'A'.repeat(24), activeInviteChatId: 7 };
@@ -196,6 +199,44 @@ for (const invite of ['', 'A'.repeat(24)]) {
   });
 }
 
+test('saved-device restoration keeps activation hidden during slow key and history reads', async () => {
+  const { run } = inviteClient();
+  run(`elements.inviteToken.value = '';
+    readIdentity = () => new Promise(resolve => { globalThis.finishIdentity = resolve; });
+    globalThis.historyEntered = new Promise(resolve => { globalThis.enterHistory = resolve; });
+    loadStoredHistory = () => {
+      enterHistory();
+      return new Promise(resolve => { globalThis.finishHistory = resolve; });
+    };
+    globalThis.starting = start();`);
+  assert.equal(run('elements.setupPanel.hidden'), true);
+  assert.equal(run('elements.clientPanel.hidden'), true);
+  assert.equal(run('elements.loadingPanel.hidden'), false);
+  run('finishIdentity(saved);');
+  await run('historyEntered');
+  assert.equal(run('elements.setupPanel.hidden'), true);
+  assert.equal(run('elements.loadingPanel.hidden'), false);
+  run('finishHistory();');
+  await run('starting');
+  assert.equal(run('elements.setupPanel.hidden'), true);
+  assert.equal(run('elements.clientPanel.hidden'), false);
+  assert.equal(run('elements.loadingPanel.hidden'), true);
+  assert.equal(run('selectedChatId'), 7);
+});
+
+test('fresh devices show activation only after the saved-device check completes', async () => {
+  const { run } = inviteClient();
+  run(`readIdentity = () => new Promise(resolve => { globalThis.finishIdentity = resolve; });
+    globalThis.starting = start();`);
+  assert.equal(run('elements.setupPanel.hidden'), true);
+  assert.equal(run('elements.loadingPanel.hidden'), false);
+  run('finishIdentity(null);');
+  await run('starting');
+  assert.equal(run('elements.setupPanel.hidden'), false);
+  assert.equal(run('elements.clientPanel.hidden'), true);
+  assert.equal(run('elements.loadingPanel.hidden'), true);
+});
+
 for (const changedParticipant of [false, true]) {
   test(`new invite selects its room and preserves storage${changedParticipant ? ' for a different participant' : ''}`, async () => {
     const { run, submit } = inviteClient();
@@ -206,6 +247,7 @@ for (const changedParticipant of [false, true]) {
     assert.equal(run('elements.setupPanel.hidden'), true);
     assert.equal(run('elements.clientPanel.hidden'), false);
     assert.equal(run('selectedChatId'), 8);
+    assert.equal(run('elements.clientPanel["data-mobile-view"]'), 'conversation');
     assert.equal(run('events.includes("selected:7")'), false);
     assert.equal(run('saved.activeInviteToken'), 'B'.repeat(24));
     assert.equal(run('saved.activeInviteChatId'), 8);
@@ -271,6 +313,9 @@ test('unreadable saved storage leaves a persistent startup error without reconne
   await run('start().catch(showStartupError)');
   assert.equal(run('elements.activationError.hidden'), false);
   assert.match(run('elements.activationError.textContent'), /Keep existing device data/);
+  assert.equal(run('elements.setupPanel.hidden'), false);
+  assert.equal(run('elements.clientPanel.hidden'), true);
+  assert.equal(run('elements.loadingPanel.hidden'), true);
   assert.deepEqual(Array.from(run('events')), []);
 });
 
