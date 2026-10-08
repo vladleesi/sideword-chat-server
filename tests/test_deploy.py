@@ -18,6 +18,7 @@ from scripts import deploy
 
 SHA = "a" * 40
 IMAGE = "sha256:" + "b" * 64
+REFERENCE = "region-docker.pkg.dev/example-project/backend/sideword@sha256:" + "d" * 64
 PREVIOUS = "sha256:" + "c" * 64
 
 
@@ -29,6 +30,7 @@ def candidate(tmp_path):
     compose.write_text("synthetic private configuration")
     return argparse.Namespace(
         archive=archive,
+        image_ref=REFERENCE,
         compose=compose,
         sha=SHA,
         image_id=IMAGE,
@@ -47,7 +49,7 @@ def vm_config(monkeypatch):
         "GCP_WORKLOAD_IDENTITY_PROVIDER": (
             "projects/123/locations/global/workloadIdentityPools/github/providers/repo"
         ),
-        "SIDEWORD_DEPLOY_COMPOSE": "/example/private compose.yaml",
+        "GCP_ARTIFACT_IMAGE": REFERENCE.split("@")[0],
         "GITHUB_RUN_ID": "123",
         "GITHUB_RUN_ATTEMPT": "2",
     }
@@ -105,6 +107,7 @@ def host(monkeypatch, candidate, tmp_path):
         return ""
 
     monkeypatch.setattr(deploy, "run", fake_run)
+    monkeypatch.setattr(deploy, "pull_image", lambda args: None)
     monkeypatch.setattr(deploy, "health_matches", lambda version: True)
     monkeypatch.setattr(deploy, "verify_private_routes", lambda: None)
     previous_umask = os.umask(0o077)
@@ -161,7 +164,7 @@ def test_missing_configuration_names_only_the_missing_variable(vm_config, monkey
     [
         ("GCP_INSTANCE", "--another-instance"),
         ("GCP_ZONE", "bad\nzone"),
-        ("SIDEWORD_DEPLOY_COMPOSE", "relative/config.yaml"),
+        ("GCP_ARTIFACT_IMAGE", "https://invalid/image"),
         ("GCP_WORKLOAD_IDENTITY_PROVIDER", "another/provider"),
     ],
 )
@@ -179,18 +182,12 @@ def test_outdated_commit_never_contacts_vm(candidate, vm_config, monkeypatch):
     deploy.deploy_vm(candidate)
 
 
-def test_advanced_commit_cleans_upload_without_activation(candidate, vm_config, monkeypatch):
-    refs = iter([True, False])
-    monkeypatch.setattr(deploy, "current_commit", lambda sha: next(refs))
-    commands = []
-    monkeypatch.setattr(
-        deploy, "run", lambda command, **kwargs: commands.append((command, kwargs)) or ""
-    )
-    deploy.deploy_vm(candidate)
-    assert len(commands) == 3
-    assert commands[1][0][:3] == ["gcloud", "compute", "scp"]
-    assert commands[-1][0][-1] == "sudo -n rm -rf -- /tmp/sideword-ci-123-2"
-    assert not any("input" in kwargs for _, kwargs in commands)
+def test_vm_success_requires_fixed_marker(candidate, vm_config, monkeypatch, capsys):
+    monkeypatch.setattr(deploy, "current_commit", lambda sha: True)
+    monkeypatch.setattr(deploy, "run", lambda *args, **kwargs: "synthetic-private")
+    with pytest.raises(deploy.DeploymentError, match="confirm"):
+        deploy.deploy_vm(candidate)
+    assert "synthetic-private" not in capsys.readouterr().out
 
 
 def test_vm_activation_quotes_configuration_and_requires_success_marker(
@@ -206,7 +203,10 @@ def test_vm_activation_quotes_configuration_and_requires_success_marker(
     monkeypatch.setattr(deploy, "run", fake_run)
     deploy.deploy_vm(candidate)
     activation = next((command, kwargs) for command, kwargs in commands if "input" in kwargs)
-    assert "'/example/private compose.yaml'" in activation[0][-1]
+    assert "--compose" not in activation[0][-1]
+    assert REFERENCE in activation[0][-1]
+    assert len(commands) == 1
+    assert not any("scp" in command for command, _ in commands)
     assert activation[1]["input"] == Path(deploy.__file__).read_bytes()
     assert "--tunnel-through-iap" in activation[0]
     assert "--ssh-flag=-T" in activation[0]
@@ -244,7 +244,7 @@ def test_host_backup_precedes_activation_and_preserves_configuration(candidate, 
     assert not any(
         "down" in command or "prune" in command or "build" in command for command in commands
     )
-    assert capsys.readouterr().out == "Checked backend deployment verified.\n"
+    assert capsys.readouterr().out.endswith("Checked backend deployment verified.\n")
 
 
 @pytest.mark.parametrize("field,value", [("label", "d" * 40), ("version", "0.5.0")])
@@ -286,7 +286,7 @@ def test_failed_verification_preserves_new_data_backup_and_previous_image(
         return result
 
     monkeypatch.setattr(deploy, "run", started)
-    times = iter([0, 181])
+    times = iter([0, 0, 0, 181])
     monkeypatch.setattr(deploy.time, "monotonic", lambda: next(times))
     with pytest.raises(deploy.DeploymentError, match="verification failed"):
         deploy.deploy_host(candidate)
@@ -346,12 +346,10 @@ def test_database_outside_data_mount_is_rejected(host):
         deploy.database_path(container)
 
 
-def test_host_archive_tampering_never_contacts_docker(candidate, monkeypatch):
-    candidate.archive.write_bytes(b"unexpected bytes")
-    monkeypatch.setattr(
-        deploy, "run", lambda *args, **kwargs: pytest.fail("No Docker commands allowed")
-    )
-    with pytest.raises(deploy.DeploymentError, match="checksum"):
+def test_host_mutable_reference_never_contacts_docker(candidate, monkeypatch):
+    candidate.image_ref = REFERENCE.split("@")[0] + ":latest"
+    monkeypatch.setattr(deploy, "run", lambda *args, **kwargs: pytest.fail("No Docker commands"))
+    with pytest.raises(deploy.DeploymentError, match="immutable"):
         deploy.deploy_host(candidate)
 
 
@@ -440,6 +438,7 @@ def checked_ci(monkeypatch):
     monkeypatch.setenv("GITHUB_REPOSITORY", "example/project")
     checked_run = {
         "id": 123,
+        "run_attempt": 2,
         "head_sha": SHA,
         "head_branch": "develop",
         "event": "push",
@@ -467,19 +466,26 @@ def test_manual_deployment_requires_both_checks_on_the_exact_develop_commit(chec
     assert commands[0][4] == "repos/example/project/actions/workflows/test.yml/runs"
     assert f"head_sha={SHA}" in commands[0]
     assert "branch=develop" in commands[0] and "event=push" in commands[0]
-    assert commands[1][-1] == "repos/example/project/actions/runs/123/jobs?per_page=100"
+    assert commands[1][-1] == "repos/example/project/actions/runs/123/attempts/2/jobs?per_page=100"
     assert capsys.readouterr().out == "Checked commit passed both CI jobs.\n"
 
 
-@pytest.mark.parametrize("field,value", [
-    ("head_sha", "d" * 40),
-    ("head_branch", "main"),
-    ("event", "pull_request"),
-    ("head_repository", {"full_name": "untrusted/fork"}),
-    ("head_repository", None),
-    ("id", "123"),
-    ("id", True),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("head_sha", "d" * 40),
+        ("head_branch", "main"),
+        ("event", "pull_request"),
+        ("head_repository", {"full_name": "untrusted/fork"}),
+        ("head_repository", None),
+        ("id", "123"),
+        ("id", True),
+        ("run_attempt", None),
+        ("run_attempt", True),
+        ("run_attempt", 0),
+        ("run_attempt", "2"),
+    ],
+)
 def test_unrelated_or_untrusted_ci_cannot_authorize_deployment(checked_ci, field, value):
     checked_run, _, commands = checked_ci
     checked_run[field] = value
@@ -488,13 +494,16 @@ def test_unrelated_or_untrusted_ci_cannot_authorize_deployment(checked_ci, field
     assert len(commands) == 1
 
 
-@pytest.mark.parametrize("field,value", [
-    ("conclusion", "failure"),
-    ("conclusion", "skipped"),
-    ("conclusion", "cancelled"),
-    ("status", "in_progress"),
-    ("name", "unrelated-job"),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("conclusion", "failure"),
+        ("conclusion", "skipped"),
+        ("conclusion", "cancelled"),
+        ("status", "in_progress"),
+        ("name", "unrelated-job"),
+    ],
+)
 def test_incomplete_failed_or_missing_container_check_blocks_deployment(checked_ci, field, value):
     _, jobs, _ = checked_ci
     jobs[1][field] = value
@@ -509,11 +518,14 @@ def test_missing_ci_runs_cannot_authorize_deployment(monkeypatch):
         deploy.verify_ci(SHA)
 
 
-@pytest.mark.parametrize("sha,repository", [
-    ("main", "example/project"),
-    (SHA, ""),
-    (SHA, "example/project/other"),
-])
+@pytest.mark.parametrize(
+    "sha,repository",
+    [
+        ("main", "example/project"),
+        (SHA, ""),
+        (SHA, "example/project/other"),
+    ],
+)
 def test_invalid_ci_selection_never_queries_github(monkeypatch, sha, repository):
     monkeypatch.setenv("GITHUB_REPOSITORY", repository)
     monkeypatch.setattr(deploy, "run", lambda *args, **kwargs: pytest.fail("No commands allowed"))
@@ -526,7 +538,9 @@ def test_deployment_workflow_is_manual_and_independent_of_ci_and_release():
     workflow = yaml.load((workflows / "deploy.yml").read_text(), Loader=yaml.BaseLoader)
     assert set(workflow["on"]) == {"workflow_dispatch"}
     assert workflow["permissions"] == {
-        "contents": "read", "actions": "read", "id-token": "write",
+        "contents": "read",
+        "actions": "read",
+        "id-token": "write",
     }
     job = workflow["jobs"]["deploy"]
     assert job["if"] == "github.ref == 'refs/heads/main'"
@@ -537,12 +551,227 @@ def test_deployment_workflow_is_manual_and_independent_of_ci_and_release():
     assert {"smoke", "container"} <= ci["jobs"].keys()
     steps = job["steps"]
     gate = next(i for i, step in enumerate(steps) if "scripts.deploy ci " in step.get("run", ""))
-    build = next(i for i, step in enumerate(steps) if "docker build " in step.get("run", ""))
-    auth = next(i for i, step in enumerate(steps)
-                if step.get("uses", "").startswith("google-github-actions/auth@"))
-    assert gate < build < auth
+    download = next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    )
+    auth = next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("uses", "").startswith("google-github-actions/auth@")
+    )
+    assert gate < download < auth
+    assert not any("docker build" in step.get("run", "") for step in steps)
+    assert steps[download]["with"]["run-id"] == "${{ steps.ci.outputs.run_id }}"
+    assert steps[download]["with"]["name"] == "checked-image-${{ steps.ci.outputs.run_attempt }}"
+    upload = next(
+        step
+        for step in ci["jobs"]["container"]["steps"]
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    )
+    assert upload["with"]["name"] == "checked-image-${{ github.run_attempt }}"
+    assert "overwrite" not in upload["with"]
+    for step in steps:
+        if "uses" in step:
+            assert len(step["uses"].split("@")[1]) == 40
+    assert "vars.GCP" not in (workflows / "deploy.yml").read_text()
     assert steps[gate]["if"] == "steps.current.outputs.deploy == 'true'"
     assert not any(step.get("continue-on-error") == "true" for step in steps)
     for path in workflows.glob("*.yml"):
         if path.name != "deploy.yml":
             assert "./.github/workflows/deploy.yml" not in path.read_text()
+
+
+def test_ci_selection_exports_only_verified_run_id(checked_ci, monkeypatch, tmp_path):
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    assert deploy.verify_ci(SHA) == 123
+    assert output.read_text() == "run_id=123\nrun_attempt=2\n"
+
+
+def test_registry_mismatch_never_contacts_vm(candidate, vm_config, monkeypatch):
+    candidate.image_ref = REFERENCE.replace("/backend/", "/other/")
+    monkeypatch.setattr(deploy, "run", lambda *args, **kwargs: pytest.fail("No commands"))
+    with pytest.raises(deploy.DeploymentError, match="outside"):
+        deploy.deploy_vm(candidate)
+
+
+def test_vm_never_relays_unexpected_output(candidate, vm_config, monkeypatch, capsys):
+    monkeypatch.setattr(deploy, "current_commit", lambda sha: True)
+    monkeypatch.setattr(
+        deploy,
+        "run",
+        lambda *args, **kwargs: "synthetic-private\nChecked backend deployment verified.\n",
+    )
+    with pytest.raises(deploy.DeploymentError, match="unexpected"):
+        deploy.deploy_vm(candidate)
+    assert "synthetic-private" not in capsys.readouterr().out
+
+
+def test_pull_failure_never_stops_backend(candidate, host, monkeypatch):
+    commands, _, _ = host
+
+    def failed(args):
+        raise deploy.DeploymentError("Deployment command failed: docker.")
+
+    monkeypatch.setattr(deploy, "pull_image", failed)
+    with pytest.raises(deploy.DeploymentError):
+        deploy.deploy_host(candidate)
+    assert not any("stop" in command or "up" in command for command in commands)
+    assert not list(candidate.compose.parent.glob("deployment-backups/*.sqlite3"))
+
+
+def test_vm_pull_uses_metadata_and_disposable_credentials(candidate, monkeypatch, capsys):
+    commands = []
+    requests = []
+
+    class Opener:
+        @contextmanager
+        def open(self, request, **kwargs):
+            import io
+
+            requests.append(request)
+            yield io.StringIO('{"access_token": "synthetic-token"}')
+
+    monkeypatch.setattr(deploy.urllib.request, "build_opener", lambda *args: Opener())
+    monkeypatch.setattr(
+        deploy,
+        "run",
+        lambda command, **kwargs: commands.append((command, kwargs)) or "synthetic-private",
+    )
+    deploy.pull_image(candidate)
+    assert requests[0].get_header("Metadata-flavor") == "Google"
+    login, pull = commands
+    assert login[1]["input"] == b"synthetic-token"
+    assert "--password-stdin" in login[0]
+    assert pull[0] == ["docker", "pull", REFERENCE]
+    assert login[1]["env"]["DOCKER_CONFIG"] == pull[1]["env"]["DOCKER_CONFIG"]
+    assert not Path(login[1]["env"]["DOCKER_CONFIG"]).exists()
+    output = capsys.readouterr().out
+    assert "synthetic-token" not in output and "synthetic-private" not in output
+
+
+@pytest.mark.parametrize("wrong_manifest", [False, True])
+def test_publication_binds_digest_to_ci_image_and_cleans_credentials(
+    candidate, vm_config, monkeypatch, tmp_path, capsys, wrong_manifest
+):
+    directory = candidate.archive.parent
+    (directory / "image.json").write_text(
+        json.dumps(
+            {
+                "image_id": IMAGE,
+                "checksum": candidate.checksum,
+                "version": candidate.version,
+            }
+        )
+    )
+    output = tmp_path / "github-env"
+    monkeypatch.setenv("GITHUB_ENV", str(output))
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        if command[:3] == ["docker", "image", "inspect"]:
+            return json.dumps(
+                [
+                    {
+                        "Id": IMAGE,
+                        "RepoDigests": [REFERENCE],
+                        "Config": {
+                            "Labels": {"org.opencontainers.image.revision": SHA},
+                        },
+                    }
+                ]
+            )
+        if command[:3] == ["gcloud", "auth", "print-access-token"]:
+            return "synthetic-token"
+        if command[:3] == ["docker", "manifest", "inspect"]:
+            return json.dumps({"config": {"digest": PREVIOUS if wrong_manifest else IMAGE}})
+        return "synthetic-private"
+
+    monkeypatch.setattr(deploy, "run", fake_run)
+    args = argparse.Namespace(directory=directory, sha=SHA)
+    if wrong_manifest:
+        with pytest.raises(deploy.DeploymentError, match="registry digest"):
+            deploy.publish_image(args)
+        assert not output.exists()
+    else:
+        deploy.publish_image(args)
+        assert f"IMAGE_REF={REFERENCE}" in output.read_text()
+    login = next(kwargs for command, kwargs in commands if "login" in command)
+    assert login["input"] == b"synthetic-token"
+    assert not Path(login["env"]["DOCKER_CONFIG"]).exists()
+    logs = capsys.readouterr().out
+    assert "synthetic-token" not in logs and "synthetic-private" not in logs
+
+
+def test_retention_policy_preserves_two_recent_versions():
+    root = Path(__file__).resolve().parents[1]
+    policies = json.loads((root / "scripts/artifact-cleanup.json").read_text())
+    assert policies[0]["condition"] == {"tagState": "any", "olderThan": "86400s"}
+    assert policies[1]["mostRecentVersions"]["keepCount"] == 2
+    assert policies[1]["action"]["type"] == "Keep"
+
+
+@pytest.mark.parametrize(
+    "file_uid,parent_uid,file_mode,parent_mode,allowed,accepted",
+    [
+        (0, 0, 0o600, 0o700, True, True),
+        (0, 1000, 0o600, 0o755, True, False),
+        (1000, 0, 0o600, 0o700, True, False),
+        (0, 0, 0o644, 0o700, True, False),
+        (0, 0, 0o600, 0o777, True, False),
+        (0, 0, 0o600, 0o700, False, False),
+    ],
+)
+def test_host_allowlist_requires_private_root_owned_file_and_directory(
+    candidate,
+    tmp_path,
+    monkeypatch,
+    file_uid,
+    parent_uid,
+    file_mode,
+    parent_mode,
+    allowed,
+    accepted,
+):
+    directory = tmp_path / "host-config"
+    directory.mkdir(mode=parent_mode)
+    directory.chmod(parent_mode)
+    config = directory / "deploy.json"
+    config.write_text(
+        json.dumps(
+            {
+                "image": REFERENCE.split("@")[0] if allowed else "untrusted/image",
+                "compose": str(candidate.compose),
+            }
+        )
+    )
+    config.chmod(file_mode)
+    original_path = Path
+    original_stat = Path.stat
+
+    def fake_stat(path, *args, **kwargs):
+        result = original_stat(path, *args, **kwargs)
+        if path in {config, directory}:
+            values = list(result)
+            values[4] = file_uid if path == config else parent_uid
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    monkeypatch.setattr(
+        deploy,
+        "Path",
+        lambda path: config if path == "/etc/sideword/deploy.json" else original_path(path),
+    )
+    expected_compose = candidate.compose
+    candidate.compose = None
+    if accepted:
+        deploy.host_configuration(candidate)
+        assert candidate.compose == expected_compose
+    else:
+        with pytest.raises(deploy.DeploymentError):
+            deploy.host_configuration(candidate)
+        assert candidate.compose is None

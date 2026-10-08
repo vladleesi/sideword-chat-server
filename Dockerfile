@@ -15,12 +15,12 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-COPY app ./app
-COPY scripts ./scripts
+COPY --chown=1000:1000 app ./app
+COPY --chown=1000:1000 scripts/serve_shared.py ./scripts/serve_shared.py
 
 RUN mkdir -p /data /exports \
     && useradd --system --uid 1000 --home /app sideword \
-    && chown -R sideword:sideword /app /data /exports
+    && chown sideword:sideword /data /exports
 
 USER sideword
 
