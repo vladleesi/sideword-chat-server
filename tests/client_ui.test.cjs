@@ -77,6 +77,8 @@ function client({ mobile = false, clipboardBlocked = false, viewportAware = fals
   const window = {
     addEventListener() {}, matchMedia: () => ({ matches: mobile }),
     setTimeout: handler => { timers.push(handler); },
+    clearTimeout() {},
+    setInterval() {}, clearInterval() {},
     getSelection: () => selection,
     confirm: message => { confirmations.push(message); return false; },
     location: { assign: path => { window.destination = path; } },
@@ -88,6 +90,7 @@ function client({ mobile = false, clipboardBlocked = false, viewportAware = fals
     replaceState(state) { this.state = structuredClone(state); },
   };
   const context = vm.createContext({ TextEncoder, TextDecoder, DOMException,
+    performance: { now: () => window.now || 0 },
     crypto: webcrypto, atob, btoa, document, window, history,
     ResizeObserver: class {
       constructor(handler) { resizeMessages = handler; }
@@ -342,9 +345,9 @@ test('participant details expose full values, duplicate identities, unchecked an
   assert.equal(rows[0].tagName, 'details');
   assert.equal(rows[0].children[0].children[0].textContent, 'Alex (this device)');
   assert.equal(rows[1].children[0].children[0].textContent, 'Alex');
-  assert.equal(rows[1].children[0].children[1].textContent, 'peer-a');
-  assert.equal(rows[1].children[0].children[2].textContent, 'Locally pinned · identity not verified');
-  assert.equal(rows[2].children[0].children[2].textContent, 'Unchecked key');
+  assert.equal(rows[1].children[0].children[2].textContent, 'peer-a');
+  assert.equal(rows[1].children[0].children[3].textContent, 'Locally pinned · identity not verified');
+  assert.equal(rows[2].children[0].children[3].textContent, 'Unchecked key');
   assert.equal(rows[2].children[0].children[0].textContent, '<b>Alex</b>');
   assert.equal(rows[2].children[0].children[0].children.length, 0);
   const value = rows[1].children[1].children[3].children[0];
@@ -364,6 +367,103 @@ test('copy actions use the complete public ID and fingerprint and provide access
   assert.deepEqual(app.copied, ['peer-a', 'ab:'.repeat(31) + 'cd']);
   assert.equal(app.nodes.get('#details-copy-status').textContent, 'Fingerprint copied.');
   assert.equal(app.nodes.get('#details-copy-status').hidden, false);
+});
+
+test('presence shows accurate counts and discreet participant states, then clears on disconnect', () => {
+  const app = client();
+  const header = app.nodes.get('#participant-count');
+  const states = () => app.nodes.get('#participant-keys').children.map(row => row.children[0].children[1]);
+  assert.match(header.textContent, /Presence unknown/);
+  assert.equal(states()[0].textContent, 'Presence unknown');
+  app.run(`receivePresence({ type: 'presence', valid_for_ms: 35000, chats: [
+    { chat_id: 7, participants: ['me', 'peer-a', 'peer-b'], online: ['me', 'peer-a'] }
+  ] });`);
+  assert.equal(header.textContent, '2 of 3 online');
+  assert.equal(states()[1].textContent, 'Online');
+  assert.equal(states()[1].className, 'participant-presence online');
+  assert.equal(states()[2].textContent, 'Offline');
+  app.run('updateConnectionState(false);');
+  assert.match(header.textContent, /Presence unknown/);
+  assert.equal(states()[2].textContent, 'Presence unknown');
+});
+
+test('presence leases expire even when background timers pause, and reconnect requires a fresh snapshot', () => {
+  const app = client();
+  const snapshot = `receivePresence({valid_for_ms: 35000, chats: [
+    {chat_id: 7, participants: ['me', 'peer-a', 'peer-b'], online: ['peer-b']}
+  ]});`;
+  app.run(snapshot);
+  assert.equal(app.nodes.get('#participant-count').textContent, '1 of 3 online');
+  app.window.now = 35001;
+  app.run('renderPresence();');
+  assert.match(app.nodes.get('#participant-count').textContent, /Presence unknown/);
+  app.run('clearPresence(); updateConnectionState(true);');
+  assert.match(app.nodes.get('#participant-count').textContent, /Presence unknown/);
+  app.run(snapshot);
+  assert.equal(app.nodes.get('#participant-count').textContent, '1 of 3 online');
+  app.timers.at(-1)();
+  assert.match(app.nodes.get('#participant-count').textContent, /Presence unknown/);
+});
+
+test('presence is unknown for a new roster member, missing chat, or malformed snapshot', () => {
+  const app = client();
+  app.run(`receivePresence({valid_for_ms: 35000, chats: [
+    {chat_id: 7, participants: ['me', 'peer-a'], online: ['me']}
+  ]});`);
+  assert.match(app.nodes.get('#participant-count').textContent, /Presence unknown/);
+  assert.equal(app.run("participantPresence(7, 'peer-a')"), 'offline');
+  assert.equal(app.run("participantPresence(7, 'peer-b')"), 'unknown');
+  assert.equal(app.run("participantPresence(8, 'me')"), 'unknown');
+  app.run(`receivePresence({valid_for_ms: 35000, chats: [
+    {chat_id: 7, participants: ['me', 'peer-a', 'peer-b', 'new-peer'], online: ['me']}
+  ]});`);
+  assert.match(app.nodes.get('#participant-count').textContent, /Presence unknown/);
+  app.run('receivePresence({valid_for_ms: 35000, chats: []});');
+  assert.equal(app.run("participantPresence(7, 'me')"), 'unknown');
+  app.run(`receivePresence({valid_for_ms: 999999, chats: [
+    {chat_id: 7, participants: ['me'], online: ['me']}
+  ]});`);
+  assert.equal(app.run('presenceByChat.size'), 0);
+  app.run(`receivePresence({valid_for_ms: 35000, chats: [
+    {chat_id: 7, participants: ['me'], online: ['outsider']}
+  ]});`);
+  assert.equal(app.run('presenceByChat.size'), 0);
+  app.run(`navigator.onLine = false; receivePresence({valid_for_ms: 35000, chats: [
+    {chat_id: 7, participants: ['me'], online: ['me']}
+  ]});`);
+  assert.equal(app.run('presenceByChat.size'), 0);
+});
+
+test('WebSocket presence bypasses blocked delivery work and ignores replaced connections', () => {
+  const app = client();
+  app.run(`globalThis.WebSocket = class {
+    static OPEN = 1;
+    constructor() { this.readyState = 1; this.events = new Map(); this.sent = []; }
+    addEventListener(name, handler) {
+      if (!this.events.has(name)) this.events.set(name, []);
+      this.events.get(name).push(handler);
+    }
+    emit(name, event) { for (const handler of this.events.get(name) || []) handler(event); }
+    send(value) { this.sent.push(value); }
+    close() { this.readyState = 3; this.emit('close'); }
+  };
+  window.location.protocol = 'https:'; window.location.host = 'test';
+  connectSocket(); socket.emit('open');
+  globalThis.originalSocket = socket;
+  inboundQueue = new Promise(() => {});
+  globalThis.livePresence = JSON.stringify({type: 'presence', valid_for_ms: 35000,
+    chats: [{chat_id: 7, participants: ['me', 'peer-a', 'peer-b'], online: ['me']}]});
+  socket.emit('message', {data: livePresence});`);
+  assert.equal(app.nodes.get('#participant-count').textContent, '1 of 3 online');
+  assert.equal(app.run('JSON.parse(socket.sent[0]).presence'), true);
+  app.run(`socket = null; connectSocket();
+    originalSocket.emit('message', {data: livePresence});`);
+  assert.match(app.nodes.get('#participant-count').textContent, /Presence unknown/);
+  app.run(`socket.emit('message', {data: livePresence});
+    originalSocket.emit('close');`);
+  assert.equal(app.nodes.get('#participant-count').textContent, '1 of 3 online');
+  app.run(`socket.emit('message', {data: JSON.stringify({type: 'auth_error'})});`);
+  assert.match(app.nodes.get('#participant-count').textContent, /Presence unknown/);
 });
 
 test('blocked clipboard selects the full value for manual copying', async () => {
@@ -386,7 +486,7 @@ test('roster refresh preserves expanded participant nodes, focus and updated key
   assert.equal(app.nodes.get('#participant-keys').children[1], peer);
   assert.equal(peer.open, true);
   assert.equal(app.document.activeElement, focused);
-  assert.equal(peer.children[0].children[2].textContent, 'KEY CHANGED; blocked');
+  assert.equal(peer.children[0].children[3].textContent, 'KEY CHANGED; blocked');
   assert.equal(peer.children[1].children[3].children[0].textContent, 'ff:'.repeat(31) + 'ff');
 });
 

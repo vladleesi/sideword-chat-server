@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     max_request_bytes: int = Field(default=2 * 1024 * 1024, ge=1024)
     max_ws_connections: int = Field(default=256, ge=1)
     max_ws_per_user: int = Field(default=4, ge=1)
+    presence_enabled: bool = True
     requests_per_minute: int = Field(default=600, ge=1)
     login_attempts_per_minute: int = Field(default=10, ge=1)
     require_https: bool = True

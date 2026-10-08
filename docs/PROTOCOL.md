@@ -116,6 +116,11 @@ Display names are server-provided metadata, unauthenticated by the envelope.
 
 ## Delivery requirements for future clients
 
+Optional participant presence is a separate, unencrypted connection-status event;
+it does not change message envelopes, receipts, key checks or delivery ACKs.
+See the [presence contract](API.md#participant-presence) for opt-in authentication,
+heartbeat deadlines, membership scoping and mandatory unknown/expiry behavior.
+
 Authenticate, decrypt, and commit local history before issuing either `/read/exact`
 or `/ack/exact`; both can delete queued ciphertext. Failed decryption, pin checks, or
 storage must leave messages retryable. Serialize incoming processing across WS

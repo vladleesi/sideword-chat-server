@@ -173,6 +173,51 @@ Rules:
 
    Returns `messages` and `read_receipts` arrays.
 
+## Participant presence
+
+Presence is optional and uses the existing `/ws` connection. Send
+`{"type":"auth","token":"<JWT>","presence":true}` as the first frame to opt in.
+After `hello`, the server sends complete `presence` snapshots:
+
+```json
+{
+  "type": "presence",
+  "valid_for_ms": 35000,
+  "chats": [{
+    "chat_id": 1,
+    "participants": ["<public ID A>", "<public ID B>"],
+    "online": ["<public ID A>"]
+  }]
+}
+```
+
+Snapshots include only the authenticated user's current conversation memberships.
+`online` contains participants with at least one authenticated active socket,
+including this device; session validity alone never makes a participant online.
+Multiple sockets/sessions count once. An offline participant is a listed member
+absent from `online`; missing snapshots, unlisted members and lost connectivity
+mean **unknown**, never offline. Clients must replace previous snapshots and
+discard them at their monotonic `valid_for_ms` deadline (at most 35 seconds), on
+disconnect, or on authentication failure. Process them immediately rather than
+behind delivery queues. Presence is server-reported connection status, not proof
+of identity, attention, or successful message decryption.
+
+Opted-in clients send textual `ping` at least every 25 seconds; the server replies
+`pong` and refreshes their snapshot. These sockets close after 75 seconds without
+an incoming frame, with periodic credential checks at most 30 seconds apart.
+Connect/disconnect transitions update observers immediately. Legacy clients keep
+their existing `hello`/`message`/`read` event stream and transport ping/pong policy;
+their authenticated sockets also count while connected. Keep Uvicorn's transport
+ping interval/timeout enabled (defaults: 20/20 seconds) for stale legacy cleanup.
+There is no HTTP presence endpoint, stored activity history, or last-seen field
+in this feature; HTTP polling alone cannot establish presence.
+
+Presence is process-local. Use one shared process (including the bundled
+two-listener runner); set `SIDEWORD_PRESENCE_ENABLED=false` on every independent
+worker/replica in a multi-process deployment. Disabled servers send no presence
+snapshots, and clients show unknown. Sticky routing does not make separate
+registries authoritative. No broker or additional dependency is required.
+
 ## Exact delivery identities
 
 Every message and receipt returned by polling, WS backlog, or live WS events has

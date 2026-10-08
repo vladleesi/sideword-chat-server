@@ -103,6 +103,7 @@ below uses the `SIDEWORD_` prefix, for example `SIDEWORD_MESSAGE_TTL_DAYS=30`.
 | `ALLOW_LEGACY_ACK`, `LEGACY_TOKEN_DEADLINE` | `true`, unset; explicit compatibility sunset controls |
 | `REQUIRE_HTTPS`, `PRIVATE_ADMIN` | `true`; TLS outside loopback and local-only administration |
 | `MAX_REQUEST_BYTES`, `REQUESTS_PER_MINUTE` | `2097152`, `600`; body and per-IP/process request limits |
+| `PRESENCE_ENABLED` | `true`; ephemeral presence, requires one shared process; disable across independent workers/replicas |
 | `MAX_PENDING_MESSAGES`, `MAX_PENDING_BYTES` | `10000`, `268435456`; shared queued ciphertext limits |
 
 For other limits and operator procedures, see [.env.example](.env.example) and
@@ -154,6 +155,8 @@ fingerprints out of band using **Conversation details**; local pins do not verif
 identity. `/client` requires HTTPS or localhost; keys and history
 stay in the browser. **Reset device** or clearing site data can permanently lose
 access. Do not reset to dismiss key or storage errors.
+Participant presence updates over WebSocket; unavailable status is shown as
+unknown. See [presence semantics](docs/API.md#participant-presence).
 
 Rooms from before the P-256 update (0.6.0) require fresh invites and identities;
 see [upgrade guidance](docs/UPGRADING.md#compatibility-notes). This is a reference

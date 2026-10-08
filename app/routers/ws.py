@@ -6,6 +6,7 @@ import asyncio
 import base64
 from datetime import datetime, timezone
 
+from anyio import CancelScope
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,6 +85,7 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
         for item in websocket.headers.get("sec-websocket-protocol", "").split(",")
     }
     accepted_protocol = _BASE_PROTOCOL if _BASE_PROTOCOL in requested_protocols else None
+    presence_requested = False
 
     # Browsers authenticate in the first frame so JWTs stay out of URLs and
     # WebSocket protocol headers. Query/subprotocol auth remains compatible.
@@ -103,6 +105,7 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
         auth_token = payload["token"]
+        presence_requested = payload.get("presence") is True
 
     async with SessionLocal() as session:
         user = await _resolve_user(session, auth_token)
@@ -122,7 +125,7 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
                 return await _resolve_user(current, auth_token) is not None
 
         try:
-            await manager.connect(user.id, websocket, validate_session)
+            await manager.connect(user.id, websocket, validate_session, public_id=user.public_id)
         except WebSocketDisconnect:
             return
 
@@ -150,6 +153,11 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
                     },
                 }
             )
+            # Opt-in preserves the event stream for legacy clients.
+            if presence_requested:
+                await manager.enable_presence(websocket)
+            else:
+                await manager.refresh_presence()
         except WebSocketDisconnect:
             await manager.disconnect(user.id, websocket)
             return
@@ -162,15 +170,24 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
             # Clients may send ping frames; accept simple textual pings too.
             try:
                 raw = await asyncio.wait_for(
-                    websocket.receive_text(), timeout=SESSION_CHECK_SECONDS
+                    websocket.receive_text(),
+                    timeout=min(SESSION_CHECK_SECONDS, manager.remaining(websocket)),
                 )
             except TimeoutError:
                 raw = None
+            if not manager.remaining(websocket):
+                await websocket.close(code=1001)
+                return
             if not await manager.validate(user.id, websocket):
                 return
+            if raw is not None:
+                manager.touch(websocket)
             if raw == "ping":
                 await websocket.send_text("pong")
+                await manager.refresh_presence(websocket)
     except WebSocketDisconnect:
         pass
     finally:
-        await manager.disconnect(user.id, websocket)
+        # ASGI task cancellation must not abandon the offline notification.
+        with CancelScope(shield=True):
+            await manager.disconnect(user.id, websocket)

@@ -151,6 +151,10 @@ textarea:disabled { color: var(--muted); }
 .participant:last-child { border-bottom: 1px solid var(--border); }
 .participant summary { padding: .8rem .25rem; cursor: pointer; }
 .participant-name { font-weight: 500; }
+.participant-presence { display: inline-flex; align-items: center; gap: .35rem; margin-left: .6rem; color: var(--muted); font-size: .7rem; }
+.participant-presence::before { content: ""; width: .4rem; height: .4rem; border: 1px solid var(--muted); border-radius: 50%; }
+.participant-presence.online::before { background: var(--success); border-color: var(--success); }
+.participant-presence.offline::before { background: var(--muted); opacity: .5; }
 .participant-identity, .key-state { display: block; padding-left: 1.1rem; margin-top: .2rem; color: var(--muted); font-size: .75rem; overflow-wrap: anywhere; }
 .participant-identity { font-family: var(--mono); }
 .key-state.changed { color: var(--danger); }

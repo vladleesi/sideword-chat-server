@@ -145,3 +145,10 @@ HTTP/WS rate, connection and frame limits are per process. Database quotas and
 login limits are shared. Add gateway/global limits, header/idle timeouts, and host
 CPU/memory/disk limits. Defaults are in [the configuration example](../.env.example)
 and [API capacity rules](API.md#send-retries-and-capacity).
+
+Version 0.8.0 adds optional in-memory participant presence without a database or
+encryption migration. Accurate presence requires one shared server process;
+disable `SIDEWORD_PRESENCE_ENABLED` on every independent worker/replica to show
+unknown rather than incomplete online counts. Preserve Uvicorn's transport
+ping/pong interval and timeout for legacy socket cleanup. See the
+[presence contract](API.md#participant-presence) for client heartbeat requirements.

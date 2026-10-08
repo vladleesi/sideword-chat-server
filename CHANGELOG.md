@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.0 — 2026-10-07
+
+- Show ephemeral participant presence and online counts in the test client using authenticated, opt-in WebSocket snapshots; handle multiple connections, reconnects, heartbeat expiry, and unknown status when connectivity is unreliable.
+- Scope presence to current conversation memberships without storing activity history; add a presence toggle for deployments with independent workers and preserve legacy WebSocket event streams.
+
 ## 0.7.0 — 2026-10-07
 
 - Show sender names beneath outgoing and personal-chat messages, and reader names with public IDs on read receipts; fall back to public IDs for unnamed participants and refresh labels in saved history when the roster is available.

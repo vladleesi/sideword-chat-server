@@ -68,6 +68,30 @@ WebSockets revalidate before delivery/backlog, on incoming frames and every
 30 seconds while idle. Checks cannot retract a response already authorized or
 remove the small check/send race.
 
+Optional presence snapshots revalidate recipients and query current conversation
+memberships; they expose only public participant IDs and ephemeral connection
+status to members. Online means at least one authenticated socket, not an
+unexpired session. Opted-in sockets expire after 75 seconds without an incoming
+frame; legacy sockets retain transport ping/pong cleanup. Multiple sessions are
+validated separately. No new activity records or last-seen timestamps are stored.
+The client replaces snapshots immediately outside the encrypted delivery queue,
+expires their monotonic leases within 35 seconds, and clears them on connectivity
+or authentication loss; absent or expired status is unknown. Presence is a bounded
+heartbeat observation, not proof of attention or identity. Independent workers
+must disable presence because their local registries cannot establish global
+offline status; see the [API contract](API.md#participant-presence).
+
+Presence regression coverage in `tests/test_presence.py` and
+`tests/client_ui.test.cjs` covers membership scoping/removal, legacy compatibility,
+invalid authentication, consumed invites, separate-session revocation, multiple
+connections, renewable-session expiry, disconnect/reconnect, cancelled-socket
+cleanup, stale cleanup, replacement public identities, paused client timers,
+unknown status, malformed snapshots and delivery-queue isolation. Verification on
+2026-10-07 passed all 210 isolated Python cases (including 24 focused
+presence/authentication cases), all 118 JavaScript cases, Ruff, compilation,
+client/form syntax, release metadata, changed documentation links and diff
+whitespace checks. The 0.8.0 feature has not been deployed; browser QA was excluded.
+
 Renewable access defaults to 15 minutes; sessions have an absolute 30-day limit,
 capped by invite expiry. Refresh never extends the stored lifetime. Old refresh
 digests remain until session expiry for replay detection. An identical old/new
@@ -266,13 +290,18 @@ Old messages gain no retroactive forward secrecy.
   key round trips, WebKit-style null reads, partial null keys, preserving unreadable
   records, missing versus changed devices, blocked admission before network activity,
   retained admission proposals, successful retry after storage recovery, and inline startup errors.
-- **Deployment:** read-only inspection on 2026-10-07 verified a healthy cloud
-  container reporting 0.5.0, zero container restarts and no OOM kill, and public
-  JavaScript matching the 0.5.0 repository source. Retained deployment logs and
-  service journals showed no matching application exceptions. Application logging
-  is disabled; nginx access logging is off and errors are discarded, so logs
-  cannot establish the user-device failure's cause. The cloud backend runs
-  independently of the local admin tunnel. The 0.6.0 and 0.7.0 changes have not been deployed.
+- **Deployment, 2026-10-07:** deployed 0.7.0 from exact commit `9876830` after
+  successful CI and automatic promotion. The prior live version was 0.6.0; this
+  rollout required no key or room migration. A verified SQLite backup and the
+  previous image were retained before activation. Read-only checks confirmed
+  container/public HTTPS health, exact image revision, matching client assets
+  and fonts, updated invite landing, no-store/CSP/no-referrer headers, and public
+  admin/schema blocking for HTTP and WebSocket upgrades. Private admin sign-in
+  remained available with its original form. Environment, private Compose
+  configuration and persistent mounts were unchanged; database integrity and
+  user/chat/admin counts were preserved. Application logging remains disabled,
+  and no OOM kill was reported. No production message exchange or browser QA was
+  performed. The local development service was not restarted.
 - **Limits:** tests use isolated databases and Node adapters for browser storage,
   not a live browser. They do not establish native interoperability, production
   configuration, penetration/load-test results, a full dependency audit or a

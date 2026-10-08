@@ -63,6 +63,9 @@ const pendingReadsByChat = new Map();
 const pendingReceiptIds = new Map();
 const participantNodes = new Map();
 let participantChatId;
+const presenceByChat = new Map();
+let presenceUntil = 0;
+let presenceTimer = null;
 let followResizedMessages = true;
 
 elements.messageList.addEventListener("scroll", () => {
@@ -174,6 +177,64 @@ function publicDetail(label, value, feedback) {
   return { term, description, code, copy };
 }
 
+function participantPresence(chatId, publicId) {
+  const snapshot = presenceByChat.get(chatId);
+  if (!snapshot || performance.now() >= presenceUntil || !snapshot.members.has(publicId)) return "unknown";
+  return snapshot.online.has(publicId) ? "online" : "offline";
+}
+
+function renderPresence() {
+  const chat = chats.find(item => item.id === selectedChatId);
+  if (!chat) {
+    elements.participantCount.textContent = "";
+    return;
+  }
+  const states = chat.participants.map(peer => participantPresence(chat.id, peer.public_id));
+  const known = states.length > 0 && !states.includes("unknown")
+    && presenceByChat.get(chat.id)?.members.size === states.length;
+  elements.participantCount.textContent = known
+    ? `${states.filter(state => state === "online").length} of ${states.length} online`
+    : `${states.length} participant${states.length === 1 ? "" : "s"} · Presence unknown`;
+  for (const peer of chat.participants) {
+    const item = participantNodes.get(peer.public_id);
+    if (!item) continue;
+    const state = participantPresence(chat.id, peer.public_id);
+    item.presence.className = `participant-presence ${state}`;
+    item.presence.textContent = state === "unknown" ? "Presence unknown" : state === "online" ? "Online" : "Offline";
+  }
+}
+
+function clearPresence() {
+  presenceByChat.clear();
+  presenceUntil = 0;
+  if (presenceTimer !== null) window.clearTimeout(presenceTimer);
+  presenceTimer = null;
+  renderPresence();
+}
+
+function receivePresence(payload) {
+  // A complete snapshot replaces all prior state; never persist activity.
+  clearPresence();
+  if (navigator.onLine === false) return;
+  if (!Number.isFinite(payload.valid_for_ms) || payload.valid_for_ms <= 0
+      || payload.valid_for_ms > 35000 || !Array.isArray(payload.chats)) return;
+  for (const snapshot of payload.chats) {
+    if (!Number.isInteger(snapshot.chat_id) || !Array.isArray(snapshot.online)
+        || !Array.isArray(snapshot.participants)
+        || !snapshot.participants.every(id => typeof id === "string")
+        || !snapshot.online.every(id => typeof id === "string" && snapshot.participants.includes(id))) {
+      clearPresence();
+      return;
+    }
+    presenceByChat.set(snapshot.chat_id, {
+      online: new Set(snapshot.online), members: new Set(snapshot.participants),
+    });
+  }
+  presenceUntil = performance.now() + payload.valid_for_ms;
+  presenceTimer = window.setTimeout(clearPresence, payload.valid_for_ms);
+  renderPresence();
+}
+
 function renderParticipantDetails(chat) {
   if (participantChatId !== chat?.id) {
     elements.participantKeys.replaceChildren();
@@ -198,7 +259,8 @@ function renderParticipantDetails(chat) {
       publicId.className = "participant-identity";
       publicId.textContent = peer.public_id;
       const state = document.createElement("span");
-      summary.append(name, publicId, state);
+      const presence = document.createElement("span");
+      summary.append(name, presence, publicId, state);
       const values = document.createElement("dl");
       values.className = "technical-details";
       const feedback = document.querySelector("#details-copy-status");
@@ -206,7 +268,7 @@ function renderParticipantDetails(chat) {
       const fingerprint = publicDetail("Fingerprint", "", feedback);
       values.append(id.term, id.description, fingerprint.term, fingerprint.description);
       node.append(summary, values);
-      item = { node, name, state, fingerprint };
+      item = { node, name, state, fingerprint, presence };
       participantNodes.set(peer.public_id, item);
     }
     const own = peer.public_id === identity?.publicId;
@@ -221,6 +283,7 @@ function renderParticipantDetails(chat) {
       elements.participantKeys.insertBefore(item.node, elements.participantKeys.children[index] || null);
     }
   }
+  renderPresence();
 }
 
 // Only locally written explanations may reach the UI; request bodies and raw
@@ -590,6 +653,7 @@ class SessionExpiredError extends ClientError {}
 
 async function invalidateSession(reason = "Session expired") {
   if (!identity) return;
+  clearPresence();
   if (identity.token) identity.suspendedToken = identity.token;
   identity.token = null;
   accessDeadline = null;
@@ -660,7 +724,7 @@ async function ensureFreshSession(force = false) {
     identity.refreshCredential = identity.pendingRefreshCredential;
     delete identity.pendingRefreshCredential;
     await writeIdentity(identity, true);
-    if (socket) { const old = socket; socket = null; old.close(); }
+    if (socket) { const old = socket; socket = null; clearPresence(); old.close(); }
     connectSocket();
   });
 }
@@ -902,7 +966,6 @@ function selectChat(chatId, openAtLatest = false) {
   const chat = chats.find((candidate) => candidate.id === chatId);
   elements.conversationKind.textContent = chat?.chat_type || "Conversation";
   elements.conversationTitle.textContent = chat ? chatName(chat) : "No conversation selected";
-  elements.participantCount.textContent = chat ? `${chat.participants.length} participant${chat.participants.length === 1 ? "" : "s"}` : "";
   elements.detailsButton.disabled = !chat;
   const changedKey = Boolean(chat?.participants.some(item => item.key_changed));
   elements.keyWarning.hidden = !changedKey;
@@ -935,6 +998,7 @@ function updateIdentityUi() {
 }
 
 function updateConnectionState(connected) {
+  if (!connected) clearPresence();
   const active = Boolean(!invitePending && identity?.token && identity?.publicId);
   elements.connectionState.classList.toggle("online", active && connected);
   elements.identityLabel.textContent = active
@@ -1124,7 +1188,10 @@ function scheduleReconnect() {
 }
 
 async function handleSocketPayload(payload) {
-  if (payload.type === "auth_error") {
+  if (payload.type === "presence") {
+    receivePresence(payload);
+  } else if (payload.type === "auth_error") {
+    clearPresence();
     if (identity?.refreshCredential) {
       await ensureFreshSession(true);
       connectSocket();
@@ -1148,13 +1215,14 @@ function connectSocket() {
   if (invitePending || !identity?.token || (socket && socket.readyState <= WebSocket.OPEN)) return;
   const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${scheme}//${window.location.host}/ws`, ["sideword.v1"]);
+  clearPresence();
   socket = ws;
   ws.addEventListener("open", () => {
     if (socket !== ws || !identity?.token) {
       ws.close();
       return;
     }
-    ws.send(JSON.stringify({ type: "auth", token: identity.token }));
+    ws.send(JSON.stringify({ type: "auth", token: identity.token, presence: true }));
     window.clearTimeout(socketAuthTimer);
     socketAuthTimer = window.setTimeout(() => {
       if (socket === ws) ws.close();
@@ -1164,6 +1232,7 @@ function connectSocket() {
     window.clearInterval(heartbeatTimer);
     heartbeatTimer = window.setInterval(() => {
       if (Date.now() - lastResponse > 60000) {
+        clearPresence();
         ws.close();
         return;
       }
@@ -1173,9 +1242,22 @@ function connectSocket() {
   ws.addEventListener("message", (event) => {
     if (socket !== ws) return;
     if (event.data === "pong") return;
+    // Presence must not wait behind decryption, storage or HTTP work: doing so
+    // could turn an old queued snapshot into an apparently fresh status.
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch {
+      clearPresence();
+      return;
+    }
+    if (payload.type === "presence") {
+      receivePresence(payload);
+      return;
+    }
+    if (payload.type === "auth_error") clearPresence();
     enqueueIncoming(async () => {
         if (socket !== ws) return;
-        const payload = JSON.parse(event.data);
         if (payload.type === "hello") {
           window.clearTimeout(socketAuthTimer);
           socketAuthTimer = null;
@@ -1194,7 +1276,7 @@ function connectSocket() {
     updateConnectionState(false);
     scheduleReconnect();
   });
-  ws.addEventListener("error", () => ws.close());
+  ws.addEventListener("error", () => { if (socket === ws) clearPresence(); ws.close(); });
 }
 
 const refresh = synchronize;
@@ -1522,8 +1604,13 @@ window.addEventListener("online", () => {
   connectSocket();
   void synchronize();
 });
+window.addEventListener("offline", clearPresence);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
+    // Timers can be suspended in background tabs. Expired leases remain unknown
+    // until a fresh snapshot arrives; request one on the existing socket.
+    renderPresence();
+    if (socket?.readyState === WebSocket.OPEN) socket.send("ping");
     connectSocket();
     void synchronize();
   }
