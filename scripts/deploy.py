@@ -92,11 +92,15 @@ def validate_config():
                 f"Invalid deployment setting: {name}. Check its repository secret."
             )
     if os.environ.get("GITHUB_ACTIONS") == "true":
-        for name in patterns:
-            value = os.environ[name]
-            for part in {value, *re.split(r"[/@.]", value)}:
-                if len(part) >= 3:
-                    print(f"::add-mask::{part}")
+        masks = {os.environ[name] for name in patterns}
+        provider = os.environ["GCP_WORKLOAD_IDENTITY_PROVIDER"].split("/")
+        masks.update(provider[index] for index in [1, 5, 7])
+        account, domain = os.environ["GCP_SERVICE_ACCOUNT"].split("@")
+        masks.update([account, domain.split(".iam.")[0]])
+        masks.update(os.environ["GCP_ARTIFACT_IMAGE"].split("/"))
+        masks.add(os.environ["GCP_ZONE"].rsplit("-", 1)[0])
+        for value in sorted(masks):
+            print(f"::add-mask::{value}")
 
 
 def current_commit(sha):
@@ -250,6 +254,11 @@ def package_image(directory, sha, retain=True):
 
 def publish_image(args):
     validate_config()
+    token = os.environ.get("GCP_ACCESS_TOKEN", "")
+    if not token or any(character.isspace() for character in token):
+        raise DeploymentError(
+            "Publication requires a short-lived access token from the Google authentication step."
+        )
     candidate = artifact_args(args.directory, args.sha)
     image_path = os.environ["GCP_ARTIFACT_IMAGE"]
     registry = image_path.split("/")[0]
@@ -265,7 +274,6 @@ def publish_image(args):
         # Temporary Docker credentials never enter the checkout or persist after publication.
         with tempfile.TemporaryDirectory() as directory:
             environment = {**os.environ, "DOCKER_CONFIG": directory}
-            token = run(["gcloud", "auth", "print-access-token"]).strip()
             run(
                 [
                     "docker",

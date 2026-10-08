@@ -673,6 +673,7 @@ def test_publication_binds_digest_to_ci_image_and_cleans_credentials(
     )
     output = tmp_path / "github-env"
     monkeypatch.setenv("GITHUB_ENV", str(output))
+    monkeypatch.setenv("GCP_ACCESS_TOKEN", "synthetic-token")
     commands = []
 
     def fake_run(command, **kwargs):
@@ -689,8 +690,6 @@ def test_publication_binds_digest_to_ci_image_and_cleans_credentials(
                     }
                 ]
             )
-        if command[:3] == ["gcloud", "auth", "print-access-token"]:
-            return "synthetic-token"
         if command[:3] == ["docker", "manifest", "inspect"]:
             return json.dumps({"config": {"digest": PREVIOUS if wrong_manifest else IMAGE}})
         return "synthetic-private"
@@ -704,6 +703,7 @@ def test_publication_binds_digest_to_ci_image_and_cleans_credentials(
     else:
         deploy.publish_image(args)
         assert f"IMAGE_REF={REFERENCE}" in output.read_text()
+    assert not any(command[0] == "gcloud" for command, _ in commands)
     login = next(kwargs for command, kwargs in commands if "login" in command)
     assert login["input"] == b"synthetic-token"
     assert not Path(login["env"]["DOCKER_CONFIG"]).exists()
@@ -801,3 +801,53 @@ def test_invalid_repository_secret_names_setting_without_disclosing_value(vm_con
     assert str(failure.value) == (
         "Invalid deployment setting: GCP_PROJECT_ID. Check its repository secret."
     )
+
+
+@pytest.mark.parametrize("token", [None, "", "synthetic token", "synthetic-token\n"])
+def test_publication_requires_authentication_token_before_commands(
+    vm_config, monkeypatch, tmp_path, token
+):
+    if token is None:
+        monkeypatch.delenv("GCP_ACCESS_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("GCP_ACCESS_TOKEN", token)
+    monkeypatch.setattr(deploy, "run", lambda *args, **kwargs: pytest.fail("No commands allowed"))
+    args = argparse.Namespace(directory=tmp_path, sha=SHA)
+    with pytest.raises(deploy.DeploymentError, match="short-lived access token"):
+        deploy.publish_image(args)
+
+
+def test_publication_uses_masked_auth_output_only_for_the_publish_step():
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.load(
+        (root / ".github/workflows/deploy.yml").read_text(), Loader=yaml.BaseLoader
+    )
+    steps = workflow["jobs"]["deploy"]["steps"]
+    auth = next(step for step in steps if step.get("id") == "auth")
+    assert auth["uses"] == "google-github-actions/auth@v3"
+    assert auth["with"]["token_format"] == "access_token"
+    assert auth["with"]["access_token_lifetime"] == "1800s"
+    consumers = [step for step in steps if "GCP_ACCESS_TOKEN" in step.get("env", {})]
+    assert len(consumers) == 1
+    assert "scripts.deploy publish" in consumers[0]["run"]
+    assert consumers[0]["env"]["GCP_ACCESS_TOKEN"] == "${{ steps.auth.outputs.access_token }}"
+
+
+def test_infrastructure_masking_preserves_common_log_words(vm_config, monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    deploy.validate_config()
+    masks = {line.removeprefix("::add-mask::") for line in capsys.readouterr().out.splitlines()}
+    assert {
+        "com",
+        "iam",
+        "gserviceaccount",
+        "pkg",
+        "dev",
+        "projects",
+        "locations",
+        "global",
+        "providers",
+        "workloadIdentityPools",
+    }.isdisjoint(masks)
+    assert set(vm_config[name] for name in vm_config if name.startswith("GCP_")) <= masks
+    assert {"123", "github", "repo", "deploy", "backend", "sideword"} <= masks

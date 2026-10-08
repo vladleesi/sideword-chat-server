@@ -67,17 +67,22 @@ jobs:
         if: steps.current.outputs.deploy == 'true'
         run: python -m scripts.deploy artifact --directory "$RUNNER_TEMP/checked-image" --sha "$TESTED_SHA"
       - name: Authenticate with short-lived Google credentials
+        id: auth
         if: steps.current.outputs.deploy == 'true'
         uses: google-github-actions/auth@v3
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_lifetime: 1800s
       - name: Set up Google Cloud CLI
         if: steps.current.outputs.deploy == 'true'
         uses: google-github-actions/setup-gcloud@v3
       - name: Publish the exact CI image
         if: steps.current.outputs.deploy == 'true'
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
         run: python -m scripts.deploy publish --directory "$RUNNER_TEMP/checked-image" --sha "$TESTED_SHA"
       - name: Activate the immutable image through IAP
         if: steps.current.outputs.deploy == 'true'
