@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.2 — 2026-10-08
+
+- Revalidate each affected WebSocket on invite revocation or deletion, preserving connections authenticated through other valid invites.
+- Clarify identity-wide chat membership, invite-bound session expiry and revocation, local history preservation, and the separate controls required to remove participants or terminate conversations.
+
 ## 0.9.1 — 2026-10-07
 
 - Reduce client asset transfers with public-only gzip compression, bounded browser/CDN caching and proxy buffering; preserve no-store responses for invites, authenticated APIs and errors.

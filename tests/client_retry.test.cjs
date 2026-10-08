@@ -76,7 +76,8 @@ function inviteClient() {
           session_expires_at: '2030-01-02T00:00:00Z' };
       }
       if (path === '/api/v1/me') return { user: { public_id: nextPublicId,
-        public_key: 'device-public-key' }, chats: [{ id: 7, participants: [] },
+        public_key: 'device-public-key' }, chats: [...(nextPublicId === 'alice'
+          ? [{ id: 7, participants: [] }] : []),
         { id: 8, participants: [] }], send_retry_window_seconds: 3600 };
       if (path === '/api/v1/poll') return { messages: [], read_receipts: [] };
       throw new Error('Unexpected request ' + path);
@@ -259,6 +260,36 @@ for (const changedParticipant of [false, true]) {
     assert.equal(run('events.includes("socket")'), true);
   });
 }
+
+test('new invite after revoked login cannot expose old membership and preserves local history', async () => {
+  const { run, submit } = inviteClient();
+  await run('start();');
+  run(`
+    globalThis.persistedHistory = new Map([['history:alice:7', 'encrypted-old-message']]);
+    globalThis.admit = api;
+    api = async (path, options) => {
+      if (path === '/api/v1/links/activate' && identity.token === 'old-access') {
+        identity.suspendedToken = identity.token;
+        identity.token = null;
+        await writeIdentity(identity, true);
+        throw new SessionExpiredError('invalid or revoked session');
+      }
+      return admit(path, options);
+    };
+  `);
+  await submit();
+  assert.equal(run('elements.activationError.hidden'), false);
+  assert.equal(run('saved.token'), null);
+  assert.equal(run('events.includes("/api/v1/me")'), false);
+  run("nextPublicId = 'fresh-participant';");
+  await submit();
+  assert.equal(run('elements.activationError.hidden'), true);
+  assert.equal(run('saved.publicId'), 'fresh-participant');
+  assert.deepEqual(JSON.parse(run('JSON.stringify(chats.map(chat => chat.id))')), [8]);
+  assert.equal(run('saved.privateKey === deviceKey && saved.storageKey === savedStorageKey'), true);
+  assert.equal(run('persistedHistory.get("history:alice:7")'), 'encrypted-old-message');
+  assert.equal(run('saved.inviteCredentials["B".repeat(24)] != null'), true);
+});
 
 test('failed invite stays on the form and a retry reuses the saved admission credentials', async () => {
   const { run, submit } = inviteClient();

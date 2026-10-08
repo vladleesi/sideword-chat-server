@@ -190,19 +190,14 @@ class ConnectionManager:
                 await self.disconnect(user_id, ws)
 
     async def revoke(self, user_ids: set[int]) -> None:
-        """Notify and close every local socket for revoked sessions."""
+        """Recheck affected users; close only sockets whose credentials are invalid."""
 
         for user_id in user_ids:
             sockets = list(self._connections.get(user_id, ()))
             for ws in sockets:
                 try:
-                    await ws.send_json(
-                        {"type": "auth_error", "reason": "invite revoked"}
-                    )
-                    await ws.close(code=1008)
+                    await self.validate(user_id, ws)
                 except Exception:
-                    pass
-                finally:
                     await self.disconnect(user_id, ws)
 
 

@@ -1,6 +1,6 @@
 # Security review
 
-Current code: 0.9.1. Static asset transport/cache boundaries, client UI, sender/reader labels, P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
+Current code: 0.9.2. Invite/session/membership lifecycle reviewed 2026-10-08; static asset transport/cache boundaries, client UI, sender/reader labels, P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
 This is a source review with regression tests, not an independent audit.
 Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
 
@@ -64,6 +64,14 @@ HTTP/WS request fields, limits and retry rules are in [API.md](API.md).
 
 HTTP and WebSocket authorization check the user/public identity, issuing invite,
 expiry, explicit revocation and deletion. A full/consumed invite is not revoked.
+Sessions authenticate a user across all retained chat memberships. Revoking or
+expiring an issuing invite invalidates its sessions, not those memberships or
+other valid sessions for the same user. `/me` deliberately lists all memberships;
+another authorized invite activation can therefore redisplay an old chat.
+Admin revocation revalidates each affected socket instead of closing valid
+sessions from other invites. Unrelated anonymous admission creates a different
+public identity and cannot recover old membership using only its public key.
+See [lifecycle analysis and operational controls](SESSION_LIFECYCLE.md).
 WebSockets revalidate before delivery/backlog, on incoming frames and every
 30 seconds while idle. Checks cannot retract a response already authorized or
 remove the small check/send race.
@@ -111,6 +119,11 @@ Compatibility and recovery boundaries:
   They bypass per-device session revocation until then.
 - Invite resume credentials intentionally survive session revocation and allow
   recovery into a fresh session. Revoke/delete the invite if those secrets leak.
+  This blocks recovery through that invite, not access through other live
+  sessions. Deactivate a compromised user to block its identity across chats.
+- There is no room-specific removal or non-destructive room termination control.
+  Invite revocation is not a participant ban; explicit chat deletion destroys
+  server relay data but cannot erase local message history or external copies.
 
 Admin cookies are HttpOnly/SameSite=Strict and Secure on HTTPS or a configured
 HTTPS public URL. Unsafe cookie requests require CSRF and origin checks;
@@ -258,6 +271,16 @@ Review upgrade/rollback before rollout: never reset ratchet state or reuse keys.
 Old messages gain no retroactive forward secrecy.
 
 ## Latest verification record
+
+- **Invite/session lifecycle, 2026-10-08:** 0.9.2 passed all 256 isolated Python
+  tests on Python 3.13 and all 168 JavaScript tests, plus Ruff, compilation,
+  client/link-form syntax, whitespace and affected documentation link checks.
+  New cases cover revocation/expiry followed by unrelated admission, genuine
+  saved resume/refresh rejection, identity-wide membership through another live
+  session, bidirectional old-room delivery, mixed-session admin revocation and
+  reconnects. Local history/device preservation is covered without browser use.
+  No production state, Windows/browser behavior, rollout or independent audit
+  evidence was obtained; the exact reported historical sequence remains unverified.
 
 - **Presence cancellation follow-up, 2026-10-07:** CI exposed cancellation during
   authenticated WebSocket setup, outside the previous receive-loop cleanup guard.

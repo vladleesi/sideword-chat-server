@@ -149,6 +149,9 @@ Create a personal room (two participants) or a group in **Admin > Invite links**
 with an optional password. Share passwords separately. Opening a link does not
 claim a slot; participants, including the creator, must activate it.
 See [activation rules](docs/API.md#activate-link) for limits and reconnects.
+Invite revocation/expiry disables sessions issued through that invite, not chat
+membership; another valid session for the same identity retains access. See
+[session and history lifecycle](docs/SESSION_LIFECYCLE.md) before removing access.
 
 To test, open the invite in two separate browser profiles and compare peer key
 fingerprints out of band using **Conversation details**; local pins do not verify

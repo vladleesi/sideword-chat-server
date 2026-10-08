@@ -86,6 +86,9 @@ After deploying the server protections:
    revocation and legacy deletion endpoints retain ambiguous matching.
 3. Keep saved invite resume credentials for authorized recovery. Session revocation
    does not revoke them; revoke/delete the invite if they are compromised.
+   Other live sessions for the same identity retain its memberships; deactivate
+   a compromised user to block identity-wide access. Invite revocation is not
+   room termination; see [lifecycle controls](SESSION_LIFECYCLE.md).
 
 Do not shorten the send retry window for existing outboxes without resolving them:
 clients retain their original deadlines. Queued data, retry/session records and

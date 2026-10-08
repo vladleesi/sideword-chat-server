@@ -83,6 +83,11 @@ and deadline fields described there; omitting it uses legacy activation until su
 - Group links share a chat and optionally seal at their participant limit.
   Admission is also capped at 101 members to fit the 100-recipient send limit.
 - A valid existing bearer session reuses its current user when joining another chat.
+  Sessions authenticate that identity across all its memberships. Revoking or
+  expiring one issuing invite does not remove those memberships; another valid
+  session can still list, read and send in those chats. An unrelated invite or
+  public key alone cannot recover them. See [lifecycle rules](SESSION_LIFECYCLE.md)
+  for local history, participant removal and conversation termination.
 
 Omit `Authorization` for a new anonymous join or credential-only recovery. If
 supplied, it must contain a valid, live client bearer session; malformed, expired,
@@ -109,8 +114,9 @@ joins from overfilling rooms. Failed password guesses are limited to five per
 invite per five-minute fixed window, persisted in SQLite. Further attempts
 return 429 with `Retry-After`; changing IP addresses does not reset the limit.
 Anyone holding an invite can exhaust its guess budget, while authenticated
-reconnects remain available. Expired or revoked access cannot be restored with
-a password or resume credential.
+reconnects remain available. Access through an expired or revoked issuing invite
+cannot be restored with a password or resume credential. Other valid sessions
+retain identity-wide membership access as described above.
 
 Password verification uses OpenSSL-backed scrypt with N=2^17, r=8, p=1, a random
 16-byte salt, and a 32-byte result. Generated passwords contain 96 random bits.
@@ -386,6 +392,8 @@ An optional UTC `LEGACY_TOKEN_DEADLINE` rejects old JWTs and activation without 
 session credential after that date. Until then, legacy JWTs still authorize
 operations independently of per-device session revocation. Invite resume secrets
 also remain separate: revoke the invite if those credentials are compromised.
+This does not invalidate sessions issued through other invites or remove chat
+membership; deactivate a compromised identity to block its access across chats.
 
 ## Admin requests
 
