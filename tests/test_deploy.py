@@ -544,7 +544,7 @@ def test_deployment_workflow_is_manual_and_independent_of_ci_and_release():
     }
     job = workflow["jobs"]["deploy"]
     assert job["if"] == "github.ref == 'refs/heads/main'"
-    assert job["environment"] == "production"
+    assert "environment" not in job
     assert job["concurrency"]["cancel-in-progress"] == "false"
     ci = yaml.load((workflows / "test.yml").read_text(), Loader=yaml.BaseLoader)
     assert job["concurrency"]["group"] == ci["jobs"]["promote"]["concurrency"]["group"]
@@ -572,9 +572,14 @@ def test_deployment_workflow_is_manual_and_independent_of_ci_and_release():
     )
     assert upload["with"]["name"] == "checked-image-${{ github.run_attempt }}"
     assert "overwrite" not in upload["with"]
-    for step in steps:
-        if "uses" in step:
-            assert len(step["uses"].split("@")[1]) == 40
+    for checked_workflow in [workflow, ci]:
+        for checked_job in checked_workflow["jobs"].values():
+            for step in checked_job.get("steps", []):
+                if "uses" in step:
+                    assert step["uses"].split("@")[1] in {"v3", "v4", "v5"}
+    for name in job["env"]:
+        if name.startswith("GCP_"):
+            assert job["env"][name] == "${{ secrets." + name + " }}"
     assert "vars.GCP" not in (workflows / "deploy.yml").read_text()
     assert steps[gate]["if"] == "steps.current.outputs.deploy == 'true'"
     assert not any(step.get("continue-on-error") == "true" for step in steps)
@@ -775,3 +780,24 @@ def test_host_allowlist_requires_private_root_owned_file_and_directory(
         with pytest.raises(deploy.DeploymentError):
             deploy.host_configuration(candidate)
         assert candidate.compose is None
+
+
+def test_missing_repository_secrets_report_all_names_without_values(vm_config, monkeypatch):
+    monkeypatch.delenv("GCP_PROJECT_ID")
+    monkeypatch.delenv("GCP_ARTIFACT_IMAGE")
+    with pytest.raises(deploy.DeploymentError) as failure:
+        deploy.validate_config()
+    assert str(failure.value) == (
+        "Missing deployment settings: GCP_PROJECT_ID, GCP_ARTIFACT_IMAGE. "
+        "Configure matching GitHub Actions repository secrets."
+    )
+    assert all(value not in str(failure.value) for value in vm_config.values())
+
+
+def test_invalid_repository_secret_names_setting_without_disclosing_value(vm_config, monkeypatch):
+    monkeypatch.setenv("GCP_PROJECT_ID", "synthetic-private;invalid")
+    with pytest.raises(deploy.DeploymentError) as failure:
+        deploy.validate_config()
+    assert str(failure.value) == (
+        "Invalid deployment setting: GCP_PROJECT_ID. Check its repository secret."
+    )

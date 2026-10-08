@@ -79,9 +79,18 @@ def validate_config():
         "GCP_SERVICE_ACCOUNT": r"[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com",
         "GCP_ARTIFACT_IMAGE": IMAGE_PATH,
     }
+    missing = [name for name in patterns if not os.environ.get(name)]
+    if missing:
+        raise DeploymentError(
+            "Missing deployment settings: "
+            + ", ".join(missing)
+            + ". Configure matching GitHub Actions repository secrets."
+        )
     for name, pattern in patterns.items():
-        if not re.fullmatch(pattern, os.environ.get(name, "")):
-            raise DeploymentError(f"Set a valid {name} in the production environment.")
+        if not re.fullmatch(pattern, os.environ[name]):
+            raise DeploymentError(
+                f"Invalid deployment setting: {name}. Check its repository secret."
+            )
     if os.environ.get("GITHUB_ACTIONS") == "true":
         for name in patterns:
             value = os.environ[name]
