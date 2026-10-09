@@ -215,11 +215,80 @@ def test_vm_activation_quotes_configuration_and_requires_success_marker(
     activation = next((command, kwargs) for command, kwargs in commands if "input" in kwargs)
     assert "--compose" not in activation[0][-1]
     assert REFERENCE in activation[0][-1]
-    assert len(commands) == 1
+    assert len(commands) == 2
+    keygen = commands[0][0]
+    assert keygen[:3] == ["ssh-keygen", "-q", "-t"]
+    assert keygen[keygen.index("-b") + 1] == "3072"
+    assert keygen[keygen.index("-N") + 1] == ""
+    assert keygen[keygen.index("-C") + 1] == "github-actions"
+    key = keygen[keygen.index("-f") + 1]
+    assert activation[0][activation[0].index("--ssh-key-file") + 1] == key
+    assert not Path(key).parent.exists()
     assert not any("scp" in command for command, _ in commands)
     assert activation[1]["input"] == Path(deploy.__file__).read_bytes()
     assert "--tunnel-through-iap" in activation[0]
     assert "--ssh-flag=-T" in activation[0]
+    assert "--ssh-key-expire-after=5m" in activation[0]
+
+
+@pytest.mark.parametrize("ssh_fails", [False, True])
+def test_vm_temporary_key_is_private_and_removed_on_exit(
+    candidate, vm_config, monkeypatch, capsys, ssh_fails
+):
+    monkeypatch.setattr(deploy, "current_commit", lambda sha: True)
+    key = None
+
+    def fake_run(command, **kwargs):
+        nonlocal key
+        if command[0] == "ssh-keygen":
+            key = Path(command[command.index("-f") + 1])
+            assert key.parent.stat().st_mode & 0o777 == 0o700
+            key.write_text("synthetic-private-key")
+            key.chmod(0o600)
+            key.with_suffix(".pub").write_text("synthetic-public-key")
+            return "Generating public/private rsa key pair.\nsynthetic-private-path\n"
+        assert command[:3] == ["gcloud", "compute", "ssh"]
+        assert key.is_file() and key.with_suffix(".pub").is_file()
+        assert command[command.index("--ssh-key-file") + 1] == str(key)
+        if ssh_fails:
+            raise deploy.DeploymentError("Deployment command failed: gcloud.")
+        return (
+            "Stage pull: started.\nStage pull: finished after 1.0s.\n"
+            "Checked backend deployment verified.\n"
+        )
+
+    monkeypatch.setattr(deploy, "run", fake_run)
+    if ssh_fails:
+        with pytest.raises(deploy.DeploymentError, match="gcloud"):
+            deploy.deploy_vm(candidate)
+    else:
+        deploy.deploy_vm(candidate)
+    assert not key.parent.exists()
+    output = capsys.readouterr().out
+    assert "synthetic-private" not in output
+    assert "Generating public/private" not in output
+    if not ssh_fails:
+        assert "Checked backend deployment verified." in output
+
+
+def test_vm_key_generation_failure_never_contacts_vm(
+    candidate, vm_config, monkeypatch, capsys
+):
+    monkeypatch.setattr(deploy, "current_commit", lambda sha: True)
+    key = None
+
+    def failed_keygen(command, **kwargs):
+        nonlocal key
+        assert command[0] == "ssh-keygen"
+        key = Path(command[command.index("-f") + 1])
+        key.write_text("synthetic-private-key")
+        raise deploy.DeploymentError("Deployment command failed: ssh-keygen.")
+
+    monkeypatch.setattr(deploy, "run", failed_keygen)
+    with pytest.raises(deploy.DeploymentError, match="ssh-keygen"):
+        deploy.deploy_vm(candidate)
+    assert not key.parent.exists()
+    assert "synthetic-private" not in capsys.readouterr().out
 
 
 def test_database_requires_persistent_mount_and_rejects_traversal(host):

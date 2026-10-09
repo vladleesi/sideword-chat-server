@@ -400,8 +400,22 @@ def deploy_vm(args):
             args.version,
         ]
     )
-    with stage("activate"):
-        result = run([*ssh, "--command", command], input=Path(__file__).read_bytes(), timeout=900)
+    with stage("activate"), tempfile.TemporaryDirectory() as directory:
+        # gcloud's automatic key generation writes its banner to the remote response.
+        # Capture key generation separately and remove the ephemeral key on every exit.
+        key = str(Path(directory) / "deploy-key")
+        run(
+            [
+                "ssh-keygen", "-q", "-t", "rsa", "-b", "3072", "-N", "",
+                "-C", "github-actions", "-f", key,
+            ],
+            timeout=30,
+        )
+        result = run(
+            [*ssh, "--ssh-key-file", key, "--command", command],
+            input=Path(__file__).read_bytes(),
+            timeout=900,
+        )
         lines = result.strip().splitlines()
         if not lines or lines[-1] != "Checked backend deployment verified.":
             raise DeploymentError("The VM did not confirm a verified deployment.")
