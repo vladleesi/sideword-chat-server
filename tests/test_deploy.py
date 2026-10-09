@@ -68,7 +68,14 @@ def host(monkeypatch, candidate, tmp_path):
         connection.execute("CREATE TABLE messages (body TEXT)")
         connection.execute("INSERT INTO messages VALUES ('synthetic retained message')")
     commands = []
-    state = {"active": False, "label": SHA, "version": candidate.version, "database": database}
+    state = {
+        "active": False,
+        "label": SHA,
+        "version": candidate.version,
+        "database": database,
+        "image_id": IMAGE,
+        "references": [REFERENCE],
+    }
     previous = {
         "Image": PREVIOUS,
         "Config": {
@@ -89,7 +96,8 @@ def host(monkeypatch, candidate, tmp_path):
             return json.dumps(
                 [
                     {
-                        "Id": IMAGE,
+                        "Id": state["image_id"],
+                        "RepoDigests": state["references"],
                         "Config": {"Labels": {"org.opencontainers.image.revision": state["label"]}},
                     }
                 ]
@@ -97,7 +105,9 @@ def host(monkeypatch, candidate, tmp_path):
         if command[:2] == ["docker", "inspect"]:
             if not state["active"]:
                 return json.dumps([previous])
-            return json.dumps([{"Image": IMAGE, "State": {"Health": {"Status": "healthy"}}}])
+            return json.dumps(
+                [{"Image": state["image_id"], "State": {"Health": {"Status": "healthy"}}}]
+            )
         if command[:2] == ["docker", "run"]:
             return state["version"]
         if "up" in command:
@@ -245,6 +255,26 @@ def test_host_backup_precedes_activation_and_preserves_configuration(candidate, 
         "down" in command or "prune" in command or "build" in command for command in commands
     )
     assert capsys.readouterr().out.endswith("Checked backend deployment verified.\n")
+
+
+def test_containerd_manifest_id_is_used_for_probe_activation_and_health(candidate, host):
+    commands, state, _ = host
+    manifest_id = REFERENCE.split("@")[1]
+    state["image_id"] = manifest_id
+    deploy.deploy_host(candidate)
+    probe = next(command for command in commands if command[:2] == ["docker", "run"])
+    assert manifest_id in probe and IMAGE not in probe
+    assert ["docker", "image", "tag", manifest_id, "sideword:private"] in commands
+    assert state["active"]
+
+
+@pytest.mark.parametrize("field,value", [("image_id", PREVIOUS), ("references", [])])
+def test_unbound_local_image_never_stops_backend(candidate, host, field, value):
+    commands, state, _ = host
+    state[field] = value
+    with pytest.raises(deploy.DeploymentError, match="pulled image"):
+        deploy.deploy_host(candidate)
+    assert not any("stop" in command or "up" in command for command in commands)
 
 
 @pytest.mark.parametrize("field,value", [("label", "d" * 40), ("version", "0.5.0")])
@@ -431,6 +461,112 @@ def test_command_failures_do_not_disclose_private_output(monkeypatch):
     with pytest.raises(deploy.DeploymentError) as failure:
         deploy.run(["docker", "inspect", "synthetic-private"])
     assert str(failure.value) == "Deployment command failed: docker."
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ["load"],
+        ["login"],
+        ["push"],
+        ["pull"],
+        ["image", "inspect"],
+        ["image", "tag"],
+        ["manifest", "inspect"],
+    ],
+)
+def test_command_failures_name_only_known_docker_operations(monkeypatch, parts):
+    monkeypatch.setattr(
+        deploy.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, b"synthetic-private", b"synthetic-private"
+        ),
+    )
+    with pytest.raises(deploy.DeploymentError) as failure:
+        deploy.run(["docker", *parts, "synthetic-private"])
+    assert str(failure.value) == f"Deployment command failed: docker {' '.join(parts)}."
+
+
+def test_registry_upload_denial_does_not_disclose_private_output(monkeypatch):
+    monkeypatch.setattr(
+        deploy.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            1,
+            b"synthetic-private",
+            b'Permission "artifactregistry.repositories.uploadArtifacts" '
+            b"denied on synthetic-private",
+        ),
+    )
+    with pytest.raises(deploy.DeploymentError) as failure:
+        deploy.run(["docker", "push", "synthetic-private"])
+    assert str(failure.value) == "Registry upload permission was denied for the deployment account."
+
+
+def test_unknown_docker_operation_does_not_disclose_arguments(monkeypatch):
+    monkeypatch.setattr(
+        deploy.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, b"", b"synthetic-private"),
+    )
+    with pytest.raises(deploy.DeploymentError) as failure:
+        deploy.run(["docker", "synthetic-private"])
+    assert str(failure.value) == "Deployment command failed: docker."
+
+
+@pytest.mark.parametrize(
+    "remote_message",
+    [
+        "The pulled image does not match the checked commit.",
+        "The registry digest does not identify the CI image.",
+        "Updated backend verification failed; "
+        "keep the backup and previous image for recovery.",
+        "synthetic-private",
+    ],
+)
+def test_remote_failure_forwards_only_approved_progress_and_errors(
+    monkeypatch, capsys, remote_message
+):
+    stdout = (
+        "Stage pull: started.\n"
+        "synthetic-private\n"
+        "Stage pull: finished after synthetic-private.s.\n"
+        "Stage pull: finished after 2.3s.\n"
+        f"{remote_message}\n"
+    ).encode()
+    monkeypatch.setattr(
+        deploy.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, stdout, b"synthetic-private"
+        ),
+    )
+    with pytest.raises(deploy.DeploymentError) as failure:
+        deploy.run(["gcloud", "compute", "ssh", "synthetic-private"])
+    expected = (
+        "Deployment command failed: gcloud."
+        if remote_message == "synthetic-private"
+        else remote_message
+    )
+    assert str(failure.value) == expected
+    assert capsys.readouterr().out == (
+        "Stage pull: started.\nStage pull: finished after 2.3s.\n"
+    )
+
+
+def test_remote_timeout_does_not_disclose_partial_output(monkeypatch, capsys):
+    def timeout(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            command, 1, output=b"synthetic-private", stderr=b"synthetic-private"
+        )
+
+    monkeypatch.setattr(deploy.subprocess, "run", timeout)
+    with pytest.raises(deploy.DeploymentError) as failure:
+        deploy.run(["gcloud", "compute", "ssh", "synthetic-private"])
+    assert str(failure.value) == "Deployment command failed: gcloud."
+    assert capsys.readouterr().out == ""
 
 
 @pytest.fixture
@@ -627,7 +763,10 @@ def test_pull_failure_never_stops_backend(candidate, host, monkeypatch):
     assert not list(candidate.compose.parent.glob("deployment-backups/*.sqlite3"))
 
 
-def test_vm_pull_uses_metadata_and_disposable_credentials(candidate, monkeypatch, capsys):
+@pytest.mark.parametrize("wrong_config", [False, True])
+def test_vm_pull_uses_metadata_and_disposable_credentials(
+    candidate, monkeypatch, capsys, wrong_config
+):
     commands = []
     requests = []
 
@@ -640,18 +779,26 @@ def test_vm_pull_uses_metadata_and_disposable_credentials(candidate, monkeypatch
             yield io.StringIO('{"access_token": "synthetic-token"}')
 
     monkeypatch.setattr(deploy.urllib.request, "build_opener", lambda *args: Opener())
-    monkeypatch.setattr(
-        deploy,
-        "run",
-        lambda command, **kwargs: commands.append((command, kwargs)) or "synthetic-private",
-    )
-    deploy.pull_image(candidate)
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        if command[:3] == ["docker", "manifest", "inspect"]:
+            return json.dumps({"config": {"digest": PREVIOUS if wrong_config else IMAGE}})
+        return "synthetic-private"
+
+    monkeypatch.setattr(deploy, "run", fake_run)
+    if wrong_config:
+        with pytest.raises(deploy.DeploymentError, match="registry digest"):
+            deploy.pull_image(candidate)
+    else:
+        deploy.pull_image(candidate)
     assert requests[0].get_header("Metadata-flavor") == "Google"
-    login, pull = commands
+    login, pull, manifest = commands
     assert login[1]["input"] == b"synthetic-token"
     assert "--password-stdin" in login[0]
     assert pull[0] == ["docker", "pull", REFERENCE]
     assert login[1]["env"]["DOCKER_CONFIG"] == pull[1]["env"]["DOCKER_CONFIG"]
+    assert manifest[0] == ["docker", "manifest", "inspect", REFERENCE]
+    assert manifest[1]["env"]["DOCKER_CONFIG"] == pull[1]["env"]["DOCKER_CONFIG"]
     assert not Path(login[1]["env"]["DOCKER_CONFIG"]).exists()
     output = capsys.readouterr().out
     assert "synthetic-token" not in output and "synthetic-private" not in output
@@ -801,6 +948,24 @@ def test_invalid_repository_secret_names_setting_without_disclosing_value(vm_con
     assert str(failure.value) == (
         "Invalid deployment setting: GCP_PROJECT_ID. Check its repository secret."
     )
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("GCP_SERVICE_ACCOUNT", "deploy@another-project.iam.gserviceaccount.com"),
+        ("GCP_ARTIFACT_IMAGE", "region-docker.pkg.dev/another-project/backend/sideword"),
+    ],
+)
+def test_deployment_rejects_cross_project_settings(vm_config, monkeypatch, capsys, name, value):
+    monkeypatch.setenv(name, value)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    with pytest.raises(deploy.DeploymentError) as failure:
+        deploy.validate_config()
+    assert str(failure.value) == (
+        "The deployment account and registry image must belong to GCP_PROJECT_ID."
+    )
+    assert capsys.readouterr().out == ""
 
 
 @pytest.mark.parametrize("token", [None, "", "synthetic token", "synthetic-token\n"])

@@ -20,6 +20,9 @@ IMAGE_PATH = (
     r"[a-z][a-z0-9-]+-docker\.pkg\.dev/[a-z][a-z0-9-]{4,61}[a-z0-9]/"
     r"[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9._-]*"
 )
+HOST_PROGRESS_PATTERN = (
+    r"Stage (pull|backup|health): (started\.|finished after [0-9]+\.[0-9]s\.)"
+)
 
 
 class DeploymentError(Exception):
@@ -37,12 +40,46 @@ def stage(name):
 
 
 def run(command, *, input=None, timeout=300, env=None):
+    operation = command[0]
+    if operation == "docker":
+        for parts in (
+            ["load"],
+            ["login"],
+            ["push"],
+            ["pull"],
+            ["image", "inspect"],
+            ["image", "tag"],
+            ["manifest", "inspect"],
+        ):
+            if command[1 : 1 + len(parts)] == parts:
+                operation = "docker " + " ".join(parts)
+                break
+    failure = f"Deployment command failed: {operation}."
     try:
         result = subprocess.run(command, input=input, capture_output=True, timeout=timeout, env=env)
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise DeploymentError(f"Deployment command failed: {command[0]}.") from error
+        raise DeploymentError(failure) from error
     if result.returncode:
-        raise DeploymentError(f"Deployment command failed: {command[0]}.")
+        if command[:3] == ["gcloud", "compute", "ssh"]:
+            for line in result.stdout.decode(errors="replace").splitlines():
+                if re.fullmatch(HOST_PROGRESS_PATTERN, line):
+                    print(line, flush=True)
+                elif line in {
+                    "The pulled image does not match the checked commit.",
+                    "The registry digest does not identify the CI image.",
+                    "Updated backend verification failed; "
+                    "keep the backup and previous image for recovery.",
+                }:
+                    failure = line
+        if (
+            operation == "docker push"
+            and b"artifactregistry.repositories.uploadArtifacts" in result.stderr
+            and b"denied" in result.stderr.lower()
+        ):
+            raise DeploymentError(
+                "Registry upload permission was denied for the deployment account."
+            )
+        raise DeploymentError(failure)
     return result.stdout.decode()
 
 
@@ -91,6 +128,15 @@ def validate_config():
             raise DeploymentError(
                 f"Invalid deployment setting: {name}. Check its repository secret."
             )
+    project = os.environ["GCP_PROJECT_ID"]
+    if (
+        os.environ["GCP_ARTIFACT_IMAGE"].split("/")[1] != project
+        or os.environ["GCP_SERVICE_ACCOUNT"].split("@", 1)[1]
+        != f"{project}.iam.gserviceaccount.com"
+    ):
+        raise DeploymentError(
+            "The deployment account and registry image must belong to GCP_PROJECT_ID."
+        )
     if os.environ.get("GITHUB_ACTIONS") == "true":
         masks = {os.environ[name] for name in patterns}
         provider = os.environ["GCP_WORKLOAD_IDENTITY_PROVIDER"].split("/")
@@ -360,10 +406,7 @@ def deploy_vm(args):
         if not lines or lines[-1] != "Checked backend deployment verified.":
             raise DeploymentError("The VM did not confirm a verified deployment.")
         for line in lines[:-1]:
-            if not re.fullmatch(
-                r"Stage (pull|backup|health): (started\.|finished after [0-9]+\.[0-9]s\.)",
-                line,
-            ):
+            if not re.fullmatch(HOST_PROGRESS_PATTERN, line):
                 raise DeploymentError("The VM returned an unexpected deployment response.")
         for line in lines:
             print(line)
@@ -387,6 +430,11 @@ def pull_image(args):
             env=environment,
         )
         run(["docker", "pull", args.image_ref], env=environment, timeout=600)
+        manifest = json.loads(
+            run(["docker", "manifest", "inspect", args.image_ref], env=environment)
+        )
+        if manifest.get("config", {}).get("digest") != args.image_id:
+            raise DeploymentError("The registry digest does not identify the CI image.")
 
 
 def host_configuration(args):
@@ -518,8 +566,12 @@ def deploy_host(args):
         backup = backup_dir / f"pre-deploy-{stamp}.sqlite3"
         pull_image(args)
         image = json.loads(run(["docker", "image", "inspect", args.image_ref]))[0]
+        # Classic Docker uses the config digest as id; containerd uses the manifest digest.
+        # pull_image binds the pinned manifest to CI's config digest before either is accepted.
+        host_image_id = image["Id"]
         if (
-            image["Id"] != args.image_id
+            host_image_id not in {args.image_id, args.image_ref.split("@")[1]}
+            or args.image_ref not in image.get("RepoDigests", [])
             or (image["Config"].get("Labels") or {}).get("org.opencontainers.image.revision")
             != args.sha
         ):
@@ -542,7 +594,7 @@ def deploy_host(args):
                 "128m",
                 "--entrypoint",
                 "python",
-                args.image_id,
+                host_image_id,
                 "-c",
                 "from app.version import __version__; print(__version__)",
             ]
@@ -554,7 +606,7 @@ def deploy_host(args):
             run([*compose, "stop", "--timeout", "30", "sideword"])
             with stage("backup"):
                 backup_database(database, backup)
-            run(["docker", "image", "tag", args.image_id, image_tag])
+            run(["docker", "image", "tag", host_image_id, image_tag])
         except Exception:
             # No new application ran against the database; restarting the old image is safe.
             run(["docker", "image", "tag", previous["Image"], image_tag])
@@ -568,7 +620,7 @@ def deploy_host(args):
                 if current_id:
                     current = json.loads(run(["docker", "inspect", current_id]))[0]
                     if (
-                        current["Image"] == args.image_id
+                        current["Image"] == host_image_id
                         and current["State"].get("Health", {}).get("Status") == "healthy"
                         and health_matches(args.version)
                     ):
