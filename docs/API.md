@@ -200,6 +200,12 @@ Rules:
    Legacy `/ws?token=<JWT>` and `sideword.auth.<JWT>` subprotocol authentication
    remain supported, but can expose credentials to URL/header logs.
 
+   Check that `hello.user` matches the authenticated HTTP participant before
+   consuming its backlog. The bundled client marks the connection live after
+   roster/backlog processing; this is not a recipient delivery confirmation.
+   Live events may race initialization, so serialize incoming processing and
+   preserve retries instead of dropping events received before `hello`.
+
 2. **Polling fallback**:
 
    ```
@@ -208,6 +214,12 @@ Rules:
    ```
 
    Returns `messages`, `read_receipts` and `delivery_receipts` arrays.
+
+Room routing uses authenticated membership, not the access hostname. Aliases must
+route both HTTP and WebSocket traffic to the same process and database for shared
+live delivery; a shared database alone is insufficient. The bundled client uses
+its current origin for both transports, without cross-origin credential sharing
+or additional CORS permissions. See [device/origin behavior](SESSION_LIFECYCLE.md#persistence-devices-and-reconnects).
 
 ## Participant presence
 

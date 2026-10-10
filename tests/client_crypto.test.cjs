@@ -187,6 +187,40 @@ test('group fanout survives identity reload, recipient isolation, and out-of-ord
   }
 });
 
+test('independent devices on arbitrary origins exchange P-256 envelopes in both directions', async () => {
+  const apps = [client(), client()];
+  const devices = [];
+  for (let index = 0; index < apps.length; index++) {
+    const app = apps[index];
+    const device = await app.run('generateIdentity()');
+    device.publicId = `device-${index}`;
+    assert.equal(device.privateKey.extractable, false);
+    devices.push(device);
+    app.context.device = device;
+    app.run(`identity = device; window.location = {
+      protocol: 'https:', host: '${index === 0 ? 'one.example.test' : 'two.example.test'}'
+    };`);
+  }
+  for (let sender = 0; sender < apps.length; sender++) {
+    const recipient = 1 - sender;
+    apps[sender].context.peer = {
+      public_id: devices[recipient].publicId, public_key: devices[recipient].publicKey,
+    };
+    const ciphertext = await apps[sender].run(
+      'encryptForRecipient("cross-origin plaintext", 7, "message-id", peer)',
+    );
+    apps[recipient].context.message = {
+      chat_id: 7, client_message_id: 'message-id',
+      sender_public_id: devices[sender].publicId, ciphertext,
+    };
+    apps[recipient].context.peer = {
+      public_id: devices[sender].publicId, public_key: devices[sender].publicKey,
+    };
+    apps[recipient].run('chats = [{id: 7, participants: [peer]}]');
+    assert.equal(await apps[recipient].run('decryptMessage(message)'), 'cross-origin plaintext');
+  }
+});
+
 test('existing encrypted local history and non-exportable storage keys survive reload unchanged', async () => {
   const app = client();
   const storageBytes = Buffer.alloc(32, 9); // Synthetic local-history fixture.

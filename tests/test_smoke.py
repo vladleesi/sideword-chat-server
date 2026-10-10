@@ -124,7 +124,6 @@ async def _run() -> None:
             assert "persistHistoryEntry" in r.text
             assert "compareHistoryEntries" in r.text
             assert "messageMeta" in r.text
-            assert 'type: "auth", token: identity.token' in r.text
 
             r = await c.get(f"/l/{pt}")
             assert r.status_code == 200

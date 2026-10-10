@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.1 — 2026-10-09
+
+- Recover stalled WebSocket connections with bounded connection/authentication waits and capped, randomized retries; release sockets on offline events and navigation, and reconnect restored pages.
+- Bound HTTP requests and response-body waits so interrupted synchronization can retry without losing encrypted outbox data or treating an uncertain response as confirmed delivery.
+- Verify the live connection's device identity before processing its backlog, and distinguish initialized connections from recipient delivery; retain independent device keys and history across browser origins.
+
 ## 0.11.0 — 2026-10-08
 
 - Require registered renewable client sessions for activation, HTTP and WebSocket authentication; remove legacy JWT issuance, migration and compatibility settings.

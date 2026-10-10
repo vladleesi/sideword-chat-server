@@ -131,6 +131,11 @@ before starting the server so generated invitations use the correct address.
 Configure an HTTPS reverse proxy or tunnel with WebSocket forwarding, and trust
 forwarded scheme headers only from the actual proxy address.
 
+Multiple public hostnames can serve the same rooms when all HTTP and WebSocket
+routes reach one backend process and database. Sharing SQLite across independent
+workers does not share live connections. `SIDEWORD_PUBLIC_URL` selects the address
+for generated invitations; it does not route domain aliases.
+
 | Installation | Proxy target | Administration |
 | --- | --- | --- |
 | Shared Python runner | Loopback port 8001 | Blocked on 8001; available locally on 8000 |
@@ -155,6 +160,8 @@ See [activation rules](docs/API.md#activate-link) for limits and reconnects.
 Invite revocation/expiry disables sessions issued through that invite, not chat
 membership; another valid session for the same identity retains access. See
 [session and history lifecycle](docs/SESSION_LIFECYCLE.md) before removing access.
+Different browser origins keep independent identities and history; joining from
+another origin requires admission as a separate participant, including a free slot.
 To pause messaging for everyone without deleting data, close the conversation in
 Admin > Chats. Members retain saved history; other conversations remain usable.
 

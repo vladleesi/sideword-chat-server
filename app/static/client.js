@@ -6,6 +6,7 @@ const STORE_NAME = "device";
 const IDENTITY_KEY = "identity";
 const HISTORY_PREFIX = "history:";
 const POLL_INTERVAL_MS = 4000;
+const REQUEST_TIMEOUT_MS = 15000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -49,8 +50,10 @@ let invitePending = false;
 let synchronizing = false;
 let socket = null;
 let reconnectTimer = null;
+let reconnectAttempts = 0;
 let heartbeatTimer = null;
 let socketAuthTimer = null;
+let pageActive = true;
 let accessDeadline = null;
 let inboundQueue = Promise.resolve();
 const messagesByChat = new Map();
@@ -681,18 +684,29 @@ function requestError(status, detail, context = "Chat request failed") {
 }
 
 async function fetchClient(path, options) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await fetch(path, options);
-  } catch {
-    throw new ClientError("No response was received from the chat service. The network connection failed or the service is unavailable; the server may already have processed the request.");
-  }
-}
-
-async function responseData(response) {
-  try {
-    return await response.json();
-  } catch {
-    throw new ClientError("The chat service returned a response this client could not read.");
+    let response;
+    try {
+      response = await fetch(path, { ...options, signal: controller.signal });
+    } catch {
+      throw new ClientError("No response was received from the chat service. The network connection failed or the service is unavailable; the server may already have processed the request.");
+    }
+    // Reject an invalid login promptly even if a proxy's error body stalls.
+    if (response.status === 401) return { ok: false, status: 401 };
+    let body;
+    try {
+      body = await response.json();
+    } catch {
+      if (response.ok) {
+        throw new ClientError("The chat service returned a response this client could not read; the server may already have processed the request.");
+      }
+    }
+    return { ok: response.ok, status: response.status, body };
+  } finally {
+    window.clearTimeout(timeout);
+    controller.abort();
   }
 }
 
@@ -710,15 +724,7 @@ async function invalidateSession(reason = "Session expired") {
   await writeIdentity(identity, true);
   chats = [];
   selectedChatId = null;
-  window.clearTimeout(reconnectTimer);
-  reconnectTimer = null;
-  window.clearInterval(heartbeatTimer);
-  heartbeatTimer = null;
-  window.clearTimeout(socketAuthTimer);
-  socketAuthTimer = null;
-  const activeSocket = socket;
-  socket = null;
-  if (activeSocket && activeSocket.readyState <= WebSocket.OPEN) activeSocket.close();
+  disconnectSocket();
   updateIdentityUi();
   elements.inviteToken.focus();
   throw new SessionExpiredError(`${reason}. Chat is paused; your local keys and saved messages are kept.`);
@@ -766,7 +772,7 @@ async function ensureFreshSession(force = false) {
       if (response.status === 401) await invalidateSession("The server rejected the saved login (HTTP 401); it has expired or was disabled");
       throw requestError(response.status, undefined, "Could not renew the saved login");
     }
-    const result = await responseData(response);
+    const result = response.body;
     identity.token = result.token;
     identity.sessionId = result.session_id;
     identity.tokenExpiresAt = Date.parse(result.access_expires_at);
@@ -774,7 +780,7 @@ async function ensureFreshSession(force = false) {
     identity.refreshCredential = identity.pendingRefreshCredential;
     delete identity.pendingRefreshCredential;
     await writeIdentity(identity, true);
-    if (socket) { const old = socket; socket = null; clearPresence(); old.close(); }
+    disconnectSocket();
     connectSocket();
   });
 }
@@ -791,19 +797,12 @@ async function api(path, options = {}) {
   }
   const response = await fetchClient(path, { ...options, headers, cache: "no-store" });
   if (!response.ok) {
-    let detail;
-    try {
-      const body = await response.json();
-      detail = body?.detail;
-    } catch {
-      // A proxy may return HTML; explain its HTTP status without displaying it.
-    }
     if (response.status === 401) {
       await invalidateSession("The server rejected the saved login (HTTP 401); it has expired or was disabled");
     }
-    throw requestError(response.status, detail, activation ? "Could not join the room" : "Chat request failed");
+    throw requestError(response.status, response.body?.detail, activation ? "Could not join the room" : "Chat request failed");
   }
-  return responseData(response);
+  return response.body;
 }
 
 async function encryptForRecipient(plaintext, chatId, messageId, recipient) {
@@ -1695,7 +1694,8 @@ async function processIncoming(data) {
 }
 
 async function synchronize() {
-  if (invitePending || !identity?.token || synchronizing) return;
+  if (!pageActive || globalThis.navigator?.onLine === false
+      || invitePending || !identity?.token || synchronizing) return;
   synchronizing = true;
   try {
     await loadChats();
@@ -1712,15 +1712,37 @@ async function synchronize() {
   }
 }
 
+function disconnectSocket() {
+  window.clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  window.clearTimeout(socketAuthTimer);
+  socketAuthTimer = null;
+  window.clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
+  const previous = socket;
+  socket = null;
+  updateConnectionState(false);
+  if (previous && previous.readyState <= WebSocket.OPEN) previous.close();
+}
+
 function scheduleReconnect() {
-  if (invitePending || reconnectTimer || !identity?.token) return;
+  if (!pageActive || globalThis.navigator?.onLine === false
+      || invitePending || reconnectTimer || !identity?.token) return;
+  const ceiling = Math.min(30000, 1000 * 2 ** reconnectAttempts);
+  reconnectAttempts = Math.min(reconnectAttempts + 1, 5);
   reconnectTimer = window.setTimeout(() => {
     reconnectTimer = null;
     connectSocket();
-  }, 2000);
+  }, Math.round(ceiling * (0.5 + Math.random() / 2)));
 }
 
-async function handleSocketPayload(payload) {
+function retrySocket(ws) {
+  if (socket !== ws) return;
+  disconnectSocket();
+  scheduleReconnect();
+}
+
+async function handleSocketPayload(payload, ws) {
   if (payload.type === "presence") {
     receivePresence(payload);
   } else if (payload.type === "auth_error") {
@@ -1732,9 +1754,15 @@ async function handleSocketPayload(payload) {
     }
     await invalidateSession("The saved session is no longer valid");
   } else if (payload.type === "hello") {
-    updateConnectionState(true);
     await loadChats();
+    if (socket !== ws) return;
+    if (payload.user !== identity?.publicId) {
+      throw new ClientError("The live connection and saved login identify different devices. Your local keys and history are kept.");
+    }
     await processIncoming(payload.backlog || {});
+    if (socket !== ws) return;
+    reconnectAttempts = 0;
+    updateConnectionState(true);
   } else if (payload.type === "chat_state") {
     await loadChats();
     await renderOutbox();
@@ -1751,31 +1779,37 @@ async function handleSocketPayload(payload) {
 }
 
 function connectSocket() {
-  if (invitePending || !identity?.token || (socket && socket.readyState <= WebSocket.OPEN)) return;
+  if (!pageActive || globalThis.navigator?.onLine === false
+      || invitePending || !identity?.token || !identity.publicId
+      || (socket && socket.readyState <= WebSocket.OPEN)) return;
+  window.clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  window.clearTimeout(socketAuthTimer);
   const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${scheme}//${window.location.host}/ws`, ["sideword.v1"]);
+  const user = identity.publicId;
+  const token = identity.token;
   clearPresence();
   socket = ws;
+  socketAuthTimer = window.setTimeout(() => retrySocket(ws), 10000);
   ws.addEventListener("open", () => {
-    if (socket !== ws || !identity?.token) {
+    if (socket !== ws || identity?.publicId !== user || identity?.token !== token) {
       ws.close();
       return;
     }
-    ws.send(JSON.stringify({ type: "auth", token: identity.token, presence: true }));
+    ws.send(JSON.stringify({ type: "auth", token, presence: true }));
     window.clearTimeout(socketAuthTimer);
-    socketAuthTimer = window.setTimeout(() => {
-      if (socket === ws) ws.close();
-    }, 7000);
-    let lastResponse = Date.now();
-    ws.addEventListener("message", () => { lastResponse = Date.now(); });
+    socketAuthTimer = window.setTimeout(() => retrySocket(ws), 7000);
+    let lastResponse = performance.now();
+    ws.addEventListener("message", () => { lastResponse = performance.now(); });
     window.clearInterval(heartbeatTimer);
     heartbeatTimer = window.setInterval(() => {
-      if (Date.now() - lastResponse > 60000) {
-        clearPresence();
-        ws.close();
+      if (socket !== ws) return;
+      if (performance.now() - lastResponse > 60000) {
+        retrySocket(ws);
         return;
       }
-      if (socket === ws && ws.readyState === WebSocket.OPEN) ws.send("ping");
+      if (ws.readyState === WebSocket.OPEN) ws.send("ping");
     }, 25000);
   });
   ws.addEventListener("message", (event) => {
@@ -1790,6 +1824,16 @@ function connectSocket() {
       clearPresence();
       return;
     }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+    if (payload.type === "hello") {
+      if (payload.user !== user || identity?.publicId !== user) {
+        retrySocket(ws);
+        showToast("The live connection authenticated a different device. Your local keys and history are kept.", true);
+        return;
+      }
+      window.clearTimeout(socketAuthTimer);
+      socketAuthTimer = null;
+    }
     if (payload.type === "presence") {
       receivePresence(payload);
       return;
@@ -1797,25 +1841,17 @@ function connectSocket() {
     if (payload.type === "auth_error") clearPresence();
     enqueueIncoming(async () => {
         if (socket !== ws) return;
-        if (payload.type === "hello") {
-          window.clearTimeout(socketAuthTimer);
-          socketAuthTimer = null;
+        try {
+          await handleSocketPayload(payload, ws);
+        } catch (error) {
+          if (payload.type === "hello") retrySocket(ws);
+          throw error;
         }
-        await handleSocketPayload(payload);
       })
       .catch((error) => showToast(errorMessage(error), true));
   });
-  ws.addEventListener("close", () => {
-    if (socket !== ws) return;
-    window.clearTimeout(socketAuthTimer);
-    socketAuthTimer = null;
-    window.clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
-    socket = null;
-    updateConnectionState(false);
-    scheduleReconnect();
-  });
-  ws.addEventListener("error", () => { if (socket === ws) clearPresence(); ws.close(); });
+  ws.addEventListener("close", () => retrySocket(ws));
+  ws.addEventListener("error", () => retrySocket(ws));
 }
 
 const refresh = synchronize;
@@ -2221,7 +2257,18 @@ window.addEventListener("online", () => {
   connectSocket();
   void synchronize();
 });
-window.addEventListener("offline", clearPresence);
+window.addEventListener("offline", disconnectSocket);
+window.addEventListener("pagehide", () => {
+  pageActive = false;
+  disconnectSocket();
+});
+window.addEventListener("pageshow", (event) => {
+  pageActive = true;
+  if (event.persisted) {
+    connectSocket();
+    void synchronize();
+  }
+});
 document.addEventListener("visibilitychange", () => {
   refreshVisibleReads();
   if (document.visibilityState === "visible") {

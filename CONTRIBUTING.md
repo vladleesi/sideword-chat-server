@@ -38,7 +38,7 @@ node --check app/static/link-form.js
 node --check app/static/admin-links.js
 node --check app/static/invite-vault.js
 node --check docs/theme.js
-node --test tests/client_retry.test.cjs tests/client_delivery.test.cjs tests/client_message_status.test.cjs tests/client_crypto.test.cjs tests/client_identity.test.cjs tests/client_ui.test.cjs tests/client_theme.test.cjs tests/admin_links.test.cjs tests/invite_vault.test.cjs
+node --test tests/client_retry.test.cjs tests/client_connection.test.cjs tests/client_delivery.test.cjs tests/client_message_status.test.cjs tests/client_crypto.test.cjs tests/client_identity.test.cjs tests/client_ui.test.cjs tests/client_theme.test.cjs tests/admin_links.test.cjs tests/invite_vault.test.cjs
 node --test tests/site_theme.test.cjs
 docker build -t sideword-chat-server:test .
 ```

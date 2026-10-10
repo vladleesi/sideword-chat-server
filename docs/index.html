@@ -140,7 +140,7 @@
         </article>
         <article>
           <p class="number">02 / REAL TIME</p>
-          <div><h3>WebSocket relay</h3><p>Deliver queued encrypted messages with separate durable delivery and viewing confirmations over WebSocket, with optional ephemeral participant presence in a shared process. HTTP polling provides the same message delivery flow.</p></div>
+          <div><h3>WebSocket relay</h3><p>Deliver queued encrypted messages with separate durable delivery and viewing confirmations over WebSocket, with optional ephemeral participant presence. Public hostnames can share rooms when their HTTP and WebSocket routes reach one backend process and database. HTTP polling provides the same message delivery flow.</p></div>
         </article>
         <article>
           <p class="number">03 / TRANSPORT</p>
@@ -211,7 +211,7 @@
       </div>
       <aside class="reference-note">
         <p class="number">REFERENCE CLIENT</p>
-        <div><h3>A tool for testing the contract.</h3><p>The reference client at <code>/client</code> exercises invite activation, encrypted delivery and local history with non-exportable P-256 keys. It is for testing, not a production-ready messenger. Compare peer fingerprints out of band: first-use pinning cannot prevent initial key substitution or malicious server-delivered code. Rooms from before the P-256 update require fresh invites and identities; see the <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/UPGRADING.md">upgrade guide</a>.</p><a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/PROTOCOL.md">Reference protocol <span aria-hidden="true">&#8599;</span></a></div>
+        <div><h3>A tool for testing the contract.</h3><p>The reference client at <code>/client</code> exercises invite activation, encrypted delivery and local history with non-exportable P-256 keys. Each browser origin keeps an independent device identity and history. It is for testing, not a production-ready messenger. Compare peer fingerprints out of band: first-use pinning cannot prevent initial key substitution or malicious server-delivered code. Rooms from before the P-256 update require fresh invites and identities; see the <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/UPGRADING.md">upgrade guide</a>.</p><a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/PROTOCOL.md">Reference protocol <span aria-hidden="true">&#8599;</span></a></div>
       </aside>
     </section>
 

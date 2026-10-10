@@ -92,6 +92,11 @@ of that key. A newly assigned public ID is a new trust decision, including after
 a peer resets their device. Pinning cannot detect substitution before first use,
 a malicious initial roster, or malicious JavaScript served by the origin.
 
+Encryption contexts bind room and participant identities, not hostnames. Devices
+on different origins can exchange envelopes through the same authorized room,
+but their private keys, pins and history remain independent. There is no automatic
+identity or history transfer; see [device lifecycle](SESSION_LIFECYCLE.md#persistence-devices-and-reconnects).
+
 The IndexedDB database is `sideword-test-client-p256`, version 1, store `device`.
 The prior database is left untouched and is never read by this client. It is
 not a compatibility or recovery path. New identities require fresh peer

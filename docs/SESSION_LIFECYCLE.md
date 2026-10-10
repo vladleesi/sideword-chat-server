@@ -61,6 +61,21 @@ origins do not automatically share these keys or credentials. Public keys or an
 invite URL alone cannot reconstruct a joined identity or decrypt stored history.
 The bundled client has no cross-device history/key synchronization.
 
+Hostnames that route to the same backend can share rooms without sharing browser
+identities. A new origin creates its own device; joining needs a usable invite
+and consumes a participant slot. A full two-person room cannot admit a third
+device, even if its display name matches an existing participant. Names do not
+merge identities. Returning to an origin restores its saved device and history;
+changing origins neither transfers history nor recovers expired/revoked access.
+New participants do not receive messages previously addressed to other identities.
+
+The client closes its live socket on offline/navigation events and reconnects on
+network recovery or cached-page restoration. Connection/authentication waits and
+HTTP response waits are bounded; failed sockets retry with capped randomized
+backoff. Polling and the immutable encrypted outbox remain recovery paths.
+An initialized live connection or locally rendered message does not establish
+remote delivery; see [confirmation semantics](API.md#durable-delivery-and-actual-viewing).
+
 HTTP checks the live user, issuing invite, token/session deadlines and session
 revocation. Chat operations additionally check membership; polling and WebSocket
 backlog deliver ciphertext addressed to the authenticated identity. WebSockets

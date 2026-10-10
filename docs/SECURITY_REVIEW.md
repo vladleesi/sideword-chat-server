@@ -1,6 +1,6 @@
 # Security review
 
-**Reviewed:** 2026-10-08 · **Source baseline:** working tree based on `cbad1b6` · **Backend:** 0.11.0
+**Reviewed:** 2026-10-09 · **Source baseline:** working tree based on `bbeab25` · **Backend:** 0.11.1
 
 Sideword is a ciphertext relay with a bundled browser **test client**. Source and
 regression coverage support the controls below, but the client protocol has no
@@ -52,10 +52,10 @@ access. See [session lifecycle](SESSION_LIFECYCLE.md) for the policy and edge ca
 | Conversation authorization — **Verified** | Membership gates HTTP delivery and status queries. WebSockets revalidate during traffic and periodically while idle. Conversation closure applies across sessions; late ownership-checked durable ACKs remain possible. Presence is membership-scoped but requires one shared process. | [Routing checks](../app/services.py), [WebSockets](../app/routers/ws.py), [closure tests](../tests/test_conversation_closure.py), [presence tests](../tests/test_presence.py). |
 | Administration — **Verified** | Registered admin sessions, bcrypt password hashing, persistent login throttles, cookie-bound CSRF and origin checks. Cookies are HttpOnly/SameSite=Strict and Secure on HTTPS or a configured HTTPS public URL. Logout/password resets revoke sessions; password-reset races are covered. Password length has a known limit (F-05). | [Admin authentication](../app/routers/admin_auth.py), [guards](../app/guards.py), [admin race tests](../tests/test_admin_login_races.py), [CSRF/revocation tests](../tests/test_security_stages.py). |
 | Message encryption — **Partial** | The browser uses P-256 ECDH, HKDF-SHA-256, and AES-256-GCM with conversation/sender/recipient/message context binding. Public points are validated. Interoperability and tamper tests support implementation behavior, not protocol security certification. | [Protocol code](../app/static/client-protocol.js), [point validation](../app/message_keys.py), [crypto tests](../tests/client_crypto.test.cjs), [backend key tests](../tests/test_p256.py). |
-| Device storage and delivery — **Verified** | Non-exportable identity/storage keys, atomic first-use pins, encrypted local history/outbox, and persistence before deletion ACKs. Exact delivery references resist SQLite row-ID reuse; retries are bounded and transactional. Device credentials in the identity record are not covered by history encryption. | [Client](../app/static/client.js), [identity tests](../tests/client_identity.test.cjs), [delivery tests](../tests/client_delivery.test.cjs), [exact-ACK tests](../tests/test_exact_delivery.py). |
-| Transport and public access — **Partial** | HTTPS/WSS is required outside loopback by default. The shared runner has a restricted public listener that rejects admin/schema HTTP and WebSocket routes. Docker's default listener includes admin routes; deployment isolation and trusted-proxy configuration remain essential. | [Transport guards](../app/guards.py), [shared runner](../scripts/serve_shared.py), [listener tests](../tests/test_shared_listener.py), [Dockerfile](../Dockerfile). |
+| Device storage and delivery — **Verified** | Non-exportable origin-local identity/storage keys, atomic first-use pins, encrypted local history/outbox, and persistence before deletion ACKs. Shared rooms do not merge identities/history. Exact delivery references resist SQLite row-ID reuse; retries are bounded and transactional. Device credentials in the identity record are not covered by history encryption. | [Client](../app/static/client.js), [identity tests](../tests/client_identity.test.cjs), [delivery tests](../tests/client_delivery.test.cjs), [alias routing/authorization tests](../tests/test_cross_origin_delivery.py), [exact-ACK tests](../tests/test_exact_delivery.py). |
+| Transport and public access — **Partial** | HTTPS/WSS is required outside loopback by default. Aliases need one backend process/database for shared live delivery; the connection registry is process-local. The shared runner's public listener rejects admin/schema HTTP and WebSocket routes. Docker's default listener includes admin routes; isolation and trusted-proxy configuration remain essential. | [Transport guards](../app/guards.py), [connection registry](../app/ws_manager.py), [shared runner](../scripts/serve_shared.py), [listener tests](../tests/test_shared_listener.py), [Dockerfile](../Dockerfile). |
 | Responses and logging — **Partial** | Client CSP excludes inline/third-party scripts; user content uses text-only rendering. Non-static responses use no-store/no-referrer. Validation responses omit supplied input values. Shared-runner/container access logs are suppressed; deployment helpers allowlist output. Other logging layers remain outside these guarantees. | [Client headers](../app/routers/client.py), [response handling](../app/main.py), [static tests](../tests/test_static_delivery.py), [deployment-output tests](../tests/test_deploy.py). |
-| Availability — **Partial** | Request/body/frame/connection limits and database queue quotas bound resource use. HTTP/WS limits are process-local; password verification and SQLite writes still consume finite resources. These controls do not establish resistance to distributed denial of service. | [Limits](../app/guards.py), [queues](../app/routers/chats.py), [capacity tests](../tests/test_security_stages.py). |
+| Availability — **Partial** | Request/body/frame/connection limits and queue quotas bound resource use. Client recovery bounds HTTP/body and socket waits, uses capped randomized retries, and releases disconnected sockets/timers; matching device identity and initialization precede live status. HTTP/WS limits are process-local; password verification and SQLite writes consume finite resources. No distributed denial-of-service resistance is established. | [Limits](../app/guards.py), [queues](../app/routers/chats.py), [capacity tests](../tests/test_security_stages.py), [client recovery tests](../tests/client_connection.test.cjs). |
 | Build and deployment — **Partial** | CI gates exact-commit promotion; manual deployment uses OIDC, the retained CI image, and an immutable registry digest bound to its image configuration. Deployment locks, backups, health/private-route checks, and restricted failure output are implemented. Runtime credentials/configuration are not copied into CI. The image runs as a non-root user. Live IAM/network restrictions require separate verification. | [CI](../.github/workflows/test.yml), [deployment workflow](../.github/workflows/deploy.yml), [deployment helper](../scripts/deploy.py), [deployment tests](../tests/test_deploy.py), [Dockerfile](../Dockerfile). |
 
 ## Threat model and limits
@@ -96,8 +96,9 @@ and configuration exports have separate lifecycles. Evidence:
 
 SQLite deletion is not secure erasure of WAL/free pages, snapshots, or backups.
 The application does not encrypt database files or exported configuration;
-exported invite secrets remain sensitive. Clearing browser site data, changing
-origin, or resetting the device can permanently lose keys/history. The retired
+exported invite secrets remain sensitive. Clearing browser site data or resetting
+the device can permanently lose keys/history. Changing origins does not transfer
+them; access to the original origin's storage is needed for saved history. The retired
 pre-P-256 format is not read or converted; see [upgrade/recovery guidance](UPGRADING.md).
 
 ## Prioritized findings and improvements
@@ -118,15 +119,22 @@ use; **P2** is planned hardening. Verification gaps are listed separately.
 
 ## Verification record and gaps
 
-Verification on 2026-10-08 covers source/configuration inspection, repository
+Verification on 2026-10-09 covers source/configuration inspection, repository
 references, Python regressions, Node client regressions, lint, and compilation.
 Session regressions reject unregistered JWTs across HTTP/WebSocket/admission,
 require activation credentials before database writes, exercise revocation/expiry
 at issuance, and confirm removed deletion routes preserve queued messages.
 Browser adapter tests cover retired-login handling without key/history deletion.
-Suites use isolated databases and Node adapters, not a live browser. These checks
-do not verify third-party client migration or certify a production installation;
-no production configuration or deployment was changed for this release.
+Alias regressions cover same-host and mixed-host bidirectional delivery, distinct
+device identities, refresh/reconnect backlog, immutable retry IDs, recipient ACKs,
+unrelated-participant isolation and expired-session rejection. Client regressions
+cover origin-relative endpoints, identity mismatch, stalled requests/connections,
+backoff, offline/navigation recovery, and obsolete socket events. Native crypto
+tests exchange envelopes between independent origin-specific devices.
+Suites use isolated databases and Node adapters, not a live browser. They do not
+establish authenticated end-to-end delivery through an operator's complete proxy
+chain or verify third-party client migration. No production configuration or
+deployment was changed for this release.
 
 | Unverified area | Evidence needed to establish the property |
 | --- | --- |

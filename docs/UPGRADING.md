@@ -149,6 +149,21 @@ and `/openapi.json` private for HTTP and WS upgrades. The shared runner exposes
 only the restricted listener on port 8001; Docker's port 8000 includes admin routes
 and needs proxy restrictions.
 
+For multiple public hostnames, route all API and WebSocket paths to one backend
+process and database. The connection registry is process-local; independent
+workers/replicas do not broadcast to one another. Preserve TLS, any configured
+client-certificate verification, trusted proxy headers and private administration
+on every path. Domain aliases do not require shared cookies, relaxed CORS or key
+transfer. `SIDEWORD_PUBLIC_URL` controls generated invite addresses only.
+
+Backend 0.11.1 refreshes the bundled client's recovery behavior without changing
+the API, encryption format or database schema. Deploy the versioned client asset
+with its template and reload clients. Requests, including response bodies, have a
+15-second deadline; an interrupted response may already have been processed by
+the server. Retrying the persisted encrypted outbox preserves its message ID and
+recipient ciphertext. Separate-origin identities/history stay separate; see
+[device lifecycle](SESSION_LIFECYCLE.md#persistence-devices-and-reconnects).
+
 ### Public asset transfers
 
 Backend 0.9.1 compresses bundled `/static/` files with gzip when supported and

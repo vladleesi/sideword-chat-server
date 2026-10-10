@@ -5,10 +5,10 @@ const vm = require('node:vm');
 const crypto = require('node:crypto').webcrypto;
 
 function client(shared = {}) {
-  const element = { addEventListener() {} };
-  const context = vm.createContext({ TextEncoder, TextDecoder, DOMException, crypto, btoa,
+  const element = { addEventListener() {}, classList: { toggle() {} } };
+  const context = vm.createContext({ TextEncoder, TextDecoder, DOMException, AbortController, crypto, btoa,
     document: { querySelector: () => element, addEventListener() {} },
-    window: { addEventListener() {} }, ...shared });
+    window: { addEventListener() {}, setTimeout() { return 1; }, clearTimeout() {}, clearInterval() {} }, ...shared });
   vm.runInContext(fs.readFileSync('app/static/client-protocol.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('app/static/client.js', 'utf8')
     .replace(/start\(\)\.catch[^\n]+/, ''), context);
