@@ -12,9 +12,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from test_exact_delivery import headers
 from test_exact_delivery import room as _room
-from test_security_stages import bootstrap, rotate
+from test_security_stages import activate_session, rotate
 
-from app.config import get_settings
 from app.db import SessionLocal
 from app.main import create_app
 from app.models import ClientSession, Link, RefreshUse, User
@@ -60,15 +59,14 @@ def assert_denied(client, token):
 
 
 @pytest.mark.parametrize("boundary", ["inactive", "replaced", "revoked", "deleted", "expired"])
-@pytest.mark.parametrize("activation", [False, True])
 @pytest.mark.parametrize("retry", [False, True])
-def test_issuance_rechecks_admission_after_commit(room, monkeypatch, boundary, activation, retry):
+def test_issuance_rechecks_admission_after_commit(room, monkeypatch, boundary, retry):
     client, users = room()
     user = users[0]
     claims = decode_client_token(user["token"])
     credential = secrets.token_urlsafe(32)
     if retry:
-        assert bootstrap(client, user, credential).status_code == 200
+        assert activate_session(client, user, credential).status_code == 200
     before = count_sessions(claims)
     original = sessions.issue
 
@@ -78,33 +76,33 @@ def test_issuance_rechecks_admission_after_commit(room, monkeypatch, boundary, a
         await invalidate(claims, boundary)
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(links if activation else sessions, "issue", interleaved_issue)
-    if activation:
-        async def invite():
-            async with SessionLocal() as session:
-                return (await session.get(Link, claims["lid"])).token
-        response = client.post("/api/v1/links/activate",
-                               headers=headers(user), json={
-                                   "token": asyncio.run(invite()),
-                                   "public_key": user["user"]["public_key"],
-                                   "session_credential": credential,
-                               })
-    else:
-        response = bootstrap(client, user, credential)
+    monkeypatch.setattr(links, "issue", interleaved_issue)
+    response = activate_session(client, user, credential)
     assert response.status_code == 401
     assert "token" not in response.json()
     assert count_sessions(claims) == before
 
 
-@pytest.mark.parametrize("boundary", ["sunset", "token_expiry"])
-def test_legacy_migration_rechecks_deadline_at_issuance(room, monkeypatch, boundary):
+@pytest.mark.parametrize("boundary", ["session_revocation", "session_expiry", "token_expiry"])
+@pytest.mark.parametrize("retry", [False, True])
+def test_authenticated_activation_rechecks_session_at_issuance(room, monkeypatch, boundary, retry):
     client, users = room()
     claims = decode_client_token(users[0]["token"])
+    credential = secrets.token_urlsafe(32)
+    if retry:
+        assert activate_session(client, users[0], credential).status_code == 200
+    before = count_sessions(claims)
     original = sessions.issue
 
     async def interleaved_issue(*args, **kwargs):
-        if boundary == "sunset":
-            monkeypatch.setattr(get_settings(), "legacy_token_deadline", datetime.now(timezone.utc))
+        if boundary != "token_expiry":
+            async with SessionLocal() as session:
+                record = await session.get(ClientSession, claims["sid"])
+                if boundary == "session_revocation":
+                    record.revoked = True
+                else:
+                    record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+                await session.commit()
         else:
             class ExpiredClock:
                 @staticmethod
@@ -113,9 +111,9 @@ def test_legacy_migration_rechecks_deadline_at_issuance(room, monkeypatch, bound
             monkeypatch.setattr(jwt.api_jwt, "datetime", ExpiredClock)
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(sessions, "issue", interleaved_issue)
-    assert bootstrap(client, users[0], secrets.token_urlsafe(32)).status_code == 401
-    assert count_sessions(claims) == 0
+    monkeypatch.setattr(links, "issue", interleaved_issue)
+    assert activate_session(client, users[0], credential).status_code == 401
+    assert count_sessions(claims) == before
 
 
 @pytest.mark.parametrize("boundary", [
@@ -124,7 +122,7 @@ def test_legacy_migration_rechecks_deadline_at_issuance(room, monkeypatch, bound
 def test_refresh_and_grace_retry_reject_invalid_subject(room, boundary):
     client, users = room()
     old, new = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-    issued = bootstrap(client, users[0], old).json()
+    issued = activate_session(client, users[0], old).json()
     assert rotate(client, old, new).status_code == 200
     asyncio.run(invalidate(decode_client_token(issued["token"]), boundary))
     assert rotate(client, old, new).status_code == 401
@@ -136,7 +134,7 @@ def test_refresh_and_grace_retry_reject_invalid_subject(room, boundary):
 def test_concurrent_refresh_and_revocation_preserve_replay_evidence(room, race):
     client, users = room()
     old, new = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-    issued = bootstrap(client, users[0], old).json()
+    issued = activate_session(client, users[0], old).json()
     ready = Barrier(2)
 
     def attempt(index):
@@ -172,33 +170,26 @@ def test_concurrent_refresh_and_revocation_preserve_replay_evidence(room, race):
         assert rotate(client, new, secrets.token_urlsafe(32)).status_code == 401
 
 
-@pytest.mark.parametrize("activation", [False, True])
 @pytest.mark.parametrize("preexisting", [False, True])
-def test_invite_caps_issued_and_refreshed_deadlines_and_me(room, activation, preexisting):
+def test_invite_caps_issued_and_refreshed_deadlines_and_me(room, preexisting):
     client, users = room()
     claims = decode_client_token(users[0]["token"])
     deadline = datetime.now(timezone.utc) + timedelta(minutes=2)
     old, new = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     if preexisting:
-        assert bootstrap(client, users[0], old).status_code == 200
+        assert activate_session(client, users[0], old).status_code == 200
 
     async def set_expiry():
         async with SessionLocal() as session:
             link = await session.get(Link, claims["lid"])
             link.expires_at = deadline
             await session.commit()
-            return link.token
-    invite_token = asyncio.run(set_expiry())
-    if activation:
-        response = client.post("/api/v1/links/activate", headers=headers(users[0]),
-                               json={"token": invite_token,
-                                     "public_key": users[0]["user"]["public_key"],
-                                     "session_credential": old})
-    else:
-        response = bootstrap(client, users[0], old)
+    asyncio.run(set_expiry())
+    response = activate_session(client, users[0], old)
     assert response.status_code == 200
     issued = response.json()
-    for data in (issued, bootstrap(client, users[0], old).json(), rotate(client, old, new).json()):
+    retried = activate_session(client, users[0], old).json()
+    for data in (issued, retried, rotate(client, old, new).json()):
         assert datetime.fromisoformat(data["access_expires_at"]) == deadline
         assert datetime.fromisoformat(data["session_expires_at"]) == deadline
 

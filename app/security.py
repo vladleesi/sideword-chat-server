@@ -55,22 +55,19 @@ def _now() -> datetime:
 
 
 def create_client_token(
-    user_id: int, public_id: str, link_id: int, session_id: str | None = None,
+    user_id: int, public_id: str, link_id: int, session_id: str,
 ) -> str:
     payload: dict[str, Any] = {
         "sub": str(user_id),
         "pid": public_id,
         "lid": link_id,
+        "sid": session_id,
         "typ": "client",
         "iat": int(_now().timestamp()),
         "exp": int(
-            (_now() + timedelta(hours=_settings.jwt_ttl_hours)).timestamp()
+            (_now() + timedelta(minutes=_settings.client_access_minutes)).timestamp()
         ),
     }
-    if session_id is not None:
-        payload["sid"] = session_id
-        payload["exp"] = int((_now() + timedelta(
-            minutes=_settings.client_access_minutes)).timestamp())
     return jwt.encode(payload, _settings.secret_key, algorithm=JWT_ALG)
 
 
@@ -79,7 +76,7 @@ def decode_client_token(token: str) -> dict[str, Any]:
         token,
         _settings.secret_key,
         algorithms=[JWT_ALG],
-        options={"require": ["exp", "sub", "typ", "pid", "lid"]},
+        options={"require": ["exp", "sub", "typ", "pid", "lid", "sid"]},
     )
 
 

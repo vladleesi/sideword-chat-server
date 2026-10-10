@@ -50,7 +50,8 @@ def test_new_invite_cannot_restore_membership_after_only_session_is_invalid(clie
     send(client, [peer, old], message_id="preserved-queued-ciphertext")
     invalidate(client, link_id, boundary)
     _, new_token = make_link()
-    payload = {"token": new_token, "public_key": old["user"]["public_key"]}
+    payload = {"token": new_token, "public_key": old["user"]["public_key"],
+               "session_credential": secrets.token_urlsafe(32)}
     for user in (old, renewable, peer):
         assert client.get("/api/v1/me", headers=headers(user)).status_code == 401
         assert client.get("/api/v1/poll", headers=headers(user)).status_code == 401
@@ -63,6 +64,7 @@ def test_new_invite_cannot_restore_membership_after_only_session_is_invalid(clie
     response = client.post("/api/v1/links/activate", json={
         "token": token, "public_key": old["user"]["public_key"],
         "resume_credential": resume,
+        "session_credential": secrets.token_urlsafe(32),
     })
     assert response.status_code == 410
     assert response.json()["detail"] == (

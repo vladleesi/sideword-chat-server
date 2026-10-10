@@ -10,7 +10,7 @@ from csrf_client import TestClient
 from message_key_fixtures import public_key
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_exact_delivery import headers, poll, send
-from test_security_stages import bootstrap, rotate
+from test_security_stages import rotate
 
 from app import db
 from app.config import get_settings
@@ -53,6 +53,7 @@ def test_restore_requires_key_rotation_and_session_removal(
     admissions = [{
         "public_key": base64.b64encode(public_key()).decode(),
         "resume_credential": secrets.token_urlsafe(32),
+        "session_credential": secrets.token_urlsafe(32),
     } for _ in range(2)]
     old, current = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
 
@@ -71,7 +72,11 @@ def test_restore_requires_key_rotation_and_session_removal(
                                    json={**admission, "token": invite_token})
             assert response.status_code == 200
             users.append(response.json())
-        issued = bootstrap(client, users[0], old).json()
+        response = client.post("/api/v1/links/activate", headers=headers(users[0]), json={
+            **admissions[0], "token": invite_token, "session_credential": old,
+        })
+        assert response.status_code == 200
+        issued = response.json()
         assert rotate(client, old, current).status_code == 200
         assert client.post("/admin/login", data={
             "username": "admin", "password": "adminpass",
@@ -112,14 +117,13 @@ def test_restore_requires_key_rotation_and_session_removal(
     recovery_database("restored.sqlite3")
 
     with TestClient(create_app()) as client:
-        legacy_status = 401 if rotate_signing_key else 200
         registered_status = 401 if rotate_signing_key or clear_sessions else 200
-        assert client.get("/api/v1/me", headers=headers(users[0])).status_code == legacy_status
+        assert client.get("/api/v1/me", headers=headers(users[0])).status_code == registered_status
         assert client.get("/api/v1/me", headers=headers(issued)).status_code == registered_status
         assert client.get("/admin/api/export", headers={
             "Authorization": f"Bearer {admin_token}",
         }).status_code == registered_status
-        for token, expected in ((users[0]["token"], legacy_status),
+        for token, expected in ((users[0]["token"], registered_status),
                                 (issued["token"], registered_status)):
             with client.websocket_connect("/ws") as socket:
                 socket.send_json({"type": "auth", "token": token})

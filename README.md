@@ -94,13 +94,11 @@ below uses the `SIDEWORD_` prefix, for example `SIDEWORD_MESSAGE_TTL_DAYS=30`.
 | `PUBLIC_URL` | Invite origin; defaults to HTTP on localhost, port 8000 |
 | `DB_PATH` | `./data/sideword.sqlite3`; `/data/sideword.sqlite3` in Docker |
 | `EXPORTS_DIR` | `./exports`; `/exports` in Docker |
-| `JWT_TTL_HOURS` | `720`; legacy client JWT lifetime in hours |
 | `ADMIN_SESSION_TTL_HOURS` | `12`; admin session lifetime in hours |
 | `MESSAGE_TTL_DAYS` | `30`; pending ciphertext lifetime in days |
 | `MAX_CIPHERTEXT_BYTES` | `65536`; maximum ciphertext size per envelope |
 | `CLIENT_ACCESS_MINUTES`, `CLIENT_SESSION_DAYS` | `15`, `30`; renewable access and absolute session lifetime |
 | `SEND_IDEMPOTENCY_DAYS` | `30`; send retry metadata retention after first acceptance |
-| `ALLOW_LEGACY_ACK`, `LEGACY_TOKEN_DEADLINE` | `true`, unset; explicit compatibility sunset controls |
 | `REQUIRE_HTTPS`, `PRIVATE_ADMIN` | `true`; TLS outside loopback and local-only administration |
 | `MAX_REQUEST_BYTES`, `REQUESTS_PER_MINUTE` | `2097152`, `600`; body and per-IP/process request limits |
 | `PRESENCE_ENABLED` | `true`; ephemeral presence, requires one shared process; disable across independent workers/replicas |
@@ -108,6 +106,11 @@ below uses the `SIDEWORD_` prefix, for example `SIDEWORD_MESSAGE_TTL_DAYS=30`.
 
 For other limits and operator procedures, see [.env.example](.env.example) and
 the [upgrade guide](docs/UPGRADING.md).
+
+Clients must supply a persisted `session_credential` on activation and use exact
+ACK/read endpoints. Legacy client JWTs, session migration, and ambiguous deletion
+routes are removed in 0.11.0; see [upgrade requirements](docs/UPGRADING.md#retire-legacy-clients).
+
 Bootstrap credentials can be removed from `.env` after the admin account exists.
 To create an account or reset its password, run the interactive command:
 

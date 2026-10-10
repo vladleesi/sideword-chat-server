@@ -1,433 +1,151 @@
 # Security review
 
-Current code: 0.10.0. Explicit conversation closure and invite/session/membership lifecycle reviewed 2026-10-08; static asset transport/cache boundaries, client UI, sender/reader labels, P-256 replacement and browser key persistence reviewed 2026-10-07; activation and group sender labels reviewed 2026-10-06; broader review 2026-09-27.
-This is a source review with regression tests, not an independent audit.
-Release history belongs in [CHANGELOG.md](../CHANGELOG.md).
+**Reviewed:** 2026-10-08 · **Source baseline:** working tree based on `cbad1b6` · **Backend:** 0.11.0
 
-## Implemented protections
+Sideword is a ciphertext relay with a bundled browser **test client**. Source and
+regression coverage support the controls below, but the client protocol has no
+recipient forward secrecy or post-compromise recovery. This maintainer review is
+not an independent audit, cryptographic proof, or certification of a deployment.
 
-| Area | Implemented behavior |
+## Scope and assessment basis
+
+This review covers authentication, invite admission, HTTP/WebSocket authorization,
+client encryption and storage, relay retention, administration, container defaults,
+and repository CI/deployment configuration. It inspects implementation and existing
+tests; it does not assess private runtime configuration or cloud account settings.
+
+- **Verified:** implementation inspected and relevant regression coverage identified;
+  this does not imply that every execution path or deployment is verified.
+- **Partial:** a control exists but depends on configuration or has a stated limit.
+- **Known weakness / design limit:** behavior is established by implementation,
+  rather than inferred from a missing test.
+- **Unverified:** evidence is insufficient; no vulnerability is asserted.
+
+The structure follows [OWASP assessment reporting](https://wstg.owasp.org/v4.2/5-Reporting/),
+with qualitative likelihood and impact assessment informed by
+[NIST SP 800-30](https://csrc.nist.gov/pubs/sp/800/30/r1/final). This is not a claim
+of compliance with either framework.
+
+## Architecture and trust boundaries
+
+| Boundary | Security responsibility |
 | --- | --- |
-| Invite admission | Body-only `POST /api/v1/links/activate` keeps the invite secret in the JSON body; the bundled client uses it. Activation requires HTTPS or local loopback, independently of the global TLS toggle. Invalid supplied bearer authentication returns 401 without anonymous admission; malformed resume/session credentials are rejected before the SQLite write reservation. Slot allocation and password throttling remain transactional. |
-| Delivery | Exact acknowledgements cannot delete a newer delivery after SQLite row-ID reuse. Durable delivery and actual viewing are distinct, bound to original recipients and delivery IDs; legacy read deletion and receipt creation still commit together. Identical uploads reuse the original result within a bounded retry window. |
-| Administration | Signed, cookie-bound form tokens prevent cross-site request forgery (CSRF). Login limits persist across processes/restarts. Logout and password resets revoke registered sessions; concurrent old-password logins cannot escape a reset. |
-| Client sessions | Short access tokens, hashed refresh credentials, rotation/replay detection, per-device revocation and explicit legacy cutoff controls. Issuance rechecks user/invite validity under the database write reservation. |
-| Conversation closure | Persisted, reversible `closed_at` blocks new admissions and live messaging across every session while retaining authorized roster/archive access. Shared checks cover sends/read/status, poll/backlog receipts and ciphertext, live push and presence. Closure and sends serialize on SQLite's write reservation; closure never deletes local history or server queues. |
-| Transport and capacity | HTTPS/WSS outside loopback, private administration by default, bounded HTTP/WS traffic and database queues. Shared runner/Docker suppress raw access and WS INFO logs. |
-| Device state | Non-exportable private keys, locally calculated fingerprints, atomic first-use peer pins, encrypted history/outbox and persistence before deletion acknowledgements. A separate committed identity read precedes invite admission; unreadable saved identities are preserved and cannot be overwritten by routine/activation writes. |
-| P-256 boundary | Native non-exportable ECDH identity/ephemeral keys; validated uncompressed 65-byte P-256 public points. Retired keys cannot authenticate, issue/refresh sessions, or share a room with new clients. Configuration imports reject invalid keys before replacement/deletion. The new browser database is separate from prior test data, with no old-format decryption or key conversion. |
-| Client errors | Fixed local/protocol explanations and allowlisted server-detail translations distinguish storage, identity, login, invite and HTTP failures. Raw server validation inputs, status text, response bodies and unknown exception messages are not displayed. No diagnostic upload, reporting controls or new telemetry is added. |
-| Participant labels | Names come from the matching chat roster, are saved in encrypted history and rendered with `textContent`. Names are unauthenticated labels; public IDs remain the routing identities. Relabeling history does not change delivery IDs or acknowledge old deliveries. |
-| Client UI | Full public IDs and locally calculated fingerprints remain selectable and copyable in participant details. Local pins are explicitly not verified identities; changed-key warnings and blocked sending remain in the active conversation. Pending retries stay accessible across mobile views. Device settings expose public identity and session timing, never private keys or credentials. Appearance storage contains only a theme preference. Mobile navigation uses per-tab history state containing only the device public ID, chat ID and view; restoration checks device scope and roster membership. No keys, credentials or plaintext enter that state. Native modal dialogs contain focus and support Escape; client CSP allows bundled same-origin fonts without inline code or remote resources. Saved-device restoration keeps activation hidden until local reads complete; storage failures reveal the existing inline error. Invite landing pages preserve admission/status guidance and only reveal the existing token on expansion. Admin sign-in keeps its original template and styles. |
-| Recovery | Isolated restore tests verify that both signing-key rotation and removal of restored session records are needed to invalidate old credentials. |
+| Browser/device → relay | The client encrypts message content and checks peer keys. The relay authorizes routing and sees public identities, membership, timing, sizes, and confirmations. |
+| Invite holder → participant | Invite and optional room-password possession authorize admission. The server and TLS terminator receive these credentials; they are not message-encryption keys. |
+| Administrator → server | Administration controls accounts, invites, conversations, and configuration exports. Restrict access separately from public client traffic. |
+| Application → persistent storage | SQLite holds ciphertext, metadata, invite secrets, and authentication state. Database files, exports, and backups need operator access and retention controls. |
+| Build/deployment → runtime | Trusted repository changes and CI produce the selected image. Privileged deployment commands activate it; private runtime configuration stays outside the repository. |
 
-Implementation does not prove that deployment settings are correct or that the
-system is secure against every attack.
+The relay cannot establish a person's identity from a public ID or display name.
+It accepts opaque payloads and cannot verify that third-party clients encrypt correctly.
+Sessions authorize the participant across retained memberships; revoking one invite
+does not remove those memberships or invalidate other legitimate sessions. Explicit
+conversation closure blocks live messaging while preserving authorized archive
+access. See [session lifecycle](SESSION_LIFECYCLE.md) for the policy and edge cases.
+
+## Controls and supporting evidence
+
+| Area / status | Implemented protection and boundary | Evidence |
+| --- | --- | --- |
+| Invite admission — **Verified** | Body-based activation requires HTTPS or loopback even when the general HTTPS guard is disabled. Malformed credentials and invalid supplied authentication fail before admission. Password checking, throttling, and slot allocation use a SQLite write reservation. | [Admission](../app/routers/links.py), [password controls](../app/invite_security.py), [invite regressions](../tests/test_invite_protection.py). |
+| Client authentication — **Verified** | Renewable sessions use short access JWTs, hashed refresh credentials, rotation/replay detection, and per-device revocation. User, issuing invite, and session validity are rechecked; refresh cannot extend the absolute session lifetime. JWTs without a registered session are rejected; legacy issuance/migration and ambiguous ACK/read routes are removed. | [Authorization](../app/deps.py), [sessions](../app/routers/sessions.py), [issuance boundaries](../tests/test_client_session_boundaries.py), [session regressions](../tests/test_security_stages.py). |
+| Conversation authorization — **Verified** | Membership gates HTTP delivery and status queries. WebSockets revalidate during traffic and periodically while idle. Conversation closure applies across sessions; late ownership-checked durable ACKs remain possible. Presence is membership-scoped but requires one shared process. | [Routing checks](../app/services.py), [WebSockets](../app/routers/ws.py), [closure tests](../tests/test_conversation_closure.py), [presence tests](../tests/test_presence.py). |
+| Administration — **Verified** | Registered admin sessions, bcrypt password hashing, persistent login throttles, cookie-bound CSRF and origin checks. Cookies are HttpOnly/SameSite=Strict and Secure on HTTPS or a configured HTTPS public URL. Logout/password resets revoke sessions; password-reset races are covered. Password length has a known limit (F-05). | [Admin authentication](../app/routers/admin_auth.py), [guards](../app/guards.py), [admin race tests](../tests/test_admin_login_races.py), [CSRF/revocation tests](../tests/test_security_stages.py). |
+| Message encryption — **Partial** | The browser uses P-256 ECDH, HKDF-SHA-256, and AES-256-GCM with conversation/sender/recipient/message context binding. Public points are validated. Interoperability and tamper tests support implementation behavior, not protocol security certification. | [Protocol code](../app/static/client-protocol.js), [point validation](../app/message_keys.py), [crypto tests](../tests/client_crypto.test.cjs), [backend key tests](../tests/test_p256.py). |
+| Device storage and delivery — **Verified** | Non-exportable identity/storage keys, atomic first-use pins, encrypted local history/outbox, and persistence before deletion ACKs. Exact delivery references resist SQLite row-ID reuse; retries are bounded and transactional. Device credentials in the identity record are not covered by history encryption. | [Client](../app/static/client.js), [identity tests](../tests/client_identity.test.cjs), [delivery tests](../tests/client_delivery.test.cjs), [exact-ACK tests](../tests/test_exact_delivery.py). |
+| Transport and public access — **Partial** | HTTPS/WSS is required outside loopback by default. The shared runner has a restricted public listener that rejects admin/schema HTTP and WebSocket routes. Docker's default listener includes admin routes; deployment isolation and trusted-proxy configuration remain essential. | [Transport guards](../app/guards.py), [shared runner](../scripts/serve_shared.py), [listener tests](../tests/test_shared_listener.py), [Dockerfile](../Dockerfile). |
+| Responses and logging — **Partial** | Client CSP excludes inline/third-party scripts; user content uses text-only rendering. Non-static responses use no-store/no-referrer. Validation responses omit supplied input values. Shared-runner/container access logs are suppressed; deployment helpers allowlist output. Other logging layers remain outside these guarantees. | [Client headers](../app/routers/client.py), [response handling](../app/main.py), [static tests](../tests/test_static_delivery.py), [deployment-output tests](../tests/test_deploy.py). |
+| Availability — **Partial** | Request/body/frame/connection limits and database queue quotas bound resource use. HTTP/WS limits are process-local; password verification and SQLite writes still consume finite resources. These controls do not establish resistance to distributed denial of service. | [Limits](../app/guards.py), [queues](../app/routers/chats.py), [capacity tests](../tests/test_security_stages.py). |
+| Build and deployment — **Partial** | CI gates exact-commit promotion; manual deployment uses OIDC, the retained CI image, and an immutable registry digest bound to its image configuration. Deployment locks, backups, health/private-route checks, and restricted failure output are implemented. Runtime credentials/configuration are not copied into CI. The image runs as a non-root user. Live IAM/network restrictions require separate verification. | [CI](../.github/workflows/test.yml), [deployment workflow](../.github/workflows/deploy.yml), [deployment helper](../scripts/deploy.py), [deployment tests](../tests/test_deploy.py), [Dockerfile](../Dockerfile). |
 
 ## Threat model and limits
 
-Assume network observers, leaked databases/backups, stolen bearer credentials,
-a malicious relay/key directory, malicious group members, and compromised devices
-or browser JavaScript.
+Consider network observers, malicious participants or relay operators, stolen
+bearer credentials, leaked storage/backups, and compromised origins or devices.
 
-- **P-256 encryption v1 has no recipient forward secrecy.** A stolen recipient identity
-  key can decrypt recorded inbound traffic: both DH values are recoverable from
-  that key and public headers. A stolen sender identity key alone does not recover
-  past outbound ephemeral DH values. There is no ratchet or post-compromise
-  recovery to restore future secrecy after a compromise ends.
-- **First-use pinning is not authentication.** It detects later changes under the
-  same peer public ID, not initial substitution, new IDs, or malicious rosters.
-  Compare full fingerprints with the owner over a separate trusted channel.
-  Investigate mismatches; do not clear history or replace pins to silence them.
-- **The browser trusts its origin and device.** Non-exportable keys block normal
-  export APIs; same-origin malicious code can still invoke keys and read plaintext.
-  CSP cannot protect against an origin changing its own code or policy. An
-  independently distributed native client can reduce this code-delivery threat.
-- **Bearer credentials do not prove possession of message keys.** Stolen tokens
-  cannot alone decrypt messages but can fetch/delete ciphertext or disrupt delivery.
-  Room passwords control admission; the server and TLS terminator see them.
-- **Remaining invite credential exposure.** `/l/{token}` and
-  `/client?invite={token}` contain admission secrets that can enter
-  server/proxy/monitoring logs. Opening invite links can also leave browser
-  history. Activation carries the secret in its body, which logging tools can
-  also record. HTTPS,
-  POST, no-store and no-referrer do not eliminate these copies. Suppress/redact
-  URLs and request bodies at every logging layer; an open, unprotected leaked
-  invite permits a new join.
-- **The relay sees metadata.** Identities, membership, timing, sizes and receipts
-  are visible. Receipts are server assertions, not cryptographic proof of reading.
-  The relay can delay, suppress, reorder, replay or fabricate metadata.
+- **Key compromise:** the v1 protocol has no recipient forward secrecy. A stolen
+  recipient identity key exposes recorded inbound ciphertext; there is no ratchet
+  to recover future secrecy after compromise. See F-01.
+- **Peer identity:** first-use pinning detects later changes under the same public
+  ID; it cannot authenticate initial keys, replacement IDs, or group membership.
+  Compare full fingerprints through a separate trusted channel. Names are labels.
+- **Origin/device trust:** non-exportable keys prevent normal key export, but
+  malicious same-origin code can invoke them and read plaintext. CSP does not
+  protect against the origin replacing its own application. Device compromise
+  also exposes retained local history and credentials.
+- **Bearer authority:** tokens do not prove possession of message keys. Token
+  theft alone does not decrypt messages, but can disrupt delivery or delete
+  ciphertext. Resume credentials intentionally survive session revocation;
+  compromised admission credentials require invite revocation or user deactivation.
+- **Relay assertions:** metadata and confirmations are not cryptographic proof of
+  identity, delivery, or human attention. The relay can manipulate availability
+  and metadata. Revocation or closure cannot retract plaintext already received.
 
-The exact encryption format and client obligations are in [PROTOCOL.md](PROTOCOL.md).
-HTTP/WS request fields, limits and retry rules are in [API.md](API.md).
-
-## Authentication boundaries
-
-HTTP and WebSocket authorization check the user/public identity, issuing invite,
-expiry, explicit revocation and deletion. A full/consumed invite is not revoked.
-Sessions authenticate a user across all retained chat memberships. Revoking or
-expiring an issuing invite invalidates its sessions, not those memberships or
-other valid sessions for the same user. `/me` deliberately lists all memberships;
-another authorized invite activation can therefore redisplay an old chat.
-Admin revocation revalidates each affected socket instead of closing valid
-sessions from other invites. Unrelated anonymous admission creates a different
-public identity and cannot recover old membership using only its public key.
-For room-wide shutdown without deletion, administrators explicitly close the
-conversation. Authenticated members retain its roster and saved local history;
-other conversations and sessions remain usable. Live messaging stays blocked
-regardless of which invite authenticates the user. Closing does not extend queued
-data retention or revoke already held plaintext. Same-process sockets receive a
-`chat_state` update; other workers observe state through their database checks and
-polling. Requests authorized before closure and small check/send races cannot be
-retracted. Late ownership-checked durable ACKs remain permitted, preserving the
-persist-before-deletion contract.
-See [lifecycle analysis and operational controls](SESSION_LIFECYCLE.md).
-WebSockets revalidate before delivery/backlog, on incoming frames and every
-30 seconds while idle. Checks cannot retract a response already authorized or
-remove the small check/send race.
-
-Optional presence snapshots revalidate recipients and query current conversation
-memberships; they expose only public participant IDs and ephemeral connection
-status to members. Online means at least one authenticated socket, not an
-unexpired session. Opted-in sockets expire after 75 seconds without an incoming
-frame; legacy sockets retain transport ping/pong cleanup. Multiple sessions are
-validated separately. No new activity records or last-seen timestamps are stored.
-The client replaces snapshots immediately outside the encrypted delivery queue,
-expires their monotonic leases within 35 seconds, and clears them on connectivity
-or authentication loss; absent or expired status is unknown. Presence is a bounded
-heartbeat observation, not proof of attention or identity. Independent workers
-must disable presence because their local registries cannot establish global
-offline status; see the [API contract](API.md#participant-presence).
-
-Presence regression coverage in `tests/test_presence.py` and
-`tests/client_ui.test.cjs` covers membership scoping/removal, legacy compatibility,
-invalid authentication, consumed invites, separate-session revocation, multiple
-connections, renewable-session expiry, disconnect/reconnect, cancelled-socket
-cleanup (including cancellation before/after initial presence publication), stale
-cleanup, replacement public identities, paused client timers,
-unknown status, malformed snapshots and delivery-queue isolation. Verification on
-2026-10-07 passed all 210 isolated Python cases (including 24 focused
-presence/authentication cases), all 118 JavaScript cases, Ruff, compilation,
-client/form syntax, release metadata, changed documentation links and diff
-whitespace checks. These checks did not verify a production rollout; browser QA
-was excluded.
-
-Renewable access defaults to 15 minutes; sessions have an absolute 30-day limit,
-capped by invite expiry. Refresh never extends the stored lifetime. Old refresh
-digests remain until session expiry for replay detection. An identical old/new
-pair may retry for 30 seconds while the successor remains current; other reuse
-revokes the session. Clients persist the proposed successor before sending it.
-Browser Web Locks coordinate rotations and outgoing retries across tabs.
-
-Admission may commit a participant slot before session issuance. Issuance
-rechecks the current user/invite and, for legacy migration, token expiry and the
-configured cutoff. Rejection does not roll back admission; keep resume credentials.
-
-Compatibility and recovery boundaries:
-
-- Legacy JWTs remain usable until expiry or `SIDEWORD_LEGACY_TOKEN_DEADLINE`.
-  They bypass per-device session revocation until then.
-- Invite resume credentials intentionally survive session revocation and allow
-  recovery into a fresh session. Revoke/delete the invite if those secrets leak.
-  This blocks recovery through that invite, not access through other live
-  sessions. Deactivate a compromised user to block its identity across chats.
-- There is no room-specific participant removal control. Invite revocation is
-  not a participant ban; conversation closure blocks live messaging for all
-  participants without changing membership. Explicit chat deletion destroys
-  server relay data but cannot erase local message history or external copies.
-
-Admin cookies are HttpOnly/SameSite=Strict and Secure on HTTPS or a configured
-HTTPS public URL. Unsafe cookie requests require CSRF and origin checks;
-foreign origins are rejected. Missing/null Origin requires same-origin Fetch
-Metadata plus CSRF, or the supported explicit-header flow described in the API.
-Cookie-free API bearer requests still require a live admin session. Persistent
-login limits use keyed hashes of account/IP identifiers; attackers can still
-cause temporary lockouts.
+The [protocol contract](PROTOCOL.md) contains the wire format and client obligations;
+the [API contract](API.md) defines authorization, delivery, and presence semantics.
 
 ## Delivery, local storage and retention
 
-Authenticate/decrypt and persist encrypted local history before durable ACK deletion.
-Actual viewing requires the active, focused, visible conversation and message
-viewport dwell; background persistence does not count as reading. Confirmations
-are authenticated recipient assertions and cannot prove human attention.
-[The API contract](API.md#durable-delivery-and-actual-viewing) defines the rule,
-original recipient binding, encrypted migration and idempotent recovery.
-Storage or key-check failures keep deliveries retryable. Exact references bind
-a random delivery ID, chat, sender/reader and client message ID. Deduplicate by
-logical identities, not SQLite row IDs; treat naive timestamps as UTC.
+Queued ciphertext and receipts are deleted after ACK/read or the configured TTL
+(default 30 days); cleanup runs at startup and hourly. Retry/confirmation metadata
+outlives ciphertext until both retry and retention deadlines permit removal.
+Viewing does not delay ciphertext deletion. Users, memberships, invite secrets,
+and configuration exports have separate lifecycles. Evidence:
+[cleanup](../app/cleanup.py), [stored data](../app/models.py),
+[message-status tests](../tests/test_message_status.py).
 
-The send ledger retains hashes, routing metadata and timestamps, not message
-plaintext or ciphertext. It includes original recipient delivery IDs and first
-delivery/viewing times, survives ACK/outbox deletion until the later of original
-retry expiry and message TTL (each defaults to 30 days), and retains the existing
-ledger quota. Ciphertext never waits for viewing. Confirmation queues remain
-bounded; overflow commits the ledger state for sender-only status recovery.
-Status queries and queued/live receipt exposure require current sender membership. Conflicting retries return 409. Pre-upgrade queued
-rows without ledger evidence reject matching IDs; already deleted older messages
-and evidence missing from backups have no retry guarantee. Do not automatically
-resend beyond a saved retry window. Legacy ACK/read matching remains ambiguous
-until disabled with `SIDEWORD_ALLOW_LEGACY_ACK=false`.
+SQLite deletion is not secure erasure of WAL/free pages, snapshots, or backups.
+The application does not encrypt database files or exported configuration;
+exported invite secrets remain sensitive. Clearing browser site data, changing
+origin, or resetting the device can permanently lose keys/history. The retired
+pre-P-256 format is not read or converted; see [upgrade/recovery guidance](UPGRADING.md).
 
-Queued ciphertext and receipts expire after the configured TTL (default 30 days)
-or are consumed by read/ACK. Cleanup runs at startup and hourly. Users, memberships,
-invite credentials/verifiers, names, last-seen times and exports persist separately.
-SQLite deletion is not secure erasure: WAL, free pages, snapshots and backups may
-retain bytes. Apply separate backup/export retention and access controls.
+## Prioritized findings and improvements
 
-Browser history uses a separate non-exportable AES key with the storage location
-as authenticated data. Clearing site data, changing origin or Reset device can
-permanently lose keys/history. A future ratchet does not protect retained plaintext
-on a compromised device. CSP blocks inline/third-party scripts, framing and
-cross-origin connections; content uses `textContent`. Non-static responses use
-no-store/no-referrer headers.
+Ratings describe residual risk under the stated trust boundaries, not demonstrated
+production exploits. **Medium** denotes material confidentiality, integrity, or
+availability impact with the prerequisite stated below; **Low** denotes a narrower
+effect. **P1** should be resolved or explicitly accepted before security-sensitive
+use; **P2** is planned hardening. Verification gaps are listed separately.
 
-Successful bundled static files may be publicly cached for one hour and are
-compressed independently of private application responses. Static redirects,
-errors, invite HTML, authenticated API data and admin responses retain no-store;
-the application does not apply gzip to private responses. Asset buffering is
-requested through `X-Accel-Buffering: yes` only for successful static responses.
-CDN operators must exclude GET/HEAD public assets from blanket bypass rules while
-respecting origin cache headers and retaining query revisions in cache keys; see
-[asset deployment controls](UPGRADING.md#public-asset-transfers). Cache purges or
-new query revisions are required when replacing previously cached code. An
-origin/CDN compromise can still replace executable client code.
-`tests/test_static_delivery.py` covers compression round trips and transfer size,
-cache scope, conditional validation, HEAD/range behavior and uncached errors and
-private responses. Local coverage does not prove production CDN configuration or
-network speed.
-Verification for 0.9.1 on 2026-10-07 passed all 251 isolated Python tests,
-including 22 static transport cases, and all 167 JavaScript tests. No production
-cache rule was changed and no rollout or browser performance evidence was obtained.
+| ID / risk / priority | Established finding and impact | Existing mitigation and next step |
+| --- | --- | --- |
+| **F-01 · Medium · P1** | **Design limit:** recipient-key compromise exposes recorded inbound messages, and the protocol has no post-compromise recovery. [Protocol implementation](../app/static/client-protocol.js). | Non-exportable keys reduce normal export exposure. Before stronger privacy claims, independently review a maintained ratcheting protocol with authenticated identity/group transitions. Require explicit migration, downgrade protection, interoperability and crash/recovery evidence. Old messages gain no retroactive forward secrecy; origin/device trust remains a separate boundary. |
+| **F-03 · Medium · P1** | **Known credential exposure paths:** invite links and legacy WebSocket authentication can place secrets in URLs/headers; request-body logging can capture activation credentials. Invite tokens are also stored in database/configuration exports. Leaked usable credentials can permit admission or disrupt delivery. [Invite navigation](../app/routers/client.py), [WebSocket authentication](../app/routers/ws.py), [exports](../app/routers/admin_export.py). | Body-based activation, first-frame WebSocket authentication, no-store/no-referrer, optional passwords, and suppressed access logs reduce exposure. Verify redaction across the entire request path and protect database/export/backup access. Plan a compatible invite handoff that reduces URL copies; revoke leaked credentials. |
+| **F-04 · Medium · P2** | **Known host-retention gap:** deployment creates database backups and rollback image tags without automatic pruning. Repeated deployments can retain sensitive state and eventually exhaust storage. [Deployment helper](../scripts/deploy.py). | Backups have private permissions. Registry cleanup has [a separate policy](../scripts/artifact-cleanup.json) and does not prune host copies. Define and verify host retention that preserves the active image and an agreed recovery backup/image; test cleanup and restore before deleting recovery material. |
+| **F-05 · Low · P2** | **Known password-input limitation:** admin password hashing and verification silently truncate UTF-8 input to 72 bytes; creation/bootstrap do not reject overlength input. [Password helpers](../app/security.py), [admin creation](../scripts/create_admin.py), [bootstrap](../app/admin_setup.py). | Private administration and login throttling limit exposure. Reject unsupported new inputs with a clear byte-length rule, or plan a compatible hashing migration. Verify creation, login, and reset boundaries without unexpectedly invalidating existing accounts. |
+| **F-06 · Low · P2** | **Partial supply-chain reproducibility:** dependency ranges, the base-image tag, and action version tags can resolve to different inputs on later builds. This is not evidence of a vulnerable dependency. [Requirements](../requirements.txt), [Dockerfile](../Dockerfile), [CI](../.github/workflows/test.yml). | Immutable deployment digests preserve the already-checked build. [Dependabot](../.github/dependabot.yml) schedules pip/action updates. Record resolved build inputs and establish recurring advisory review; dependency compatibility checks alone are not vulnerability scans. |
 
-Opening a different invite pauses the old chat in that tab until explicit
-activation; other tabs continue. Keys, encrypted history and pending sends remain.
-Records are scoped by participant public ID for later authorized reconnects.
-The last activated invite/room is stored with the session, and routine identity
-writes preserve newer session/invite state from another tab. Switching invites
-is not a privacy wipe; Reset device explicitly clears local storage.
-The latest protected invite is saved encrypted in the same tab for up to 24 hours;
-closing the tab or clearing browser data can lose it.
+## Verification record and gaps
 
-Backend 0.6.0 intentionally replaces the test encryption format without backwards
-support. The browser uses `sideword-test-client-p256`; prior device data is neither
-read nor automatically deleted. Reset device clears only the new database.
-Old server records are not converted or erased, and old credentials are rejected
-independently of JWT/refresh expiry. Create new rooms/invites and reverify new
-fingerprints; do not treat a new participant public ID as a verified old identity.
+Verification on 2026-10-08 covers source/configuration inspection, repository
+references, Python regressions, Node client regressions, lint, and compilation.
+Session regressions reject unregistered JWTs across HTTP/WebSocket/admission,
+require activation credentials before database writes, exercise revocation/expiry
+at issuance, and confirm removed deletion routes preserve queued messages.
+Browser adapter tests cover retired-login handling without key/history deletion.
+Suites use isolated databases and Node adapters, not a live browser. These checks
+do not verify third-party client migration or certify a production installation;
+no production configuration or deployment was changed for this release.
 
-The browser checks the saved identity after committing admission credentials and
-before sending activation. An absent IndexedDB record permits new setup; a null
-deserialization result or null saved key is treated as unreadable storage. Reads
-wait for transaction completion, and failed reads do not release session state.
-Unreadable records cannot be replaced by a new identity; startup failures remain
-visible on the join form. Renewal distinguishes missing/unreadable storage from
-an actual changed participant/public key and does not renew either case.
-
-P-256 removes the dependency on the key type affected by the reported
-[WebKit persistence bug](https://bugs.webkit.org/show_bug.cgi?id=312279).
-The storage preflight remains and rejects failed round trips before admission;
-it does not repair browser storage or recover inaccessible keys. The reported
-user-device failure has not been directly reproduced in a browser. Node adapters
-verify the null-read failure path and native P-256 key cloning/usage, not the
-underlying WebKit implementation. There is no exportable-key fallback. Actual
-Safari/iOS persistence and chat behavior remain a release-QA requirement.
-
-## Deployment and recovery obligations
-
-Use the [upgrade/recovery guide](UPGRADING.md) for the procedure. In particular:
-
-- Keep admin/schema routes private for both HTTP and WebSocket upgrades. Only
-  trust known proxy IPs; configure public TLS, HSTS and credential-log suppression.
-- Supplement per-process HTTP/WS limits with gateway and host resource limits.
-  Database quotas/login counters are shared. Admission password verification holds
-  a SQLite write reservation; admin password hashing runs off the event loop.
-  Rate limits bound cost but do not guarantee availability against distributed
-  traffic, slow peers or exhausted unauthenticated quotas.
-- Restoring a backup also restores authentication state. Rotate the signing
-  secret, remove restored refresh/client/admin sessions, and reapply later invite
-  revocations, user deactivations and password resets before reopening access.
-  Recovery cannot reconstruct missing send evidence or subsequent policy changes.
-
-## Remaining work and closure criteria
-
-| Work | Completion evidence needed |
+| Unverified area | Evidence needed to establish the property |
 | --- | --- |
-| Retire legacy session/delivery modes | Verify every supported client uses renewable sessions/exact ACKs, then configure `SIDEWORD_LEGACY_TOKEN_DEADLINE` and `SIDEWORD_ALLOW_LEGACY_ACK=false`. Deployment of these controls has not been verified here. |
-| Deployment hardening | Verify actual proxy trust, TLS/HSTS, private routes, logging, backup protection and resource limits for every intended deployment. |
-| Operator recovery drill | Restore an isolated copy of the operator's backup and verify credential invalidation, authorized reconnects and retained delivery state. Automated fixtures do not verify infrastructure or historical server/client rollback. |
-| Broader verification | Real-browser QA and independent security review; separately track dependency/advisory review, penetration testing and load testing. Browser automation was excluded from this work. |
-| Stronger encryption | A separately reviewed protocol migration for forward secrecy and post-compromise recovery; requirements below. |
+| Runtime isolation and configuration | Per-installation review of proxy trust, TLS/HSTS, public HTTP/WS route blocking, log redaction, IAM/federation restrictions, secret handling, storage permissions, and resource limits. Source configuration alone cannot establish these. |
+| Recovery | An isolated operator-backup restore with signing-key rotation, removal of restored sessions/refresh state, and reapplication of later revocations/resets. [Restore tests](../tests/test_session_recovery.py) cover fixtures, not the operator's backups or historical rollback. |
+| Browser/native interoperability | Real-device key persistence, recovery after interrupted storage/refresh, and message exchange. Node/OpenSSL checks do not verify Safari/iOS storage or native-client interoperability. |
+| Dependency and independent assessment | Current resolved Python/OS/container advisory review, confirmation of repository security settings, and appropriately scoped independent cryptographic/security assessment. No current comprehensive advisory scan or penetration/load assessment is established here. |
 
-Close a specific issue when its agreed fixes and acceptance checks pass. Keep
-the remaining tasks separately tracked; issue closure is not security certification.
+## Reporting and upkeep
 
-For a future protocol, evaluate maintained implementations of
-[Signal's Double Ratchet](https://signal.org/docs/specifications/doubleratchet/)
-with authenticated asynchronous setup, and [MLS](https://www.rfc-editor.org/rfc/rfc9420.html)
-for groups. [libsignal](https://github.com/signalapp/libsignal) and
-[OpenMLS](https://github.com/openmls/openmls) are candidates, not dependencies.
-Recheck releases, advisories, audit scope, licensing and browser/native support
-before selection. Switching primitives alone does not add a ratchet; sealed
-boxes also omit sender authentication.
+Use [SECURITY.md](../SECURITY.md) for supported versions and private vulnerability
+reporting. Confirmed vulnerabilities requiring disclosure belong in coordinated
+[GitHub security advisories](https://docs.github.com/en/code-security/concepts/vulnerability-reporting-and-management/repository-security-advisories);
+this public review must not contain secrets, private deployment details, or exploit
+instructions.
 
-Require authenticated version negotiation and identity transitions, no silent
-downgrade, crash-consistent key/history/ACK state, persistent outgoing ciphertext,
-bounded skipped keys and cross-language test vectors. Group upgrades need member
-agreement, authenticated membership epochs and defined leaving-member access.
-For a future production upgrade, define preservation of the current P-256 receive
-format and local history during an explicit transition. Dual-encrypting new
-messages with this format does not provide ratchet security. This requirement
-does not add support for the retired pre-0.6.0 test format.
-Review upgrade/rollback before rollout: never reset ratchet state or reuse keys.
-Old messages gain no retroactive forward secrecy.
-
-## Latest verification record
-
-- **Conversation closure, 2026-10-08:** prepared 0.10.0 passed all 265 isolated
-  Python tests on Python 3.13 and all 172 JavaScript tests, plus Ruff, compilation,
-  client/link-form syntax, whitespace, affected documentation links and release
-  section validation. New cases cover other-invite sessions, stale-client sends,
-  archive/queue preservation, new-invite transitions, reconnects, live push and
-  presence suppression, late durable ACKs, explicit own-outbox deletion,
-  reopening, export/import validation and isolated additive migration. Client
-  regressions retain encrypted history/non-exportable storage keys and pause
-  ciphertext retries without blocking other rooms. Public listener tests include
-  the new private admin paths. A local restart verified 0.10.0 health on both
-  listeners, the Close route, blocked public administration, the additive
-  migration and preserved conversation/participant counts. No production
-  rollout or browser evidence was obtained. A read-only production check
-  confirmed the supplied invite was revoked; the deleted identity's former
-  session cannot be reconstructed.
-
-- **Invite/session lifecycle, 2026-10-08:** 0.9.2 passed all 256 isolated Python
-  tests on Python 3.13 and all 168 JavaScript tests, plus Ruff, compilation,
-  client/link-form syntax, whitespace and affected documentation link checks.
-  New cases cover revocation/expiry followed by unrelated admission, genuine
-  saved resume/refresh rejection, identity-wide membership through another live
-  session, bidirectional old-room delivery, mixed-session admin revocation and
-  reconnects. Local history/device preservation is covered without browser use.
-  No production state, Windows/browser behavior, rollout or independent audit
-  evidence was obtained; the exact reported historical sequence remains unverified.
-
-- **Presence cancellation follow-up, 2026-10-07:** CI exposed cancellation during
-  authenticated WebSocket setup, outside the previous receive-loop cleanup guard.
-  One shielded finalizer now covers every successfully registered connection,
-  including hello/backlog/presence initialization and authentication-session exit.
-  It removes only that socket and publishes refreshed, authorized peer snapshots;
-  cancellation still propagates after cleanup. Deterministic regressions pause
-  setup before and after initial presence publication and verify offline updates,
-  registry cleanup and continued observer ping/presence behavior. Local Python
-  3.13 validation passed 229 isolated tests and 30 cancellation cases across ten
-  independent runs, with Ruff, compilation, whitespace and release-note checks.
-  Linux/Python 3.12 CI and production rollout were outside this local verification.
-
-- **Message confirmations, 2026-10-07:** implementation separates durable delivery
-  and visibility-based viewing, retains original recipient identities and stores
-  immutable receipt metadata encrypted in browser history. Focused regressions
-  cover partial groups, identity matching, concurrent acknowledgements, legacy
-  semantics, expiry, queue pressure, authorization, WS/poll recovery, encrypted
-  reload/tab merges and accessible desktop/mobile message details. Prior full local
-  validation passed 226 isolated Python and 150 JavaScript cases, Ruff, compilation,
-  client/form syntax, whitespace and release-note checks. New encrypted metadata
-  uses hashed event keys so recipient bindings stay inside encrypted values.
-  Mixed-version client regressions passed for fresh capability negotiation,
-  deletion-only durable ACKs, retained viewing intents and rejection of implicit
-  legacy-read fallback. Orange double checks now require at least one actual read
-  confirmation; group labels expose the read count and recovery continues for
-  remaining original recipients. Follow-up regressions passed for a single
-  confirmed reader with other recipients pending, continued group status recovery
-  and legacy automatic-read rejection. The presence cancellation follow-up below
-  supersedes the earlier backend cancellation coverage.
-  The messaging layout keeps technical IDs out of ordinary message headers and
-  uses bubble visibility, rather than header visibility, for the viewing dwell.
-  Timestamp formatting changes only presentation, preserving UTC history order.
-  Messaging UI regressions passed 12 Python template and 167 JavaScript cases,
-  Ruff, client syntax, whitespace and release-note checks. They cover merged SVG
-  state transitions, compact staggered checks, matching metadata text sizes, sender
-  grouping, short/multiline/long content preservation, final-line status space,
-  local timezone/locale formatting, viewport placement, mobile keyboard access,
-  backdrop/Escape closure and focus restoration. Bubble layout uses shared theme
-  rules and preserves the status control's focus/click behavior and hit area.
-  Browser rendering and real assistive-technology behavior remain unverified;
-  no browser was used.
-
-- **Client redesign, 2026-10-07:** non-browser regressions cover full participant
-  values/copying, duplicate names, local-pin terminology, visible changed-key
-  blocks (including during a send), native dialog opening/focus restoration,
-  mobile view/draft preservation, viewport resizing, appearance persistence/OS
-  changes, unchanged errors, pending retries and reset safeguards. Entry regressions
-  cover slow saved identity/history reads without activation-form flashes, fresh
-  devices, visible storage errors and all invite statuses/personal/group/password
-  guidance. Admin sign-in matches its original template exactly. Integration checks
-  cover inline alerts, preserved admin CSRF/fields and bundled fonts under the
-  client CSP. The full redesign run passed 199 isolated Python and 105 JavaScript
-  cases; subsequent affected checks passed all 94 client JavaScript cases and 26
-  Python template/smoke/release cases. The unchanged non-client JavaScript results
-  remain valid. Ruff, compilation, script syntax, documentation links and
-  whitespace passed. Read-only local HTTP checks confirm the running server
-  serves the updated client/invite pages and original admin sign-in without a restart.
-  Mobile header controls retain accessible names, decorative icons and 40px touch
-  targets; connection/security labels stay visible. Desktop styling is preserved.
-  Mobile navigation/scroll regressions model hidden zero-size message panels and
-  clamped scroll ranges, selected-chat reloads using encrypted history (including
-  offline restoration), latest-message opening/reopening, Back-view restoration,
-  foreign/malformed/unavailable navigation state and continued invite activation.
-  Polling and viewport changes preserve older reading positions while active.
-  Existing error mappings and error strings were compared with the base source
-  and are unchanged. Browser rendering, real keyboard/assistive technology
-  behavior and WCAG conformance have not been independently verified.
-- **Unchanged protocol protections, 2026-10-07:** previously passing dependency,
-  compilation and regression checks remain valid. Coverage includes native point
-  validation, independent OpenSSL encryption/decryption, non-exportable keys,
-  malformed and retired-key rejection, blocked mixed rooms, failed-storage
-  admission and import rejection before replace-mode mutation. No browser
-  verification was performed; Docker was unavailable for a local container build.
-  Current client error regressions verify HTTP explanations,
-  private validation-value filtering, unknown exceptions,
-  storage/encryption failures and retained refresh proposals after a lost response.
-- **Release automation:** version/notes validation, workflow configuration,
-  Bash syntax and nine mocked publication scenarios passed locally, including
-  outdated commits, existing releases, conflicting tags and command failures.
-  Repository permissions and remote publication were not verified in that local
-  review.
-- **Coverage:** crypto interoperability/tampering, key pinning, persistence failures,
-  exact delivery and retry races, CSRF/admin revocation, client refresh/issuance
-  boundaries, isolated restore scenarios, transport limits and invite navigation.
-  Activation regressions cover body-token validation privacy, invalid bearer
-  rejection without slot allocation, HTTP rejection despite the disabled global
-  TLS guard, loopback/spoofed-header boundaries, and body-route retries sharing
-  identity, sessions and capacity. Removed path routes return 404 without
-  admission or resumption and are absent from OpenAPI. Node checks verify that activation retries
-  keep the token in JSON and preserve saved credentials after a rejected bearer.
-  Group-label regressions cover polling/live delivery, matching chat rosters,
-  duplicate names, unnamed fallbacks, text-only rendering, persistence before
-  acknowledgement, and encrypted history reload without a roster.
-  Follow-up regressions cover the rendered script URL, peer-name preservation,
-  existing history relabeling without node replacement or acknowledgement, and
-  malformed/other-chat history fallback.
-  History-scroll regressions cover hidden-panel rendering, encrypted startup
-  history with unavailable synchronization, and preserving an older reading position.
-  Storage regressions cover committed reads, transaction aborts, non-exportable
-  key round trips, WebKit-style null reads, partial null keys, preserving unreadable
-  records, missing versus changed devices, blocked admission before network activity,
-  retained admission proposals, successful retry after storage recovery, and inline startup errors.
-- **Deployment, 2026-10-07:** deployed 0.7.0 from exact commit `9876830` after
-  successful CI and automatic promotion. The prior live version was 0.6.0; this
-  rollout required no key or room migration. A verified SQLite backup and the
-  previous image were retained before activation. Read-only checks confirmed
-  container/public HTTPS health, exact image revision, matching client assets
-  and fonts, updated invite landing, no-store/CSP/no-referrer headers, and public
-  admin/schema blocking for HTTP and WebSocket upgrades. Private admin sign-in
-  remained available with its original form. Environment, private Compose
-  configuration and persistent mounts were unchanged; database integrity and
-  user/chat/admin counts were preserved. Application logging remains disabled,
-  and no OOM kill was reported. No production message exchange or browser QA was
-  performed. The local development service was not restarted.
-- **Limits:** tests use isolated databases and Node adapters for browser storage,
-  not a live browser. They do not establish native interoperability, production
-  configuration, penetration/load-test results, a full dependency audit or a
-  cryptographic proof.
-
-For future updates, replace the current status and latest verification record
-when new evidence exists. Keep unresolved boundaries and acceptance criteria;
-put release history in the changelog instead of appending development diaries.
+Update the baseline, affected evidence, and current finding status together.
+Close a finding only with verified remediation or a documented, scoped risk
+acceptance; retain unresolved limits and replace superseded evidence. Follow the
+risk-based vulnerability response principles in
+[NIST SSDF](https://csrc.nist.gov/pubs/sp/800/218/final). Keep release history in
+[CHANGELOG.md](../CHANGELOG.md), rather than appending audit diaries here.

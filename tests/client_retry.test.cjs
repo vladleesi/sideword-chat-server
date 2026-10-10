@@ -494,3 +494,30 @@ test('concurrent tabs reuse persisted refresh proposals after a lost response', 
   assert.equal(state.refreshCredential, requests[1].next_credential);
   assert.equal(state.pendingRefreshCredential, undefined);
 });
+
+test('retired sessions pause without migration requests or losing saved device keys', async () => {
+  let saved = { token: 'retired-access', publicId: 'alice', publicKey: 'public-key',
+    privateKey: { device: true }, storageKey: { history: true },
+    activationCredentials: { invite: 'saved-resume' } };
+  let requests = 0;
+  const run = client({
+    navigator: { locks: { request: async (_name, action) => action() } },
+    load: async () => structuredClone(saved),
+    save: async value => { saved = structuredClone(value); },
+    fetch: async () => { requests++; throw new Error('must not request migration'); },
+  });
+  await run(`(async () => {
+    identity = await load(); readIdentity = load; writeIdentity = save;
+    clearPresence = refreshVisibleReads = updateSessionCountdown = updateIdentityUi = () => {};
+    elements.inviteToken.focus = () => {};
+    window.clearTimeout = window.clearInterval = () => {};
+  })()`);
+  await assert.rejects(run('ensureFreshSession()'), /retired session format/);
+  assert.equal(requests, 0);
+  assert.equal(saved.token, null);
+  assert.equal(saved.suspendedToken, 'retired-access');
+  assert.deepEqual(saved.privateKey, { device: true });
+  assert.deepEqual(saved.storageKey, { history: true });
+  assert.deepEqual(saved.activationCredentials, { invite: 'saved-resume' });
+  assert.equal(saved.pendingRefreshCredential, undefined);
+});

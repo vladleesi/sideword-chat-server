@@ -138,6 +138,7 @@ async def _run() -> None:
                 "/api/v1/links/activate",
                 json={
                     "token": pt,
+                    "session_credential": secrets.token_urlsafe(32),
                     "public_key": base64.b64encode(alice_pub).decode(),
                     "display_name": "Alice",
                 },
@@ -151,6 +152,7 @@ async def _run() -> None:
                 "/api/v1/links/activate",
                 json={
                     "token": pt,
+                    "session_credential": secrets.token_urlsafe(32),
                     "public_key": base64.b64encode(bob_pub).decode(),
                     "display_name": "Bob",
                 },
@@ -163,6 +165,7 @@ async def _run() -> None:
             r = await c.post(
                 "/api/v1/links/activate",
                 json={"token": pt,
+                      "session_credential": secrets.token_urlsafe(32),
                       "public_key": base64.b64encode(public_key()).decode()},
             )
             assert r.status_code in (410, 404)
@@ -201,8 +204,10 @@ async def _run() -> None:
 
             # ---------- Bob marks read ----------
             r = await c.post(
-                f"/api/v1/chats/{chat_id}/read",
-                json={"client_message_ids": ["m-1"]},
+                f"/api/v1/chats/{chat_id}/read/exact",
+                json={"messages": [{field: msg[field] for field in (
+                    "delivery_id", "chat_id", "sender_public_id", "client_message_id",
+                )}]},
                 headers={"Authorization": f"Bearer {bob_token}"},
             )
             assert r.status_code == 200, r.text
@@ -230,8 +235,10 @@ async def _run() -> None:
 
             # Alice ACKs → receipt row disappears server-side.
             r = await c.post(
-                "/api/v1/ack",
-                json={"read_ids": [receipt["id"]]},
+                "/api/v1/ack/exact",
+                json={"receipts": [{field: receipt[field] for field in (
+                    "delivery_id", "chat_id", "reader_public_id", "client_message_id",
+                )}]},
                 headers={"Authorization": f"Bearer {alice_token}"},
             )
             assert r.status_code == 200
@@ -246,6 +253,7 @@ async def _run() -> None:
                     "/api/v1/links/activate",
                     json={
                         "token": gt,
+                        "session_credential": secrets.token_urlsafe(32),
                         "public_key": base64.b64encode(pk).decode(),
                         "display_name": f"User{i}",
                     },
@@ -331,6 +339,7 @@ async def _run() -> None:
             r = await c.post(
                 "/api/v1/links/activate",
                 json={"token": "no-such-token",
+                      "session_credential": secrets.token_urlsafe(32),
                       "public_key": base64.b64encode(public_key()).decode()},
             )
             assert r.status_code == 404

@@ -43,6 +43,7 @@ def activate(client, token):
     response = client.post("/api/v1/links/activate", json={
         "token": token,
         "public_key": base64.b64encode(public_key()).decode(),
+        "session_credential": secrets.token_urlsafe(32),
         "display_name": "Test participant",
     })
     assert response.status_code == 200
@@ -65,6 +66,7 @@ def test_restore_full_link_restores_access_without_allowing_third_user(client):
     assert client.post("/api/v1/links/activate", json={
         "token": token,
         "public_key": base64.b64encode(public_key()).decode(),
+        "session_credential": secrets.token_urlsafe(32),
     }).status_code == 410
 
 

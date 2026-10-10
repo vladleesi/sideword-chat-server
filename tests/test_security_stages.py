@@ -6,6 +6,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
+import jwt
 import pytest
 from fastapi.testclient import TestClient as RawClient
 from sqlalchemy import delete, func, select
@@ -15,7 +16,8 @@ from test_exact_delivery import room as _room
 from app.config import get_settings
 from app.db import SessionLocal
 from app.main import create_app
-from app.models import ClientSession, LoginLimit, PendingMessage, RefreshUse, SendRecord
+from app.models import ClientSession, Link, LoginLimit, PendingMessage, RefreshUse, SendRecord
+from app.security import decode_client_token
 
 room = _room
 
@@ -112,13 +114,56 @@ def test_byte_quota_does_not_remove_previously_queued_rows(room, monkeypatch):
     assert asyncio.run(unchanged()) == 1
 
 
-def test_legacy_ack_can_be_retired(room, monkeypatch):
+def test_removed_deletion_routes_cannot_consume_queued_messages(room):
     client, users = room()
-    monkeypatch.setattr(get_settings(), "allow_legacy_ack", False)
-    assert client.post("/api/v1/ack", headers=headers(users[0]), json={}).status_code == 410
-    assert client.post(f"/api/v1/chats/{users[0]['chat']['id']}/read",
-                       headers=headers(users[0]), json={"client_message_ids": ["x"]}
-                       ).status_code == 410
+    assert upload(client, users).status_code == 200
+    message = poll(client, users[1])["messages"][0]
+    assert client.post("/api/v1/ack", headers=headers(users[1]), json={
+        "message_ids": [message["id"]],
+    }).status_code == 404
+    assert client.post(f"/api/v1/chats/{message['chat_id']}/read",
+                       headers=headers(users[1]), json={
+                           "client_message_ids": [message["client_message_id"]],
+                       }).status_code == 404
+    assert poll(client, users[1])["messages"] == [message]
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/api/v1/ack" not in paths
+    assert "/api/v1/chats/{chat_id}/read" not in paths
+    assert "post" not in paths["/api/v1/sessions"]
+    assert client.post("/api/v1/sessions", headers=headers(users[0]), json={
+        "credential": secrets.token_urlsafe(32),
+    }).status_code == 405
+    assert client.post("/api/v1/ack/exact", headers=headers(users[1]), json={
+        "messages": [reference(message)],
+    }).json()["deleted_messages"] == 1
+
+
+@pytest.mark.parametrize("session_claim", ["missing", None, "", 123, [], {}, "unknown", "foreign"])
+def test_unregistered_tokens_rejected_across_http_ws_and_activation(room, session_claim):
+    client, users = room()
+    claims = decode_client_token(users[0]["token"])
+    if session_claim == "missing":
+        claims.pop("sid")
+    else:
+        claims["sid"] = (decode_client_token(users[1]["token"])["sid"]
+                         if session_claim == "foreign" else session_claim)
+    token = jwt.encode(claims, get_settings().secret_key, algorithm="HS256")
+    denied = {"token": token}
+    assert client.get("/api/v1/me", headers=headers(denied)).status_code == 401
+    assert client.get("/api/v1/poll", headers=headers(denied)).status_code == 401
+    async def invite():
+        async with SessionLocal() as session:
+            link = await session.get(Link, claims["lid"])
+            return link.token, link.uses_count
+    invite_token, before = asyncio.run(invite())
+    assert client.post("/api/v1/links/activate", headers=headers(denied), json={
+        "token": invite_token, "public_key": users[0]["user"]["public_key"],
+        "session_credential": secrets.token_urlsafe(32),
+    }).status_code == 401
+    assert asyncio.run(invite())[1] == before
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth_error"
 
 
 def csrf(client):
@@ -194,8 +239,15 @@ def test_no_referrer_login_forms_require_same_origin_metadata_and_csrf(origin):
                            follow_redirects=False).status_code == 303
 
 
-def bootstrap(client, user, credential):
-    return client.post("/api/v1/sessions", headers=headers(user), json={"credential": credential})
+def activate_session(client, user, credential):
+    claims = decode_client_token(user["token"])
+    async def invite():
+        async with SessionLocal() as session:
+            return (await session.get(Link, claims["lid"])).token
+    return client.post("/api/v1/links/activate", headers=headers(user), json={
+        "token": asyncio.run(invite()), "public_key": user["user"]["public_key"],
+        "session_credential": credential,
+    })
 
 
 def rotate(client, old, new):
@@ -205,9 +257,10 @@ def rotate(client, old, new):
 def test_refresh_lost_responses_retry_and_replay_revokes_http_and_ws(room):
     client, users = room()
     old, new = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-    first = bootstrap(client, users[0], old)
+    first = activate_session(client, users[0], old)
     assert first.status_code == 200
-    assert bootstrap(client, users[0], old).json()["session_id"] == first.json()["session_id"]
+    retried = activate_session(client, users[0], old)
+    assert retried.json()["session_id"] == first.json()["session_id"]
     rotated = rotate(client, old, new)
     assert rotated.status_code == 200
     assert rotate(client, old, new).status_code == 200
@@ -220,22 +273,22 @@ def test_refresh_lost_responses_retry_and_replay_revokes_http_and_ws(room):
         assert ws.receive_json()["type"] == "auth_error"
 
 
-def test_device_revocation_and_legacy_sunset(room, monkeypatch):
+def test_device_revocation_preserves_other_registered_sessions(room):
     client, users = room()
     old = secrets.token_urlsafe(32)
-    issued = bootstrap(client, users[0], old).json()
+    issued = activate_session(client, users[0], old).json()
     url = "/api/v1/sessions/" + issued["session_id"]
     assert client.delete(url, headers=headers(users[1])).status_code == 404
     assert client.delete(url, headers=headers({"token": issued["token"]})).status_code == 200
     assert rotate(client, old, secrets.token_urlsafe(32)).status_code == 401
-    monkeypatch.setattr(get_settings(), "legacy_token_deadline", datetime.now(timezone.utc))
-    assert client.get("/api/v1/me", headers=headers(users[0])).status_code == 401
+    assert client.get("/api/v1/me", headers=headers(issued)).status_code == 401
+    assert client.get("/api/v1/me", headers=headers(users[0])).status_code == 200
 
 
 def test_refresh_after_grace_revokes_and_hashes_only_are_stored(room):
     client, users = room()
     old, new = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-    issued = bootstrap(client, users[0], old).json()
+    issued = activate_session(client, users[0], old).json()
     assert rotate(client, old, new).status_code == 200
     async def expire():
         async with SessionLocal() as session:

@@ -93,9 +93,6 @@ def test_closure_blocks_other_invite_sessions_and_preserves_archives_and_queues(
         assert client.post(f"/api/v1/chats/{cid}/messages/status", headers=headers(user), json={
             "client_message_ids": ["retained-before-close"],
         }).status_code == 410
-        assert client.post(f"/api/v1/chats/{cid}/read", headers=headers(user), json={
-            "client_message_ids": ["retained-before-close"],
-        }).status_code == 410
         assert client.post(f"/api/v1/chats/{cid}/read/exact", headers=headers(user), json={
             "messages": [reference(delivered)], "viewed": True,
         }).status_code == 410
@@ -149,7 +146,8 @@ def test_closed_room_rejects_new_joins_but_allows_saved_participant_archive_reco
     alice = activate(client, token)
     cid = alice["chat"]["id"]
     change(client, cid, "close")
-    payload = {"token": token, "public_key": base64.b64encode(public_key()).decode()}
+    payload = {"token": token, "public_key": base64.b64encode(public_key()).decode(),
+               "session_credential": secrets.token_urlsafe(32)}
     response = client.post("/api/v1/links/activate", json=payload)
     assert response.status_code == 410
     assert response.json()["detail"] == "conversation closed"

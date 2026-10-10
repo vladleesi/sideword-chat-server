@@ -1,3 +1,3 @@
 """Backend release version, independent of API and encryption protocol versions."""
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"

@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import get_settings
 from ..db import get_session
 from ..deps import resolve_client_user
 from ..invite_security import require_secure_transport, resume_digest
 from ..models import User
 from ..schemas import LinkActivateRequest, LinkActivateResponse, _decode_b64
-from ..security import create_client_token
 from ..services import activate_link, load_chat_info, user_to_participant
 from .sessions import digest, issue
 
@@ -43,19 +39,14 @@ async def activate(
     authorization: str | None = Header(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> LinkActivateResponse:
-    # Even unprotected invites exchange bearer credentials, including the JWT
-    # returned by legacy activation. Never let a development toggle expose them.
+    # Even unprotected invites exchange bearer credentials. Never let a
+    # development toggle expose them.
     require_secure_transport(request, "Invite activation requires HTTPS (or local loopback).")
     resume_digest(
         payload.resume_credential.get_secret_value()
         if payload.resume_credential is not None else None,
     )
-    deadline = get_settings().legacy_token_deadline
-    if (payload.session_credential is None and deadline is not None
-            and datetime.now(timezone.utc) >= deadline.replace(tzinfo=timezone.utc)):
-        raise HTTPException(410, "renewable session credential required")
-    if payload.session_credential is not None:
-        digest(payload.session_credential.get_secret_value())
+    digest(payload.session_credential.get_secret_value())
     # SELECT FOR UPDATE is ignored by SQLite. Acquire its write reservation
     # before any auth/membership reads, also across multiple server processes.
     await session.execute(text("BEGIN IMMEDIATE"))
@@ -82,12 +73,12 @@ async def activate(
     )
 
     chat_info = await load_chat_info(session, chat)
-    if payload.session_credential is not None:
-        await session.commit()
-        credentials = await issue(
-            session, user, link.id, payload.session_credential.get_secret_value())
-    else:
-        credentials = {"token": create_client_token(user.id, user.public_id, link.id)}
+    await session.commit()
+    credentials = await issue(
+        session, user, link.id, payload.session_credential.get_secret_value(),
+        authorization_token=authorization.split(" ", 1)[1].strip()
+        if authorization is not None else None,
+    )
     return LinkActivateResponse(
         **credentials,
         user=user_to_participant(user),

@@ -192,12 +192,12 @@
       <div class="developer-grid">
         <div class="api-copy">
           <ol class="api-points">
-            <li>Activate an invite and receive a bearer JWT.</li>
+            <li>Activate an invite with a persisted session credential and receive a renewable session.</li>
             <li>Send per-recipient encrypted envelopes over HTTP.</li>
             <li>Receive messages over WebSocket or HTTP polling.</li>
             <li>Persist locally, then acknowledge exact delivery.</li>
           </ol>
-          <p class="muted">OpenAPI is available at <code>/docs</code> on your local administration listener. Clients must agree on an authenticated encryption format.</p>
+          <p class="muted">OpenAPI is available at <code>/docs</code> on your local administration listener. Use registered sessions and exact acknowledgements; legacy authentication and ambiguous deletion are removed in 0.11.0. Clients must agree on an authenticated encryption format.</p>
         </div>
         <div class="code-panel">
           <div class="code-heading"><span>HTTP + WEBSOCKET</span><span>API V1</span></div>

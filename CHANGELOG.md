@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.0 — 2026-10-08
+
+- Require registered renewable client sessions for activation, HTTP and WebSocket authentication; remove legacy JWT issuance, migration and compatibility settings.
+- Remove ambiguous row-ID acknowledgements and client-message-ID reads; clients must use exact delivery references.
+- Recheck authenticated session expiry and revocation before issuing a new session; preserve saved browser keys and history when retired logins are rejected.
+
 ## 0.10.0 — 2026-10-08
 
 - Add reversible conversation closure that blocks new joins, sends, queued delivery and presence through every session while preserving memberships, local history and pending messages.

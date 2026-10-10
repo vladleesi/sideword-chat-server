@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -37,7 +36,6 @@ class Settings(BaseSettings):
         description="Directory for JSON configuration exports.",
     )
 
-    jwt_ttl_hours: int = Field(default=24 * 30, ge=1)
     admin_session_ttl_hours: int = Field(default=12, ge=1)
     message_ttl_days: int = Field(default=30, ge=1)
     max_ciphertext_bytes: int = Field(default=64 * 1024, ge=128)
@@ -59,24 +57,12 @@ class Settings(BaseSettings):
     require_https: bool = True
     private_admin: bool = True
     trusted_proxy_ips: str = "127.0.0.1"
-    allow_legacy_ack: bool = True
-    legacy_token_deadline: datetime | None = None
     client_access_minutes: int = Field(default=15, ge=1, le=60)
     client_session_days: int = Field(default=30, ge=1, le=365)
     refresh_retry_seconds: int = Field(default=30, ge=1, le=120)
 
     admin_username: str | None = Field(default=None)
     admin_password: str | None = Field(default=None)
-
-    @field_validator("legacy_token_deadline")
-    @classmethod
-    def _utc_deadline(cls, value: datetime | None) -> datetime | None:
-        from datetime import timezone
-        if value is not None:
-            if value.tzinfo is None:
-                raise ValueError("legacy token deadline must include a timezone")
-            return value.astimezone(timezone.utc)
-        return None
 
     @field_validator("trusted_proxy_ips")
     @classmethod

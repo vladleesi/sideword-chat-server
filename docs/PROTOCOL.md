@@ -150,10 +150,9 @@ concurrent requests. Store acceptance, per-recipient receipts, viewing intent an
 ACK markers as encrypted history metadata, not timeline messages. Legacy receipt
 entries remain available as hidden delivery evidence; they cannot confirm viewing.
 
-The legacy `/ack` takes row IDs and `/read` takes client message IDs. Delayed
-ACKs can race row-ID reuse, and colliding client message IDs from different group
-senders are ambiguous to legacy `/read`. They remain supported for existing
-clients; new clients must not fall back to them. Persist outgoing ciphertext before
+Row-ID `/ack` and client-message-ID `/read` are removed in backend 0.11.0.
+Clients must use exact delivery references and must not fall back to ambiguous
+deletion. Persist outgoing ciphertext before
 upload and retry the same envelopes within the [server retry window](API.md#send-retries-and-capacity).
 Delivery IDs do not authenticate relay metadata or prevent malicious relay replay.
 The browser uses an encrypted outbox and Web Locks across tabs; browser-independent

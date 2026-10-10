@@ -34,6 +34,7 @@ def room():
                 response = client.post("/api/v1/links/activate", json={
                     "token": token,
                     "public_key": base64.b64encode(public_key()).decode(),
+                    "session_credential": secrets.token_urlsafe(32),
                 })
                 assert response.status_code == 200
                 users.append(response.json())

@@ -9,13 +9,12 @@ import pytest
 from anyio import sleep_forever
 from csrf_client import TestClient
 from starlette.websockets import WebSocketDisconnect
-from test_ws_auth import _create_websocket_user
+from test_ws_auth import _create_websocket_user, _websocket_token
 
 from app.db import SessionLocal
 from app.main import create_app
 from app.models import Chat, ChatMember, ChatType, ClientSession, Link, User
 from app.routers.sessions import issue
-from app.security import create_client_token
 from app.ws_manager import HEARTBEAT_TIMEOUT_SECONDS, ConnectionManager, manager
 
 
@@ -58,9 +57,8 @@ async def room():
 @contextmanager
 def connect(client, user, link, *, presence=True, token=None):
     with client.websocket_connect("/ws", subprotocols=["sideword.v1"]) as ws:
-        ws.send_json({"type": "auth", "token": token or create_client_token(
-            user.id, user.public_id, link.id
-        ), "presence": presence})
+        ws.send_json({"type": "auth", "token": token or _websocket_token(user, link),
+                      "presence": presence})
         assert ws.receive_json()["type"] == "hello"
         yield ws
 

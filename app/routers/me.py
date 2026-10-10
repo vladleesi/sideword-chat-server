@@ -35,15 +35,13 @@ async def me(
         if expiry.tzinfo is None:
             expiry = expiry.replace(tzinfo=timezone.utc)
         expiry = min(expiry, datetime.fromtimestamp(payload["exp"], timezone.utc))
-    session_expiry = expiry
-    if payload.get("sid"):
-        record = await session.get(ClientSession, payload["sid"])
-        if record is None:
-            raise HTTPException(401, "session unavailable")
-        session_expiry = record.expires_at.replace(tzinfo=timezone.utc)
-        if link and link.expires_at:
-            session_expiry = min(session_expiry, link.expires_at.replace(tzinfo=timezone.utc))
-        expiry = min(expiry, session_expiry)
+    record = await session.get(ClientSession, payload["sid"])
+    if record is None:
+        raise HTTPException(401, "session unavailable")
+    session_expiry = record.expires_at.replace(tzinfo=timezone.utc)
+    if link and link.expires_at:
+        session_expiry = min(session_expiry, link.expires_at.replace(tzinfo=timezone.utc))
+    expiry = min(expiry, session_expiry)
     return MeResponse(
         user=user_to_participant(user),
         chats=info,

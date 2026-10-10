@@ -1,12 +1,11 @@
-"""Opt-in renewable sessions with hashed credentials and bounded retry grace."""
+"""Renewable sessions with hashed credentials and bounded retry grace."""
 
 import hashlib
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
-import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, SecretStr
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +15,7 @@ from ..db import get_session
 from ..deps import get_current_user, resolve_client_user
 from ..message_keys import valid_public_key
 from ..models import ClientSession, Link, RefreshUse, User
-from ..security import create_client_token, decode_client_token
+from ..security import create_client_token
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
@@ -45,7 +44,7 @@ def response(record, link):
     }
 
 
-async def issue(session, user, link_id, credential, *, legacy_token=None):
+async def issue(session, user, link_id, credential, *, authorization_token=None):
     hashed = digest(credential)
     user_id, public_id = user.id, user.public_id
     await session.execute(text("BEGIN IMMEDIATE"))
@@ -59,9 +58,10 @@ async def issue(session, user, link_id, credential, *, legacy_token=None):
             or link is None or link.is_deleted or link.revoked_at is not None
             or (link.expires_at is not None and utc(link.expires_at) <= now)):
         raise HTTPException(401, "session unavailable")
-    # A legacy JWT may expire or reach the operator's sunset while waiting for
-    # the write reservation. It must still authorize migration at issuance.
-    if legacy_token is not None and await resolve_client_user(session, legacy_token) is None:
+    # Authenticated admission must remain authorized after waiting for the
+    # write reservation, including expiry or per-device revocation.
+    if (authorization_token is not None
+            and await resolve_client_user(session, authorization_token) is None):
         raise HTTPException(401, "invalid or revoked session")
     previous = await session.scalar(select(ClientSession).where(
         ClientSession.refresh_hash == hashed))
@@ -91,28 +91,9 @@ async def issue(session, user, link_id, credential, *, legacy_token=None):
     return response(record, link)
 
 
-class Bootstrap(BaseModel):
-    credential: SecretStr
-
-
 class Refresh(BaseModel):
     credential: SecretStr
     next_credential: SecretStr
-
-
-@router.post("")
-async def bootstrap(payload: Bootstrap, authorization: str = Header(...),
-                    user: User = Depends(get_current_user),
-                    session: AsyncSession = Depends(get_session)):
-    token = authorization.split(" ", 1)[1].strip()
-    try:
-        claims = decode_client_token(token)
-    except jwt.InvalidTokenError as exc:
-        raise HTTPException(401, "invalid or revoked session") from exc
-    if "sid" in claims:
-        raise HTTPException(409, "session already renewable")
-    return await issue(session, user, int(claims["lid"]), payload.credential.get_secret_value(),
-                       legacy_token=token)
 
 
 @router.post("/refresh")

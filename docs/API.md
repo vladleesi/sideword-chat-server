@@ -5,8 +5,8 @@ schema. Send JSON bodies with `Content-Type: application/json`. After activation
 HTTP API requests require `Authorization: Bearer <JWT>`.
 
 For password-protected rooms, include `password` in activation. Persist a random
-`resume_credential` before the first activation request so retries reuse the same
-participant slot. See [activation rules](#activate-link) for room limits,
+`resume_credential` and a separate `session_credential` before the first activation
+request so retries reuse the same participant slot/session. See [activation rules](#activate-link) for room limits,
 passwords and access expiry, and [invites and chats](../README.md#invites-and-chats)
 for browser use.
 
@@ -63,12 +63,16 @@ Share passwords separately from invite links.
 
 `display_name` is optional; include `password` for protected rooms. The response
 contains a client JWT, user identity, and chat participants. `session_credential`
-opts into [renewable sessions](#renewable-client-sessions), adding the session ID
-and deadline fields described there; omitting it uses legacy activation until sunset.
+is required for [renewable sessions](#renewable-client-sessions), including the
+session ID and deadline fields described there. Missing/null credentials return
+422 before admission; JWTs without a registered session ID return 401.
 
 ```text
 {
   "token": "<client JWT>",
+  "session_id": "<registered session ID>",
+  "access_expires_at": "<UTC access deadline>",
+  "session_expires_at": "<UTC absolute session deadline>",
   "user": { "public_id": "...", "public_key": "...", "key_fingerprint": "..." },
   "chat": {
     "id": 1,
@@ -317,14 +321,11 @@ After ACK, rows are gone from the server. SQLite row IDs may be reused: deduplic
 messages by chat, sender, and client message ID; receipts additionally include
 the original message delivery ID and confirmation stage. Treat timestamps without a timezone as UTC when ordering history.
 
-Legacy `POST /api/v1/ack` with `message_ids`/`read_ids` and
-`POST /api/v1/chats/{chat_id}/read` with `client_message_ids` remain supported.
-They retain their ambiguous matching: delayed ACKs can target reused row IDs,
-and legacy reads can match different group senders sharing a client message ID.
-Set `SIDEWORD_ALLOW_LEGACY_ACK=false` after migrating clients to return 410
-from legacy deletion endpoints. Sends now deduplicate within the retry window
-described below. Use a fresh client message ID for each logical message. Stolen bearer tokens can still
-delete their owner's deliveries through either API.
+`POST /api/v1/ack` and `POST /api/v1/chats/{chat_id}/read` are removed in
+0.11.0 and return 404. Clients must use exact delivery references; no compatibility
+setting restores ambiguous deletion. Sends deduplicate within the retry window
+described below. Use a fresh client message ID for each logical message. Stolen
+bearer tokens can still delete their owner's deliveries through the exact API.
 
 ## Drop own undelivered messages
 
@@ -382,16 +383,15 @@ WS supports 256 connections/process, 4/user/process, 4 KiB inbound frames and
 
 ## Renewable client sessions
 
-On activation, optionally include `session_credential`: 32 random bytes encoded
+On activation, include the required `session_credential`: 32 random bytes encoded
 as 43 unpadded base64url characters, persisted before the request. The response
-adds `session_id`, `access_expires_at`, and `session_expires_at`. Identical initial
-credentials can retry a lost activation response before their first rotation.
-The browser opts in. A valid legacy JWT can instead POST `/api/v1/sessions` with
-`{"credential":"<persisted-random-secret>"}` to migrate; registered sessions
-cannot use that endpoint to extend their absolute lifetime.
-Issuance rechecks the current participant identity, active state, and invite under
-the database write reservation, including retries of an existing credential.
-Migration also rechecks the legacy JWT expiry and configured sunset at that point.
+includes `session_id`, `access_expires_at`, and `session_expires_at`. Identical
+initial credentials can retry a lost activation response before their first rotation.
+All client access JWTs require a live registered session. `POST /api/v1/sessions`
+is removed (405); session listing and revocation remain available at that prefix.
+Issuance rechecks the current participant identity, active state, invite, and any
+supplied authenticated session under the database write reservation, including
+retries of an existing credential.
 A validity change after admission/authentication returns 401 without issuing a
 new session; admission may already have committed the participant slot.
 
@@ -404,8 +404,8 @@ its successor is current. Any other reuse of a known consumed credential revokes
 the session. Never replace a pending proposal merely because a response was lost.
 Access defaults to 15 minutes; the absolute session lifetime defaults to 30 days
 and never extends on refresh. Refresh after that deadline requires invite recovery.
-New session lifetimes are capped by the invite expiry at issuance. Activation,
-migration and refresh responses cap both deadline fields by the current invite
+New session lifetimes are capped by the invite expiry at issuance. Activation
+and refresh responses cap both deadline fields by the current invite
 expiry, including sessions created by earlier releases. Extending an invite does
 not extend a session's stored lifetime.
 
@@ -415,10 +415,11 @@ checks. `/me` reports `access_expires_at` and `session_expires_at`; access ends 
 the earliest JWT, session or invite deadline. Consumed/sealed invites still permit valid session refresh;
 revoked, deleted, expired invites and inactive users do not.
 
-An optional UTC `LEGACY_TOKEN_DEADLINE` rejects old JWTs and activation without a
-session credential after that date. Until then, legacy JWTs still authorize
-operations independently of per-device session revocation. Invite resume secrets
-also remain separate: revoke the invite if those credentials are compromised.
+Legacy client JWTs and activation without a session credential are unsupported.
+The retired `JWT_TTL_HOURS`, `LEGACY_TOKEN_DEADLINE`, and `ALLOW_LEGACY_ACK`
+settings have no effect and should be removed from runtime configuration.
+Invite resume secrets remain separate: revoke the invite if those credentials
+are compromised.
 This does not invalidate sessions issued through other invites or remove chat
 membership; deactivate a compromised identity to block its access across chats.
 

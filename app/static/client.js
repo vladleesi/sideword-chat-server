@@ -750,14 +750,15 @@ async function ensureFreshSession(force = false) {
     identity = stored;
     if ((!force || identity.token !== previousToken) && identity.refreshCredential
         && Date.now() < identity.tokenExpiresAt - 60000) return;
-    const migrating = !identity.refreshCredential;
+    if (!identity.refreshCredential) {
+      await invalidateSession("This saved login uses a retired session format; reopen its invite to recover access");
+    }
     identity.pendingRefreshCredential ||= randomCredential();
     await writeIdentity(identity, true); // Keep the proposed rotation if the response/save is lost.
-    const response = await fetchClient(migrating ? "/api/v1/sessions" : "/api/v1/sessions/refresh", {
+    const response = await fetchClient("/api/v1/sessions/refresh", {
       method: "POST", cache: "no-store",
-      headers: { "Content-Type": "application/json", ...(migrating
-        ? { Authorization: `Bearer ${identity.token}` } : {}) },
-      body: JSON.stringify(migrating ? { credential: identity.pendingRefreshCredential } : {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
         credential: identity.refreshCredential, next_credential: identity.pendingRefreshCredential,
       }),
     });

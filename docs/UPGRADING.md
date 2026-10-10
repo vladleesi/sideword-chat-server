@@ -65,7 +65,7 @@ SQLite 3.35+ is required for atomic read deletion/receipt creation.
 | Invite navigation (0.3.3) | Reload the client. A different invite shows its join form and pauses that tab's background activity; activation selects its room. Same invite or `/client` resumes the saved room. Older identities show the form once for an explicit URL. Keys/history/outbox remain scoped to their participant identity for later reconnects. |
 | Activation hardening (0.4.0) | Deploy the backend and bundled client together; update custom clients to send the invite token in the JSON body of `POST /api/v1/links/activate`. The old path-based route is removed and returns 404, with no fallback or redirect. Existing identities, memberships, resume credentials and sessions remain usable; no schema or key migration. Activation requires HTTPS or local loopback even with the global TLS check disabled. Supplied invalid bearer headers return 401; remove the rejected header explicitly to retry with saved resume credentials. The bundled client preserves device/admission state for retry. Suppress/redact invite landing URLs and request bodies at every logging layer. |
 | P-256 test protocol (0.6.0, breaking) | Upgrade every backend worker and client together, including the new `cryptography` dependency. Retire old rooms/invites and issue new ones; clients start fresh P-256 identities and verify fingerprints again. `/api/v1` and envelope `v: 1` stay, with a new algorithm/context and validated 65-byte public keys. Old clients cannot authenticate or renew; old rooms cannot admit P-256 members; old exports containing retired keys cannot be imported. There is no ciphertext/key conversion or old-format receive support. The prior browser database and server records are not automatically deleted. Key persistence is checked before admission, and unreadable records in the new store are preserved. |
-| Message confirmations (0.9.0) | Startup adds `read_receipts.message_delivery_id` and `send_records.receipt_state_json` without replacing existing rows. Deploy backend and bundled client together; reload clients for the new opt-in ACK/viewing fields and status API. Older clients retain their legacy deletion/read contracts. A new client talking to an older backend uses deletion-only exact ACKs and disables unsupported delivery/viewing requests until a fresh `/me` advertises support; missing confirmations stay unconfirmed. Restart old backend processes to enable the full feature, even when static client files already changed. No key or session migration. Original recipient sets survive roster changes; existing auto-read history becomes hidden delivery evidence, not proof of viewing. The ledger now retains per-recipient confirmation metadata until the later of original retry expiry and message TTL; retry expiry itself is unchanged. Backups retain this metadata and require the same private retention controls. |
+| Message confirmations (0.9.0) | Startup adds `read_receipts.message_delivery_id` and `send_records.receipt_state_json` without replacing existing rows. Deploy backend and bundled client together; reload clients for the new opt-in ACK/viewing fields and status API. Exact deletion-only acknowledgements remain available; ambiguous deletion routes are removed in 0.11.0. A new client talking to an older backend uses deletion-only exact ACKs and disables unsupported delivery/viewing requests until a fresh `/me` advertises support; missing confirmations stay unconfirmed. Restart old backend processes to enable the full feature, even when static client files already changed. No key or session migration. Original recipient sets survive roster changes; existing auto-read history becomes hidden delivery evidence, not proof of viewing. The ledger now retains per-recipient confirmation metadata until the later of original retry expiry and message TTL; retry expiry itself is unchanged. Backups retain this metadata and require the same private retention controls. |
 
 Backend release, HTTP API and encryption envelope versions are independent.
 The 0.6.0 replacement changes the test ciphertext format; it does not introduce
@@ -77,19 +77,28 @@ for archival/explicit rollback, and test any rollback offline before reopening a
 
 ## Retire legacy clients
 
-After deploying the server protections:
+Backend 0.11.0 removes legacy JWT issuance/acceptance, `POST /api/v1/sessions`
+migration, and the ambiguous `/ack` and `/chats/{chat_id}/read` routes. There is no
+compatibility switch. Database rows, encryption keys, and delivery IDs are retained.
 
-1. Confirm every supported client uses renewable sessions and exact ACK/read.
-   Verify persisted refresh proposals, duplicate-send handling, offline recovery
-   and concurrent tabs in release QA.
-2. Set `SIDEWORD_ALLOW_LEGACY_ACK=false` and a fixed UTC
-   `SIDEWORD_LEGACY_TOKEN_DEADLINE`. Until then, legacy tokens bypass per-device
-   revocation and legacy deletion endpoints retain ambiguous matching.
-3. Keep saved invite resume credentials for authorized recovery. Session revocation
-   does not revoke them; revoke/delete the invite if they are compromised.
-   Other live sessions for the same identity retain its memberships; deactivate
-   a compromised user to block identity-wide access. Invite revocation is not
-   room termination; see [lifecycle controls](SESSION_LIFECYCLE.md).
+1. Before upgrading, update supported clients to persist a session credential on
+   activation, use renewable sessions, and send exact ACK/read references. The
+   bundled client already does this. Verify refresh retries, offline recovery,
+   and concurrent tabs in release QA; third-party client compatibility is not
+   established by this repository's tests.
+2. Existing registered sessions continue to work. Devices with only a legacy JWT
+   must recover through their still-authorized invite and saved resume credential.
+   The bundled client pauses a retired login while preserving keys/history.
+   Without a valid registered session or saved resume credential, the original
+   membership cannot be recovered with a public key alone; create a fresh identity
+   through an authorized invite. Keep old device data for local-history access.
+3. Remove `SIDEWORD_JWT_TTL_HOURS`, `SIDEWORD_ALLOW_LEGACY_ACK`, and
+   `SIDEWORD_LEGACY_TOKEN_DEADLINE` from private runtime configuration; they have
+   no effect. Restart/deploy only after reviewing the compatibility impact.
+4. Session revocation does not revoke saved invite resume credentials; revoke/delete
+   their invite if compromised. Other live sessions retain identity memberships;
+   deactivate a compromised user to block identity-wide access. Invite revocation
+   is not room termination; see [lifecycle controls](SESSION_LIFECYCLE.md).
 
 Do not shorten the send retry window for existing outboxes without resolving them:
 clients retain their original deadlines. Queued data, retry/session records and
@@ -111,9 +120,10 @@ credentials revoked after the snapshot. Before reopening access:
    Admins log in again; clients recover through still-authorized saved invite
    credentials.
 
-Both steps 2 and 3 are necessary: key rotation alone leaves refresh credentials
-usable, and session removal alone leaves legacy JWTs usable. Invite resume
-credentials and restored passwords remain valid unless separately changed.
+Key rotation alone leaves restored refresh credentials usable. Removing the
+registered sessions invalidates their access JWTs and refresh credentials; rotating
+the signing key also retires the restored signing secret. Invite resume credentials
+and restored passwords remain valid unless separately changed.
 
 Full backups preserve delivery IDs and existing send evidence, but may contain
 already-acknowledged deliveries. Clients must deduplicate local history before

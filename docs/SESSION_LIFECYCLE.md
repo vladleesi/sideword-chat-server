@@ -116,7 +116,7 @@ key lifecycle and authenticated membership changes; see
 ## Regression coverage
 
 `tests/test_invite_lifecycle.py` covers revoked/expired issuing credentials,
-legacy and renewable authentication, saved resume/refresh rejection, unrelated
+registered-session authentication, saved resume/refresh rejection, unrelated
 invites, both participants exchanging old-room messages through other authorized
 sessions, preserved membership/queued ciphertext, and admin revocation with mixed
 valid/invalid sockets and reconnects. `tests/client_retry.test.cjs` covers the

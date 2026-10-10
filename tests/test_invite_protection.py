@@ -47,6 +47,7 @@ def join_payload(**fields):
         "public_key": base64.b64encode(public_key()).decode(),
         "password": PASSWORD,
         "resume_credential": secrets.token_urlsafe(32),
+        "session_credential": secrets.token_urlsafe(32),
         **fields,
     }
 
@@ -97,6 +98,29 @@ def test_body_activation_retries_share_identity_sessions_and_capacity(client):
     assert join(client, link, join_payload(password=None)).status_code == 410
     assert join(client, link, alice, headers={"Authorization": "Bearer invalid"}).status_code == 401
     assert state(link)[:3] == (2, 2, False)
+
+
+@pytest.mark.parametrize("credential", ["missing", None])
+def test_activation_requires_session_credential_before_admission(client, monkeypatch, credential):
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    link, _ = create_invite(client, password_mode="none")
+    payload = join_payload(password=None)
+    if credential == "missing":
+        payload.pop("session_credential")
+    else:
+        payload["session_credential"] = credential
+
+    async def forbidden_execute(*args, **kwargs):
+        pytest.fail("missing session credential must not access the database")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AsyncSession, "execute", forbidden_execute)
+        response = join(client, link, payload)
+    assert response.status_code == 422
+    assert "token" not in response.json()
+    assert payload["resume_credential"] not in response.text
+    assert state(link) == (0, 0, True, 0)
 
 
 @pytest.mark.parametrize("suffix", ["", "/"])
@@ -335,13 +359,9 @@ def test_https_and_validation_response_privacy(client):
     assert state(link)[:2] == (0, 0)
 
 
-@pytest.mark.parametrize("credentials", [False, True])
-def test_unprotected_activation_requires_https_even_when_globally_disabled(client, credentials):
+def test_unprotected_activation_requires_https_even_when_globally_disabled(client):
     link, _ = create_invite(client, password_mode="none")
-    payload = join_payload(password=None, resume_credential=None)
-    if credentials:
-        payload.update(resume_credential=secrets.token_urlsafe(32),
-                       session_credential=secrets.token_urlsafe(32))
+    payload = join_payload(password=None)
     with TestClient(create_app(), base_url="http://testserver") as insecure:
         response = join(insecure, link, payload, headers={"X-Forwarded-Proto": "https"})
     assert response.status_code == 400
@@ -452,7 +472,8 @@ def test_export_import_preserves_protection_and_resume(client):
     })
     assert response.status_code == 200
     assert join(client, exported, join_payload(password="wrong")).status_code == 403
-    resumed = join(client, exported, {**alice, "password": None})
+    resumed = join(client, exported, {**alice, "password": None,
+                                      "session_credential": secrets.token_urlsafe(32)})
     assert resumed.status_code == 200
     assert resumed.json()["user"]["public_id"] == first["user"]["public_id"]
     exported["password_hash"] = None
@@ -503,6 +524,7 @@ def test_existing_jwt_cannot_bypass_another_rooms_password(client):
     alice = join_payload(password=None)
     first = join(client, first_link, alice).json()
     protected_link, _ = create_invite(client)
+    alice["session_credential"] = secrets.token_urlsafe(32)
     auth = {"Authorization": f"Bearer {first['token']}"}
     assert join(client, protected_link, alice, headers=auth).status_code == 403
     assert state(protected_link)[:2] == (0, 0)
@@ -510,7 +532,7 @@ def test_existing_jwt_cannot_bypass_another_rooms_password(client):
                 headers=auth).status_code == 200
 
 
-def test_legacy_authenticated_member_can_add_retry_credential(client):
+def test_authenticated_member_can_add_retry_credential(client):
     link, _ = create_invite(client, password_mode="none")
     alice = join_payload(password=None)
     first = join(client, link, {**alice, "resume_credential": None}).json()

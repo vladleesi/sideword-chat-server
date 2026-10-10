@@ -8,7 +8,6 @@ import jwt
 from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .config import get_settings
 from .db import get_session
 from .message_keys import valid_public_key
 from .models import Admin, AdminSession, ClientSession, Link, User
@@ -48,16 +47,14 @@ async def resolve_client_user(session: AsyncSession, token: str) -> User | None:
         if expiry <= datetime.now(timezone.utc):
             return None
     now = datetime.now(timezone.utc)
-    if "sid" in payload:
-        record = await session.get(ClientSession, payload["sid"])
-        if (record is None or record.revoked or record.user_id != user.id
-                or record.public_id != user.public_id or record.link_id != link.id
-                or record.expires_at.replace(tzinfo=timezone.utc) <= now):
-            return None
-    else:
-        deadline = get_settings().legacy_token_deadline
-        if deadline is not None and now >= deadline.replace(tzinfo=timezone.utc):
-            return None
+    session_id = payload["sid"]
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    record = await session.get(ClientSession, session_id)
+    if (record is None or record.revoked or record.user_id != user.id
+            or record.public_id != user.public_id or record.link_id != link.id
+            or record.expires_at.replace(tzinfo=timezone.utc) <= now):
+        return None
     return user
 
 

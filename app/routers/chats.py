@@ -31,12 +31,10 @@ from ..models import (
     User,
 )
 from ..schemas import (
-    AckRequest,
     ChatInfo,
     ExactAckRequest,
     ExactMarkReadRequest,
     IncomingMessage,
-    MarkReadRequest,
     MessageReference,
     MessageStatusRequest,
     MessageStatusResponse,
@@ -291,73 +289,6 @@ async def poll(
     _: int = Query(default=0, description="optional cache-buster"),
 ) -> PollResponse:
     return await _fetch_poll(session, user)
-
-
-@router.post("/ack")
-async def ack(
-    payload: AckRequest,
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, int]:
-    """Confirm local persistence so rows can be deleted on the server."""
-
-    if not _settings.allow_legacy_ack:
-        raise HTTPException(410, "use /ack/exact")
-    deleted_messages = 0
-    deleted_receipts = 0
-    if payload.message_ids:
-        res = await session.execute(
-            delete(PendingMessage).where(
-                and_(
-                    PendingMessage.recipient_id == user.id,
-                    PendingMessage.id.in_(payload.message_ids),
-                )
-            )
-        )
-        deleted_messages = res.rowcount or 0
-    if payload.read_ids:
-        res = await session.execute(
-            delete(ReadReceipt).where(
-                and_(
-                    ReadReceipt.sender_id == user.id,
-                    ReadReceipt.id.in_(payload.read_ids),
-                )
-            )
-        )
-        deleted_receipts = res.rowcount or 0
-    await session.commit()
-    return {"deleted_messages": deleted_messages, "deleted_receipts": deleted_receipts}
-
-
-@router.post("/chats/{chat_id}/read")
-async def mark_read(
-    chat_id: int,
-    payload: MarkReadRequest,
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, int]:
-    """Mark inbound ciphertext as read.
-
-    Rows are deleted on the server while senders receive receipts via poll/ws;
-    receipts themselves are removed after the sender ACKs them.
-    """
-
-    if not _settings.allow_legacy_ack:
-        raise HTTPException(410, "use /read/exact")
-    chat = await ensure_chat_member(session, chat_id, user)
-
-    # Match pending rows for this chat/recipient and the given client_message_ids.
-    result = await session.execute(
-        delete(PendingMessage)
-        .where(
-            PendingMessage.chat_id == chat.id,
-            PendingMessage.recipient_id == user.id,
-            PendingMessage.client_message_id.in_(payload.client_message_ids),
-        )
-        .returning(PendingMessage)
-    )
-    msgs = list(result.scalars().all())
-    return await _finish_read(session, user, msgs)
 
 
 def _message_match(ref: MessageReference):

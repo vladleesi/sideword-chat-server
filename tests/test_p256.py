@@ -12,7 +12,7 @@ from message_key_fixtures import public_key
 from sqlalchemy import select
 from test_exact_delivery import headers
 from test_exact_delivery import room as _room
-from test_security_stages import bootstrap
+from test_security_stages import activate_session
 
 from app.db import SessionLocal
 from app.message_keys import valid_public_key
@@ -43,6 +43,7 @@ def test_invalid_points_rejected_before_allocating_an_invite_slot(room, value):
     assert not valid_public_key(value)
     response = client.post("/api/v1/links/activate", json={
         "token": token, "public_key": encoded(value),
+        "session_credential": secrets.token_urlsafe(32),
     })
     assert response.status_code == 422
     assert asyncio.run(create())[1] == count
@@ -51,7 +52,7 @@ def test_invalid_points_rejected_before_allocating_an_invite_slot(room, value):
 def test_retired_device_cannot_authenticate_renew_or_join_and_new_device_cannot_mix_curves(room):
     client, users = room(2)
     credential = secrets.token_urlsafe(32)
-    response = bootstrap(client, users[0], credential)
+    response = activate_session(client, users[0], credential)
     assert response.status_code == 200
     renewable = response.json()
     async def state(key=None):
@@ -69,7 +70,7 @@ def test_retired_device_cannot_authenticate_renew_or_join_and_new_device_cannot_
     try:
         assert client.get("/api/v1/me", headers=headers(users[0])).status_code == 401
         assert client.get("/api/v1/me", headers=headers(renewable)).status_code == 401
-        assert bootstrap(client, users[0], secrets.token_urlsafe(32)).status_code == 401
+        assert activate_session(client, users[0], secrets.token_urlsafe(32)).status_code == 401
         assert client.post("/api/v1/sessions/refresh", json={
             "credential": credential, "next_credential": secrets.token_urlsafe(32),
         }).status_code == 401
@@ -79,6 +80,7 @@ def test_retired_device_cannot_authenticate_renew_or_join_and_new_device_cannot_
         assert asyncio.run(resolve_socket()) is None
         response = client.post("/api/v1/links/activate", json={
             "token": token, "public_key": encoded(public_key()),
+            "session_credential": secrets.token_urlsafe(32),
         })
         assert response.status_code == 409
         assert "new invite" in response.json()["detail"]

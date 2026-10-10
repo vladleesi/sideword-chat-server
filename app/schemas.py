@@ -37,7 +37,7 @@ class LinkActivateRequest(BaseModel):
     display_name: str | None = Field(default=None, max_length=64)
     password: SecretStr | None = None
     resume_credential: SecretStr | None = None
-    session_credential: SecretStr | None = None
+    session_credential: SecretStr
 
     @field_validator("public_key")
     @classmethod
@@ -66,9 +66,9 @@ class ChatInfo(BaseModel):
 
 class LinkActivateResponse(BaseModel):
     token: str = Field(..., description="Client JWT; send as Authorization: Bearer.")
-    session_id: str | None = None
-    access_expires_at: datetime | None = None
-    session_expires_at: datetime | None = None
+    session_id: str
+    access_expires_at: datetime
+    session_expires_at: datetime
     user: ParticipantInfo
     chat: ChatInfo
 
@@ -143,15 +143,6 @@ class PollResponse(BaseModel):
     messages: list[IncomingMessage]
     read_receipts: list[IncomingReadReceipt]
     delivery_receipts: list[IncomingReadReceipt] = Field(default_factory=list)
-
-
-class AckRequest(BaseModel):
-    message_ids: list[int] = Field(default_factory=list, max_length=500)
-    read_ids: list[int] = Field(default_factory=list, max_length=500)
-
-
-class MarkReadRequest(BaseModel):
-    client_message_ids: list[str] = Field(..., min_length=1, max_length=500)
 
 
 class MessageReference(BaseModel):
@@ -327,8 +318,6 @@ __all__ = [
     "IncomingMessage",
     "IncomingReadReceipt",
     "PollResponse",
-    "AckRequest",
-    "MarkReadRequest",
     "AdminLinkCreate",
     "AdminLinkOut",
     "AdminUserOut",
