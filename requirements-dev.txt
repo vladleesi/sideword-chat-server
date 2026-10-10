@@ -1,6 +1,6 @@
 -r requirements.txt
 
 # Test and local verification tools.
-httpx>=0.28,<0.29
+httpx>=0.28.1,<0.29
 pytest>=8.3,<10
 ruff>=0.9,<1
