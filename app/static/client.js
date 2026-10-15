@@ -41,6 +41,7 @@ const elements = {
   sendButton: document.querySelector("#send-button"),
   setupPanel: document.querySelector("#setup-panel"),
   status: document.querySelector("#status-message"),
+  waitingNotice: document.querySelector("#waiting-notice"),
 };
 
 let identity = null;
@@ -1465,12 +1466,19 @@ function selectChat(chatId, openAtLatest = false) {
     : "";
   if (elements.keyWarning.textContent !== warningText) elements.keyWarning.textContent = warningText;
   renderParticipantDetails(chat);
-  const canSend = Boolean(chat && !chat.closed_at && !chat.participants.some(item => item.key_changed)
-    && chat.participants.some((item) => item.public_id !== identity.publicId));
+  const hasPeers = Boolean(chat?.participants.some(item => item.public_id !== identity.publicId));
+  const waitingForPeer = Boolean(chat && !chat.closed_at && !changedKey && !hasPeers);
+  const canSend = Boolean(chat && !chat.closed_at && !changedKey && hasPeers);
+  elements.waitingNotice.hidden = !waitingForPeer;
   elements.messageInput.disabled = !canSend;
+  elements.messageInput.placeholder = waitingForPeer ? "Waiting for another participant…" : "Write a message";
   elements.sendButton.disabled = !canSend;
   document.querySelector("#composer-help").textContent = chat?.closed_at
-    ? "Conversation closed. Saved history is kept; messaging is paused." : "Shift+Enter to send";
+    ? "Conversation closed. Saved history is kept; messaging is paused."
+    : changedKey ? "Messaging is blocked because a participant's encryption key changed."
+    : waitingForPeer ? "Sending is unavailable until another participant joins."
+    : !chat ? "Select a conversation to send a message."
+    : "Enter to send · Shift+Enter for a new line";
   renderChats();
   renderMessages(openAtLatest);
   if (canSend && changedChat && !elements.detailsDialog.open && !elements.deviceDialog.open
@@ -1982,7 +1990,7 @@ elements.activationForm.addEventListener("submit", async (event) => {
 });
 
 elements.messageInput.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter" || !event.shiftKey || event.isComposing
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing
       || event.ctrlKey || event.altKey || event.metaKey) return;
   event.preventDefault();
   if (event.repeat || elements.messageInput.disabled || elements.sendButton.disabled) return;

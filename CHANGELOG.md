@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.0 — 2026-10-15
+
+- Send messages with Enter and insert a new line with Shift+Enter in the test client; preserve composition input and prevent repeated key presses from submitting twice.
+- Explain when a conversation is waiting for another participant, why sending is disabled, and how messaging becomes available while keeping saved history visible.
+
 ## 0.11.1 — 2026-10-09
 
 - Recover stalled WebSocket connections with bounded connection/authentication waits and capped, randomized retries; release sockets on offline events and navigation, and reconnect restored pages.

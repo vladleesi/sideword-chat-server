@@ -66,6 +66,15 @@ def test_client_retains_controls_accessibility_and_separate_mobile_views():
     assert tree.by_id("message-list")["attrs"]["role"] == "log"
     assert tree.by_id("message-list")["attrs"]["aria-live"] == "polite"
     assert tree.by_id("message-input")["attrs"]["maxlength"] == "16000"
+    waiting = tree.by_id("waiting-notice")
+    assert "hidden" in waiting["attrs"]
+    assert waiting["attrs"]["role"] == "status"
+    assert waiting["attrs"]["aria-live"] == "polite"
+    assert waiting["attrs"]["aria-atomic"] == "true"
+    assert "waiting-notice" in tree.by_id("message-input")["attrs"]["aria-describedby"].split()
+    assert "You're the only person in this conversation." in html
+    assert "once someone else joins using a room invite." in html
+    assert "Enter to send · Shift+Enter for a new line" in html
     assert tree.by_id("display-name-error")["attrs"]["role"] == "alert"
     assert tree.by_id("error-message")["attrs"]["role"] == "alert"
     for identifier, name in (("device-settings-button", "Device settings"),

@@ -94,6 +94,9 @@ h3 { font-size: .9rem; font-weight: 600; }
 .conversation-meta { display: flex; flex-wrap: wrap; gap: .3rem .75rem; margin-top: .15rem; color: var(--muted); font-size: .75rem; }
 #conversation-details-button { flex-shrink: 0; }
 .security-warning { padding: .65rem 1rem; background: var(--warning-bg); color: var(--danger); border-bottom: 1px solid var(--danger); font-size: .85rem; flex-shrink: 0; overflow-wrap: anywhere; }
+.waiting-notice { flex-shrink: 0; margin: 1rem 1rem 0; padding: .85rem 1rem; border: 1px solid var(--border); border-radius: 2px; background: var(--surface); font-size: .875rem; overflow-wrap: anywhere; }
+.waiting-notice strong { display: block; margin-bottom: .35rem; font-weight: 500; }
+.waiting-notice p { color: var(--muted); }
 /* Metadata stays outside the lightweight, content-sized bubbles. */
 .message-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; display: flex; flex-direction: column; padding: 1.25rem max(1.25rem, calc((100% - 860px) / 2)); }
 .message-list > * { flex-shrink: 0; }

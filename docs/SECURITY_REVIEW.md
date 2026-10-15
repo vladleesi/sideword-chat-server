@@ -136,6 +136,12 @@ establish authenticated end-to-end delivery through an operator's complete proxy
 chain or verify third-party client migration. No production configuration or
 deployment was changed for this release.
 
+Client UI follow-up (2026-10-15, backend 0.12.0): Node adapter regressions cover
+Enter/Shift+Enter handling, composition and repeated-key safeguards, and waiting
+for another participant without replacing saved history or overriding closure
+and key-change blocks. Python template checks cover the accessible waiting
+notice. This does not extend the security assessment above or add browser evidence.
+
 | Unverified area | Evidence needed to establish the property |
 | --- | --- |
 | Runtime isolation and configuration | Per-installation review of proxy trust, TLS/HSTS, public HTTP/WS route blocking, log redaction, IAM/federation restrictions, secret handling, storage permissions, and resource limits. Source configuration alone cannot establish these. |

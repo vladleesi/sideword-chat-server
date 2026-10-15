@@ -486,17 +486,107 @@ test('mobile chat selection, back navigation and polling preserve the selected v
   assert.equal(app.nodes.get('#client-panel').dataset.mobileView, 'chats');
 });
 
-test('Shift+Enter sends once and other Enter combinations preserve input', () => {
+test('Enter sends once while Shift+Enter and composition preserve native input', () => {
   const app = client();
   const input = app.nodes.get('#message-input');
   const form = app.nodes.get('#message-form');
-  for (const extra of [{ shiftKey: false }, { shiftKey: true, isComposing: true },
-    { shiftKey: true, ctrlKey: true }, { shiftKey: true, repeat: true }]) {
-    input.emit('keydown', { key: 'Enter', preventDefault() {}, ...extra });
-    assert.equal(form.submittedWith, undefined);
+  let submissions = 0;
+  form.requestSubmit = button => {
+    assert.equal(button, app.nodes.get('#send-button'));
+    submissions++;
+  };
+  input.value = 'unfinished\nmessage';
+  for (const extra of [{ shiftKey: true }, { isComposing: true }, { ctrlKey: true },
+    { altKey: true }, { metaKey: true }, { key: 'a' }]) {
+    let prevented = false;
+    input.emit('keydown', { key: 'Enter', preventDefault() { prevented = true; }, ...extra });
+    assert.equal(prevented, false);
+    assert.equal(submissions, 0);
+    assert.equal(input.value, 'unfinished\nmessage');
   }
-  input.emit('keydown', { key: 'Enter', shiftKey: true, preventDefault() {} });
-  assert.equal(form.submittedWith, app.nodes.get('#send-button'));
+  for (const repeat of [false, true, true]) {
+    let prevented = false;
+    input.emit('keydown', { key: 'Enter', repeat, preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(submissions, 1);
+  }
+  for (const control of [input, app.nodes.get('#send-button')]) {
+    control.disabled = true;
+    input.emit('keydown', { key: 'Enter', preventDefault() {} });
+    assert.equal(submissions, 1);
+    control.disabled = false;
+  }
+  assert.match(app.nodes.get('#composer-help').textContent, /Enter to send.*Shift\+Enter for a new line/);
+});
+
+for (const chatType of ['group', 'personal']) {
+  test(`${chatType} conversation explains waiting for a peer and enables sending after roster refresh`, async () => {
+    const app = client();
+    app.run(`chats[0].chat_type = '${chatType}'; chats[0].participants.splice(1); selectChat(7);`);
+    const notice = app.nodes.get('#waiting-notice');
+    const input = app.nodes.get('#message-input');
+    const send = app.nodes.get('#send-button');
+    assert.equal(notice.hidden, false);
+    assert.equal(input.disabled, true);
+    assert.equal(send.disabled, true);
+    assert.match(input.placeholder, /Waiting for another participant/);
+    assert.match(app.nodes.get('#composer-help').textContent, /until another participant joins/);
+    assert.equal(app.nodes.get('#message-list').firstChild.textContent, 'No messages yet.');
+    input.value = 'saved draft';
+    await app.nodes.get('#message-form').emit('submit', { preventDefault() {} });
+    assert.equal(input.value, 'saved draft');
+    await app.run(`(async () => {
+      identity.publicKey = 'own-key';
+      api = async () => ({ user: { public_id: 'me', public_key: 'own-key' }, chats: [
+        { ...chats[0], participants: [...chats[0].participants,
+          { public_id: 'new-peer', display_name: 'New participant' }] }
+      ] });
+      writeIdentity = async () => {}; observePeerKey = async peer => peer;
+      await loadChats();
+    })()`);
+    assert.equal(notice.hidden, true);
+    assert.equal(input.disabled, false);
+    assert.equal(send.disabled, false);
+    assert.equal(input.placeholder, 'Write a message');
+    assert.equal(input.value, 'saved draft');
+    assert.match(app.nodes.get('#composer-help').textContent, /Enter to send/);
+  });
+}
+
+test('waiting state keeps saved messages and yields to closure, key warnings and chat selection', async () => {
+  const app = client();
+  app.run('persistHistoryEntry = async () => {};');
+  await app.run("appendMessage(7, { id: 'saved', kind: 'theirs', text: 'saved history', createdAt: 1 });");
+  const message = app.nodes.get('#message-list').firstChild;
+  const notice = app.nodes.get('#waiting-notice');
+  app.run('chats[0].participants.splice(1); selectChat(7);');
+  assert.equal(notice.hidden, false);
+  assert.equal(app.nodes.get('#message-list').firstChild, message);
+  assert.equal(message.messageContent.textContent, 'saved history');
+  app.run("chats[0].closed_at = '2026-10-15T00:00:00Z'; selectChat(7);");
+  assert.equal(notice.hidden, true);
+  assert.equal(app.nodes.get('#message-input').disabled, true);
+  assert.match(app.nodes.get('#composer-help').textContent, /Conversation closed/);
+  app.run('chats[0].closed_at = null; chats[0].participants[0].key_changed = true; selectChat(7);');
+  assert.equal(notice.hidden, true);
+  assert.equal(app.nodes.get('#message-input').disabled, true);
+  assert.equal(app.nodes.get('#key-change-warning').hidden, false);
+  assert.match(app.nodes.get('#composer-help').textContent, /encryption key changed/);
+  app.run('chats[0].participants[0].key_changed = false; selectChat(7);');
+  assert.equal(notice.hidden, false);
+  app.run('selectChat(null);');
+  assert.equal(notice.hidden, true);
+  assert.equal(app.nodes.get('#message-input').disabled, true);
+});
+
+test('offline peers still allow sending without showing the waiting notice', () => {
+  const app = client();
+  app.run(`presenceByChat.set(7, { online: new Set(['me']),
+    members: new Set(chats[0].participants.map(peer => peer.public_id)) });
+    presenceUntil = 1000; selectChat(7);`);
+  assert.equal(app.nodes.get('#waiting-notice').hidden, true);
+  assert.equal(app.nodes.get('#message-input').disabled, false);
+  assert.equal(app.nodes.get('#send-button').disabled, false);
 });
 
 test('connection and device settings retain complete public ID without displaying credentials', () => {
