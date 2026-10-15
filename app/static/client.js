@@ -1089,11 +1089,16 @@ function refreshVisibleReads() {
   }
 }
 
-function displayTimestamp(value, full = false) {
+function displayTimestamp(value, full = false, formatters = null) {
   if (!Number.isFinite(value) || value <= 0) return "Time unavailable";
-  const options = full ? { dateStyle: "short", timeStyle: "medium" }
-    : { hour: "2-digit", minute: "2-digit" };
-  return new Intl.DateTimeFormat(undefined, options).format(new Date(value));
+  let formatter = formatters?.get(full);
+  if (!formatter) {
+    const options = full ? { dateStyle: "short", timeStyle: "medium" }
+      : { hour: "2-digit", minute: "2-digit" };
+    formatter = new Intl.DateTimeFormat(undefined, options);
+    formatters?.set(full, formatter);
+  }
+  return formatter.format(new Date(value));
 }
 
 function messageSenderId(chatId, entry) {
@@ -1121,7 +1126,9 @@ function messageSenderName(chatId, entry) {
 }
 
 function messageDisplayTime(chatId, entry) {
-  return entry.kind === "mine" ? outgoingStatus(chatId, entry).timestamp : historyTimestamp(entry);
+  if (entry.kind !== "mine") return historyTimestamp(entry);
+  const acceptance = metadataFor(chatId, outgoingMessageId(entry)).acceptance;
+  return acceptance?.createdAt || historyTimestamp(entry);
 }
 
 function groupedWithPrevious(chatId, entry, previous) {
@@ -1187,7 +1194,7 @@ function updateMessageFooter(node, chatId, entry) {
   }
 }
 
-function updateMessageHeader(node, chatId, entry, previous) {
+function updateMessageHeader(node, chatId, entry, previous, timestampFormatters) {
   if (!node.messageHeader) return;
   const header = node.messageHeader;
   const timestamp = messageDisplayTime(chatId, entry);
@@ -1196,8 +1203,8 @@ function updateMessageHeader(node, chatId, entry, previous) {
   header.sender.textContent = messageSenderName(chatId, entry);
   header.sender.hidden = grouped;
   header.dot.hidden = grouped;
-  header.timestamp.textContent = displayTimestamp(timestamp);
-  header.timestamp.title = displayTimestamp(timestamp, true);
+  header.timestamp.textContent = displayTimestamp(timestamp, false, timestampFormatters);
+  header.timestamp.title = displayTimestamp(timestamp, true, timestampFormatters);
   if (timestamp > 0) header.timestamp.dateTime = new Date(timestamp).toISOString();
   header.hidden = grouped && Math.floor(timestamp / 60000)
     === Math.floor(messageDisplayTime(chatId, previous) / 60000);
@@ -1318,9 +1325,8 @@ function renderMessages(openAtLatest = false) {
   }
   const entries = [...(messagesByChat.get(selectedChatId) || [])]
     .filter(entry => !hiddenMessageEntry(entry)).sort((left, right) => {
-      const timestamp = entry => entry.kind === "mine"
-        ? outgoingStatus(selectedChatId, entry).timestamp : historyTimestamp(entry);
-      return timestamp(left) - timestamp(right) || compareHistoryEntries(left, right);
+      return messageDisplayTime(selectedChatId, left) - messageDisplayTime(selectedChatId, right)
+        || compareHistoryEntries(left, right);
     });
   if (!entries.length) {
     if (list.firstChild && !renderedMessages.size) return;
@@ -1342,6 +1348,8 @@ function renderMessages(openAtLatest = false) {
       renderedMessages.delete(key);
     }
   }
+  // Reuse formatters within this render only, so later renders pick up locale/time-zone changes.
+  const timestampFormatters = new Map();
   let position = 0;
   for (const entry of entries) {
     const key = entry.id || entry;
@@ -1350,7 +1358,7 @@ function renderMessages(openAtLatest = false) {
     const existing = renderedMessages.get(key);
     if (existing) {
       if (existing.messageContent.textContent !== messageTextContent) existing.messageContent.textContent = messageTextContent;
-      updateMessageHeader(existing, selectedChatId, entry, previous);
+      updateMessageHeader(existing, selectedChatId, entry, previous, timestampFormatters);
       if (list.children[position] !== existing) list.insertBefore(existing, list.children[position] || null);
       position++;
       continue;
@@ -1383,7 +1391,7 @@ function renderMessages(openAtLatest = false) {
     message.messageContent = text;
     bubble.append(text);
     message.append(bubble);
-    updateMessageHeader(message, chatId, entry, previous);
+    updateMessageHeader(message, chatId, entry, previous, timestampFormatters);
     if (entry.kind === "mine") {
       message.tabIndex = 0;
       message.setAttribute("aria-haspopup", "dialog");

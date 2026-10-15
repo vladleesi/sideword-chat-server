@@ -39,11 +39,6 @@ B's unrelated resume credential cannot recover A's membership. The old history
 remains stored under the old public ID, and is not listed as the new participant's
 conversation. Opening a new link alone never authorizes old-chat access.
 
-The reported sequence cannot be explained by the current implementation using
-only a revoked session and an unrelated fresh invite. Another valid session or
-a different deployed implementation would need to be established. No deployed
-instance, Windows Chrome session or historical runtime state was inspected.
-
 ## Persistence, devices and reconnects
 
 The bundled client stores its non-exportable P-256 private key, separate

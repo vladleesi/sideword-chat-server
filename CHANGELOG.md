@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.1 — 2026-10-15
+
+- Reduce roster-loading queries by fetching each membership and its user together while preserving key validation and invite reconnect checks.
+- Speed up message rendering by avoiding repeated delivery-status calculations for timestamps and sharing date formatters within each render; preserve message order, displayed status, and locale/time-zone updates.
+
 ## 0.12.0 — 2026-10-15
 
 - Send messages with Enter and insert a new line with Shift+Enter in the test client; preserve composition input and prevent repeated key presses from submitting twice.

@@ -589,6 +589,38 @@ test('offline peers still allow sending without showing the waiting notice', () 
   assert.equal(app.nodes.get('#send-button').disabled, false);
 });
 
+test('timestamp formatters are shared only within a render and follow locale and time-zone changes', () => {
+  const app = client();
+  let constructions = 0;
+  let locale = 'en-US';
+  let timeZone = 'UTC';
+  app.run('Intl').DateTimeFormat = function (_, options) {
+    constructions++;
+    return new Intl.DateTimeFormat(locale, { ...options, timeZone });
+  };
+  app.run(`messagesByChat.set(7, Array.from({length: 20}, (_, index) => ({
+    id: 'incoming:format-' + index, kind: 'theirs', senderPublicId: 'peer-a',
+    text: 'message ' + index, createdAt: Date.parse('2026-10-15T12:00:00Z') + index * 60000
+  })));`);
+  for (const environment of [['en-US', 'UTC'], ['en-US', 'America/New_York'], ['en-GB', 'UTC']]) {
+    [locale, timeZone] = environment;
+    constructions = 0;
+    app.run('renderMessages();');
+    assert.equal(constructions, 2);
+    const header = app.nodes.get('#message-list').firstChild.messageHeader;
+    const timestamp = new Date('2026-10-15T12:00:00Z');
+    assert.equal(header.timestamp.textContent, new Intl.DateTimeFormat(locale,
+      {hour:'2-digit', minute:'2-digit', timeZone}).format(timestamp));
+    assert.equal(header.timestamp.title, new Intl.DateTimeFormat(locale,
+      {dateStyle:'short', timeStyle:'medium', timeZone}).format(timestamp));
+    assert.equal(header.timestamp.dateTime, timestamp.toISOString());
+  }
+  constructions = 0;
+  assert.equal(app.run('displayTimestamp(null)'), 'Time unavailable');
+  assert.equal(app.run('displayTimestamp(0)'), 'Time unavailable');
+  assert.equal(constructions, 0);
+});
+
 test('connection and device settings retain complete public ID without displaying credentials', () => {
   const app = client();
   app.run('updateConnectionState(true);');

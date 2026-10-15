@@ -1,6 +1,8 @@
 # Security review
 
-**Reviewed:** 2026-10-09 · **Source baseline:** working tree based on `bbeab25` · **Backend:** 0.11.1
+**Assessment baseline:** 2026-10-09 · **Source baseline:** working tree based on `bbeab25` · **Backend baseline:** 0.11.1
+
+**Latest targeted verification:** 2026-10-15 · **Backend:** 0.12.1
 
 Sideword is a ciphertext relay with a bundled browser **test client**. Source and
 regression coverage support the controls below, but the client protocol has no
@@ -136,11 +138,14 @@ establish authenticated end-to-end delivery through an operator's complete proxy
 chain or verify third-party client migration. No production configuration or
 deployment was changed for this release.
 
-Client UI follow-up (2026-10-15, backend 0.12.0): Node adapter regressions cover
-Enter/Shift+Enter handling, composition and repeated-key safeguards, and waiting
-for another participant without replacing saved history or overriding closure
-and key-change blocks. Python template checks cover the accessible waiting
-notice. This does not extend the security assessment above or add browser evidence.
+The latest targeted verification covers keyboard composition, waiting notices,
+saved history, closure and key-change blocks. Node adapters also
+check message ordering, delivery indicators and locale/time-zone updates while
+reducing repeated rendering work. [Roster regressions](../tests/test_roster_loading.py)
+count database queries and retain invalid-key rejection, consumed-invite reconnects
+and key matching when members and users load together. Regression checks
+use synthetic client state and isolated SQLite databases. These checks do not
+extend the broader security assessment above or add browser/live-load evidence.
 
 | Unverified area | Evidence needed to establish the property |
 | --- | --- |

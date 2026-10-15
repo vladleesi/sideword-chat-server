@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload
 
 from .config import get_settings
 from .invite_security import authenticate_password, resume_digest
@@ -43,7 +43,7 @@ async def load_chat_info(session: AsyncSession, chat: Chat) -> ChatInfo:
     result = await session.execute(
         select(ChatMember)
         .where(ChatMember.chat_id == chat.id)
-        .options(selectinload(ChatMember.user))
+        .options(joinedload(ChatMember.user))
     )
     members = [m.user for m in result.scalars().all() if m.user is not None]
     if any(not valid_public_key(u.public_key) for u in members):
@@ -113,7 +113,7 @@ async def activate_link(
     if chat is not None:
         members = list((await session.scalars(
             select(ChatMember).where(ChatMember.chat_id == chat.id)
-            .options(selectinload(ChatMember.user))
+            .options(joinedload(ChatMember.user))
         )).all())
         if any(m.user is not None and not valid_public_key(m.user.public_key) for m in members):
             raise HTTPException(409, "This room uses retired encryption. Create a new invite.")

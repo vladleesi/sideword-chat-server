@@ -20,6 +20,58 @@ async function outgoing(options = {}) {
 
 function state(app) { return JSON.parse(app.run('JSON.stringify(outgoingStatus(7, message))')); }
 
+test('timeline sorting and grouping aggregate delivery status only for each outgoing indicator', () => {
+  const app = client();
+  app.run(`
+    const entries = Array.from({length: 40}, (_, index) => ({
+      id: 'outgoing:timestamp-' + index, clientMessageId: 'timestamp-' + index,
+      kind: 'mine', statusVersion: 1, recipients: ['peer-a', 'peer-b'],
+      text: 'message ' + index, createdAt: 1000 + (40 - index) * 1000
+    }));
+    for (const [index, entry] of entries.entries()) {
+      const metadata = metadataFor(7, entry.clientMessageId);
+      metadata.acceptance = {createdAt: 1000 + index * 1000,
+        recipients: entry.recipients, deliveries: {'peer-a':'expected', 'peer-b':'other'}};
+      metadata.receipts.set('receipt', {readerPublicId:'peer-a', receiptKind:'read',
+        messageDeliveryId:'expected', confirmedAt:50000});
+    }
+    messagesByChat.set(7, entries);
+    globalThis.aggregations = 0;
+    globalThis.originalStatus = outgoingStatus;
+    outgoingStatus = (...args) => { aggregations++; return originalStatus(...args); };
+    renderMessages();
+  `);
+  assert.equal(app.run('aggregations'), 40);
+  const list = app.nodes.get('#message-list');
+  assert.equal(list.children[0].messageContent.textContent, 'message 0');
+  assert.equal(list.children[39].messageContent.textContent, 'message 39');
+  assert.equal(list.children[0].messageHeader.timestamp.dateTime, new Date(1000).toISOString());
+  assert.equal(list.children[1].className, 'message mine continuation');
+  assert.equal(list.children[1].messageHeader.hidden, true);
+  for (const node of list.children) assert.match(node.messageFooter.indicator.className, /status-read/);
+  app.run(`metadataFor(7, 'timestamp-0').acceptance.createdAt = 100000; aggregations = 0; renderMessages();`);
+  assert.equal(app.run('aggregations'), 40);
+  assert.equal(list.children[39].messageContent.textContent, 'message 0');
+  assert.equal(list.children[39].messageHeader.timestamp.dateTime, new Date(100000).toISOString());
+  assert.equal(list.children[39].className, 'message mine continuation');
+});
+
+test('display time retains the status timestamp for legacy, pending and accepted outgoing messages', () => {
+  const app = client();
+  app.run(`
+    globalThis.entry = {id:'outgoing:time', clientMessageId:'time', kind:'mine', createdAt:5000};
+  `);
+  for (const createdAt of [null, 0, 10000]) {
+    app.run(`metadataFor(7, 'time').acceptance = {createdAt:${createdAt}};`);
+    assert.equal(app.run('messageDisplayTime(7, entry)'), createdAt || 5000);
+    assert.equal(app.run('messageDisplayTime(7, entry)'), app.run('outgoingStatus(7, entry).timestamp'));
+  }
+  app.run("metadataFor(7, 'time').acceptance = null; entry.statusVersion = 1;");
+  assert.equal(app.run('messageDisplayTime(7, entry)'), 5000);
+  app.run("entry = {kind:'theirs', createdAt:'2026-10-15T12:00:00Z'};");
+  assert.equal(app.run('messageDisplayTime(7, entry)'), Date.parse('2026-10-15T12:00:00Z'));
+});
+
 test('pending, sending, failed, server acceptance and group aggregate transitions', async () => {
   const app = await outgoing();
   assert.equal(state(app).status, 'pending');
