@@ -64,7 +64,7 @@ def test_closure_blocks_other_invite_sessions_and_preserves_archives_and_queues(
     assert read(client, bob, reference(delivered)).status_code == 200
     send(client, [alice, bob], message_id="retained-before-close")
     before = counts(cid)
-    assert before == (2, 1, 1)
+    assert before == (2, 1, 2)
     change(client, cid, "close")
     me = client.get("/api/v1/me", headers=headers(other_alice)).json()
     archive = next(chat for chat in me["chats"] if chat["id"] == cid)
@@ -94,7 +94,7 @@ def test_closure_blocks_other_invite_sessions_and_preserves_archives_and_queues(
             "client_message_ids": ["retained-before-close"],
         }).status_code == 410
         assert client.post(f"/api/v1/chats/{cid}/read/exact", headers=headers(user), json={
-            "messages": [reference(delivered)], "viewed": True,
+            "messages": [reference(delivered)]
         }).status_code == 410
         with client.websocket_connect("/ws") as ws:
             ws.send_json({"type": "auth", "token": user["token"]})
@@ -130,8 +130,7 @@ def test_closure_preserves_late_durable_ack_contract_without_emitting_live_recei
     change(client, cid, "close")
     assert counts(cid) == (2, 2, 0)
     response = client.post("/api/v1/ack/exact", headers=headers(bob), json={
-        "messages": [reference(delivery)], "confirm_delivery": True,
-    })
+        "messages": [reference(delivery)], })
     assert response.status_code == 200
     assert response.json()["deleted_messages"] == 1
     assert counts(cid) == (2, 1, 1)
@@ -226,31 +225,24 @@ def test_closure_requires_admin_and_export_import_preserves_closed_state(client)
     assert client.post("/admin/chats/999999999/close", follow_redirects=False).status_code == 404
 
 
-def test_additive_closure_migration_preserves_existing_chats_and_is_idempotent(
-    tmp_path, monkeypatch,
-):
-    # Never point migrations at a running instance or the shared fixture database.
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'closure-migration.sqlite3'}")
+def test_current_schema_restart_preserves_closed_conversations(tmp_path, monkeypatch):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'closure.sqlite3'}")
     monkeypatch.setattr(db, "engine", engine)
-    async def migrate():
+
+    async def restart():
         try:
-            async with engine.begin() as connection:
-                await connection.execute(text("CREATE TABLE chats (id INTEGER PRIMARY KEY, "
-                                              "chat_type VARCHAR(16), title VARCHAR(256), "
-                                              "created_at DATETIME)"))
-                await connection.execute(text("INSERT INTO chats VALUES "
-                                              "(1, 'group', 'retained', '2026-01-01')"))
             await db.init_db()
             async with engine.begin() as connection:
-                row = (await connection.execute(text(
-                    "SELECT title,closed_at FROM chats WHERE id=1"))).one()
-                assert row == ("retained", None)
-                await connection.execute(text("UPDATE chats SET closed_at='2026-01-02' WHERE id=1"))
+                await connection.execute(text(
+                    "INSERT INTO chats (id, chat_type, title, created_at, closed_at) "
+                    "VALUES (1, 'group', 'retained', '2026-01-01', '2026-01-02')"
+                ))
             await db.init_db()
             async with engine.connect() as connection:
                 assert (await connection.execute(text(
-                    "SELECT title,closed_at FROM chats WHERE id=1"))).one() == (
-                        "retained", "2026-01-02")
+                    "SELECT title,closed_at FROM chats WHERE id=1"
+                ))).one() == ("retained", "2026-01-02")
         finally:
             await engine.dispose()
-    asyncio.run(migrate())
+
+    asyncio.run(restart())

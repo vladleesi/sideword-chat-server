@@ -10,11 +10,11 @@ import pytest
 from csrf_client import TestClient
 from message_key_fixtures import public_key
 from sqlalchemy import event, text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db import SessionLocal
 from app.main import create_app
-from app.models import Link, LinkType
+from app.models import Chat, Link, LinkType, PendingMessage, ReadReceipt, User
 
 
 @pytest.fixture
@@ -68,6 +68,8 @@ def reference(delivery, receipt=False):
 
 
 def read(client, user, ref):
+    response = client.post("/api/v1/ack/exact", headers=headers(user), json={"messages": [ref]})
+    assert response.status_code == 200
     return client.post(f"/api/v1/chats/{user['chat']['id']}/read/exact",
                        headers=headers(user), json={"messages": [ref]})
 
@@ -112,6 +114,10 @@ def test_delayed_receipt_ack_does_not_delete_reused_receipt_id(room):
     body = {"receipts": [reference(old, receipt=True)]}
     assert client.post("/api/v1/ack/exact", headers=headers(users[0]),
                        json=body).json()["deleted_receipts"] == 1
+    delivery = poll(client, users[0])["delivery_receipts"][0]
+    assert client.post("/api/v1/ack/exact", headers=headers(users[0]), json={
+        "receipts": [reference(delivery, receipt=True)],
+    }).json()["deleted_receipts"] == 1
     send(client, users, message_id="next-message")
     read(client, users[1], reference(poll(client, users[1])["messages"][0]))
     new = poll(client, users[0])["read_receipts"][0]
@@ -157,9 +163,18 @@ def test_exact_schema_rejects_legacy_fields_and_unbounded_batches(room):
     send(client, users)
     ref = reference(poll(client, users[1])["messages"][0])
     for body in ({"message_ids": [1]}, {"messages": [ref] * 101},
-                 {"messages": [{**ref, "delivery_id": ""}]}):
+                 {"messages": [{**ref, "delivery_id": ""}]},
+                 {"messages": [ref], "confirm_delivery": False},
+                 {"messages": [ref], "confirm_delivery": True}):
         assert client.post("/api/v1/ack/exact", headers=headers(users[1]),
                            json=body).status_code == 422
+    assert len(poll(client, users[1])["messages"]) == 1
+    for value in (False, True):
+        response = client.post(
+            f"/api/v1/chats/{users[1]['chat']['id']}/read/exact",
+            headers=headers(users[1]), json={"messages": [ref], "viewed": value},
+        )
+        assert response.status_code == 422
     assert len(poll(client, users[1])["messages"]) == 1
 
 
@@ -216,6 +231,7 @@ def test_ws_live_backlog_and_poll_share_delivery_references(room):
             sender.send_json({"type": "auth", "token": users[0]["token"]})
             sender.receive_json()
             assert read(client, users[1], reference(live)).json() == {"marked": 1}
+            assert sender.receive_json()["type"] == "delivered"
             receipt = sender.receive_json()["read"]
             assert reference(poll(client, users[0])["read_receipts"][0], True) == reference(
                 receipt, True
@@ -227,7 +243,7 @@ def test_ws_live_backlog_and_poll_share_delivery_references(room):
         )
 
 
-def test_legacy_queue_migration_and_backup_preserve_delivery_ids(tmp_path, monkeypatch):
+def test_current_database_restart_and_backup_preserve_delivery_ids(tmp_path, monkeypatch):
     import app.db as db
 
     async def exercise():
@@ -235,21 +251,22 @@ def test_legacy_queue_migration_and_backup_preserve_delivery_ids(tmp_path, monke
         backup = tmp_path / "backup.sqlite3"
         engine = create_async_engine(f"sqlite+aiosqlite:///{original}")
         monkeypatch.setattr(db, "engine", engine)
-        async with engine.begin() as conn:
-            for table in ("pending_messages", "read_receipts"):
-                await conn.execute(text(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)"))
-                await conn.execute(text(f"INSERT INTO {table} (id) VALUES (1), (2)"))
         await db.init_db()
-
-        async with db.engine.connect() as conn:
-            receipt_columns = {row[1] for row in await conn.execute(text(
-                "PRAGMA table_info(read_receipts)"))}
-            ledger_columns = {row[1] for row in await conn.execute(text(
-                "PRAGMA table_info(send_records)"))}
-            assert "message_delivery_id" in receipt_columns
-            assert "receipt_state_json" in ledger_columns
-            assert list((await conn.execute(text(
-                "SELECT message_delivery_id FROM read_receipts"))).scalars()) == [None, None]
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            sender = User(public_id="backup-sender", public_key=public_key())
+            recipient = User(public_id="backup-recipient", public_key=public_key())
+            chat = Chat(chat_type="personal")
+            session.add_all([sender, recipient, chat])
+            await session.flush()
+            for index in range(2):
+                message = PendingMessage(chat_id=chat.id, sender_id=sender.id,
+                    recipient_id=recipient.id, client_message_id=str(index), ciphertext=b"x")
+                session.add(message)
+                await session.flush()
+                session.add(ReadReceipt(chat_id=chat.id, sender_id=sender.id,
+                    reader_public_id=recipient.public_id, client_message_id=str(index),
+                    message_delivery_id=message.delivery_id, kind="viewed"))
+            await session.commit()
 
         async def identifiers():
             async with db.engine.connect() as conn:

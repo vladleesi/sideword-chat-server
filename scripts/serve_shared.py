@@ -30,7 +30,7 @@ class PublicListener:
 
 async def main():
     app = create_app()
-    # Invite paths and legacy WebSocket query strings contain credentials.
+    # Invite paths contain credentials.
     # Uvicorn also logs WS URLs at INFO on uvicorn.error, independently of its
     # access_log option. Preserve warnings/errors and application error logging.
     local = uvicorn.Server(uvicorn.Config(

@@ -67,7 +67,6 @@ class ConnectionManager:
     def remaining(self, websocket: WebSocket) -> float:
         if websocket not in self._activity:
             return 0
-        # Legacy sockets retain their existing transport-level ping/pong policy.
         # Only clients opting into presence acquire the application heartbeat.
         if websocket not in self._presence:
             return float("inf")

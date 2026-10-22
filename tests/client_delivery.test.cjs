@@ -15,7 +15,7 @@ function client(persistHistory = false) {
   vm.runInContext(fs.readFileSync('app/static/client-protocol.js', 'utf8'), context);
   vm.runInContext(source.replace(/start\(\)\.catch[^\n]+/, ''), context);
   vm.runInContext(`
-    messageConfirmationsSupported = true;
+    messageProfileReady = true;
     senderKeyIsLoaded = () => true;
     decryptMessage = async (message) => message.ciphertext;
   `, context);
@@ -148,29 +148,29 @@ test('group sender labels survive encrypted history reload without a roster', as
   assert.equal(run('elements.messageList.firstChild.messageHeader.sender.textContent'), 'Alice');
 });
 
-test('existing group history gains roster names without changing nodes or delivery identities', async () => {
+test('stored group history gains roster names without changing nodes or delivery identities', async () => {
   const run = renderingClient();
   await run(`(async () => {
     chats = [];
     messagesByChat.clear();
-    globalThis.legacyId = 'incoming:' + JSON.stringify([7, 'alice', 'old-message']);
-    await appendMessage(7, { id: legacyId, kind: 'theirs', text: 'old message',
+    globalThis.savedId = 'incoming:' + JSON.stringify([7, 'alice', 'old-message']);
+    await appendMessage(7, { id: savedId, kind: 'theirs', senderPublicId: 'alice', text: 'saved message',
       meta: 'From alice', createdAt: 1 }, false);
-    globalThis.legacyNode = elements.messageList.firstChild;
+    globalThis.savedNode = elements.messageList.firstChild;
     elements.messageList.scrollTop = 12;
     chats = [{ id: 7, chat_type: 'group', participants: [{ public_id: 'alice', display_name: 'Alice' }] }];
     renderMessages();
   })()`);
-  assert.equal(run('elements.messageList.firstChild === legacyNode'), true);
-  assert.equal(run('legacyNode.messageHeader.sender.textContent'), 'Alice');
-  assert.equal(run('messagesByChat.get(7)[0].id === legacyId'), true);
+  assert.equal(run('elements.messageList.firstChild === savedNode'), true);
+  assert.equal(run('savedNode.messageHeader.sender.textContent'), 'Alice');
+  assert.equal(run('messagesByChat.get(7)[0].id === savedId'), true);
   assert.equal(run('messagesByChat.get(7)[0].meta'), 'From alice');
   assert.equal(run('pendingReadsByChat.size'), 0);
   run(`chats[0].participants[0].display_name = '<b>New name</b>'; renderMessages();`);
-  assert.equal(run('legacyNode.messageHeader.sender.textContent'), '<b>New name</b>');
-  assert.equal(run('legacyNode.messageHeader.sender.children.length'), 0);
+  assert.equal(run('savedNode.messageHeader.sender.textContent'), '<b>New name</b>');
+  assert.equal(run('savedNode.messageHeader.sender.children.length'), 0);
   run(`chats[0].participants[0].display_name = null; renderMessages();`);
-  assert.equal(run('legacyNode.messageHeader.sender.textContent'), 'Participant');
+  assert.equal(run('savedNode.messageHeader.sender.textContent'), 'Participant');
 });
 
 test('unrecognized history and other-chat identities keep saved sender labels', () => {
@@ -241,7 +241,7 @@ test('polling and live receipts persist safe reader names from their own chat be
     putDatabaseValue = async (key, value) => { records.push({ key, value }); };
     api = async () => { if (records.length !== seenReceiptIds.size) throw new Error('history not saved'); };
     const receipt = { chat_id: 7, reader_public_id: 'bob', client_message_id: 'outbound',
-      delivery_id: 'a'.repeat(32), created_at: '2026-10-07T12:00:00Z' };
+      view_confirmed: true, message_delivery_id: 'b'.repeat(32), delivery_id: 'a'.repeat(32), created_at: '2026-10-07T12:00:00Z' };
     await processIncoming({ read_receipts: [receipt] });
     await handleSocketPayload({ type: 'read', read: { ...receipt,
       reader_public_id: 'carol', delivery_id: 'b'.repeat(32) } });
@@ -256,24 +256,19 @@ test('polling and live receipts persist safe reader names from their own chat be
   assert.equal(run('messagesByChat.get(7).every(e => e.kind === "receipt")'), true);
   assert.equal(run('messagesByChat.get(7)[0].readerPublicId'), 'bob');
   assert.equal(run('elements.messageList.firstChild.textContent'), 'No messages yet.');
-  assert.equal(run('outgoingStatus(7, {id: "outgoing:outbound", kind: "mine"}).status'), 'sent');
+  assert.equal(run('outgoingStatus(7, {clientMessageId: "outbound", kind: "mine"}).status'), 'read');
 });
 
-test('legacy receipts migrate to hidden delivery evidence without claiming human reading', async () => {
+test('receipt metadata stays hidden and uses its explicit message and reader identity', async () => {
   const run = renderingClient();
   await run(`messagesByChat.clear();
-    appendMessage(7, { id: 'receipt:' + JSON.stringify([7, 'bob', 'm']), kind: 'system',
-      text: 'Message m was read by bob.', createdAt: 123 }, false)`);
+    appendMessage(7, { id: 'receipt:current', kind: 'receipt', receiptKind: 'delivered',
+      readerPublicId: 'bob', clientMessageId: 'm', messageDeliveryId: 'a'.repeat(32),
+      confirmedAt: 123, createdAt: 123 }, false)`);
   assert.equal(run('elements.messageList.firstChild.textContent'), 'No messages yet.');
-  assert.equal(run('messagesByChat.get(7)[0].legacyText'), 'Message m was read by bob.');
-  assert.equal(run('outgoingStatus(7, {id:"outgoing:m", kind:"mine"}).states[0].delivered'), true);
-  assert.equal(run('outgoingStatus(7, {id:"outgoing:m", kind:"mine"}).states[0].read'), false);
-  assert.equal(run('outgoingStatus(7, {id:"outgoing:m", kind:"mine"}).status'), 'sent');
+  assert.equal(run('outgoingStatus(7, {clientMessageId:"m", kind:"mine"}).states[0].delivered'), true);
+  assert.equal(run('outgoingStatus(7, {clientMessageId:"m", kind:"mine"}).states[0].read'), false);
   assert.equal(run('pendingReceiptIds.size'), 0);
-  for (const id of ['receipt:invalid', 'receipt:null', 'receipt:' + JSON.stringify([8, 'bob', 'm'])]) {
-    await run(`appendMessage(7, { id: ${JSON.stringify(id)}, kind: 'system', text: 'Saved receipt' }, false)`);
-  }
-  assert.equal(run('elements.messageList.firstChild.textContent'), 'No messages yet.');
 });
 
 test('incoming messages preserve existing nodes, chronological order, and reading position', async () => {
@@ -389,7 +384,8 @@ test('reused SQLite row IDs do not drop new messages or receipts', async () => {
         created_at: '2026-09-26T02:00:' + String(i).padStart(2, '0') };
       await processMessages([message]);
       await processMessages([message]);
-      await processReceipts([{ ...message, reader_public_id: 'bob' }]);
+      await processReceipts([{ ...message, reader_public_id: 'bob', view_confirmed: true,
+        message_delivery_id: 'b'.repeat(32) }]);
     }
   })()`);
   assert.equal(run('messagesByChat.get(7).filter(e => e.kind === "theirs").length'), 10);
@@ -470,7 +466,8 @@ test('exact acknowledgements retain colliding group identities and retry lost re
         sender_public_id: sender, client_message_id: 'collision', ciphertext: sender }]);
     }
     await processReceipts([{ id: 1, delivery_id: 'c'.repeat(32), chat_id: 7,
-      reader_public_id: 'bob', client_message_id: 'outbound' }]);
+      reader_public_id: 'bob', client_message_id: 'outbound', view_confirmed: true,
+      message_delivery_id: 'b'.repeat(32) }]);
   })()`);
   await assert.rejects(run('flushAcknowledgements()'), /response lost/);
   assert.equal(run('pendingDeliveries.size'), 2);
@@ -491,7 +488,8 @@ test('batches are bounded and receipt failures keep only unfinished acknowledgem
   await run(`(async () => {
     for (let i = 0; i < 205; i++) {
       await processReceipts([{ id: i, delivery_id: i.toString(16).padStart(32, '0'),
-        chat_id: 7, reader_public_id: 'bob', client_message_id: 'm-' + i }]);
+        chat_id: 7, reader_public_id: 'bob', client_message_id: 'm-' + i, view_confirmed: true,
+        message_delivery_id: 'b'.repeat(32) }]);
     }
     globalThis.calls = [];
     api = async (path, options) => {

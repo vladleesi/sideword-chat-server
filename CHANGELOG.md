@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.0 — 2026-10-22
+
+- Refresh runtime and development dependencies, exclude older vulnerable ASGI/JWT/template/parser versions, and scan resolved Python dependencies in CI.
+- Require a JSON Content-Type on JSON API requests; keep authentication, invite, WebSocket and encrypted delivery protections covered by regression tests.
+- Reject admin passwords over 72 UTF-8 bytes during creation and verification without truncation or compatibility hash formats.
+- Remove legacy WebSocket URL/subprotocol authentication, deletion-only ACKs, automatic read-and-delete behavior, old receipt/history conversions and database migrations; require the current protocol and fresh state for each pre-release.
+- Replace the deprecated Starlette HTTPX test adapter with maintained HTTPX2 and keep configuration exports in the current format.
+- Update GitHub Actions to numeric release tags and the Python 3.12 Docker base; preserve hidden Pages assets and monitor dependencies on develop through Renovate's approval-gated Dependency Dashboard.
+
 ## 0.12.1 — 2026-10-15
 
 - Reduce roster-loading queries by fetching each membership and its user together while preserving key validation and invite reconnect checks.

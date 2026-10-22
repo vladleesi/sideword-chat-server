@@ -89,16 +89,8 @@ recipient delivery are. Revocation cannot erase plaintext, keys or screenshots
 already held by participants. Reset device/clearing site data can permanently lose
 access and history; do not use it to fix invite errors.
 
-Keep admission, identity authentication and conversation authorization separate,
-and make their consequences explicit. Signal similarly offers separate controls
-to [disable group links](https://support.signal.org/hc/en-us/articles/360051086971-Group-Link-or-QR-code)
-and [remove group members](https://support.signal.org/hc/en-us/articles/360050427692-Manage-a-group).
-Validate authorization on every operation, following
-[OWASP guidance](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html).
-
-Preserve the existing invite-bound session policy for compatibility: expiry and
-revocation invalidate sessions issued through that invite, while other valid
-sessions retain membership. Do not present invite revocation as a guaranteed room
+Invite expiry and revocation invalidate sessions issued through that invite,
+while other valid sessions retain membership. Do not present invite revocation as a guaranteed room
 shutdown or participant ban. For a compromised identity, deactivate the user;
 for a leaked admission/resume credential, revoke its invite. To stop messaging
 for everyone without deleting data, close the conversation in Admin > Chats.
@@ -125,20 +117,7 @@ key lifecycle and authenticated membership changes; see
 
 ## Regression coverage
 
-`tests/test_invite_lifecycle.py` covers revoked/expired issuing credentials,
-registered-session authentication, saved resume/refresh rejection, unrelated
-invites, both participants exchanging old-room messages through other authorized
-sessions, preserved membership/queued ciphertext, and admin revocation with mixed
-valid/invalid sockets and reconnects. `tests/client_retry.test.cjs` covers the
-new-invite transition after a rejected login, roster isolation and preserved
-device keys/history. Existing session, presence, delivery and crypto suites cover
-session expiry/replay, membership boundaries, local encrypted persistence and
-non-exportable keys. These are isolated automated checks, not browser/device or
-production deployment evidence.
-
-`tests/test_conversation_closure.py` covers cross-invite closure enforcement,
-stale-client sends, queue/archive preservation, joining a new invite while an
-older room is closed, HTTP/WS reconnects, live/presence isolation, reopening,
-configuration transfer, admin authorization and isolated additive migration.
-Client tests cover encrypted history, paused retries, state notifications and
-unchanged access to other conversations without browser automation.
+Invite, session, closure and client regression suites exercise authorization,
+reconnects, queue preservation and device history with isolated databases and
+Node adapters. See the [verification record](SECURITY_REVIEW.md#verification-record-and-gaps)
+for results and the remaining device and deployment checks.

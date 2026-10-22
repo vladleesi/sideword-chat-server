@@ -47,7 +47,7 @@ def submit(client, origin, users, sender, message_id):
 def confirm(client, origin, user, messages):
     response = client.post(
         origin + "/api/v1/ack/exact", headers=headers(user),
-        json={"confirm_delivery": True, "messages": [reference(item) for item in messages]},
+        json={"messages": [reference(item) for item in messages]},
     )
     assert response.status_code == 200
     return response.json()["deleted_messages"]

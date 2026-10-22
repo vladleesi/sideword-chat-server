@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, delete, func, or_, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -90,12 +90,12 @@ async def send_message(
         await session.delete(record)
         await session.flush()
     else:
-        legacy = await session.scalar(select(PendingMessage.id).where(
+        orphaned = await session.scalar(select(PendingMessage.id).where(
             PendingMessage.chat_id == chat_id, PendingMessage.sender_id == user.id,
             PendingMessage.client_message_id == payload.client_message_id,
         ).limit(1))
-        if legacy is not None:
-            raise HTTPException(409, "message predates retry ledger; verify delivery")
+        if orphaned is not None:
+            raise HTTPException(409, "message has no retry record; verify delivery")
     members = await chat_members(session, chat_id)
     by_pid = {m.public_id: m for m in members}
 
@@ -237,7 +237,7 @@ async def message_status(
     now = datetime.now(timezone.utc)
     return MessageStatusResponse(statuses=[status_payload(record) for record in records
         if confirmation_available(record, now)
-        and receipt_state(record).get("sender_public_id", user.public_id) == user.public_id])
+        and receipt_state(record).get("sender_public_id") == user.public_id])
 
 
 async def _fetch_poll(session: AsyncSession, user: User) -> PollResponse:
@@ -251,8 +251,6 @@ async def _fetch_poll(session: AsyncSession, user: User) -> PollResponse:
     )
     pending_rows = result.all()
 
-    to_mark = []
-    now = datetime.now(timezone.utc)
     incoming: list[IncomingMessage] = []
     for msg, sender in pending_rows:
         incoming.append(
@@ -266,17 +264,7 @@ async def _fetch_poll(session: AsyncSession, user: User) -> PollResponse:
                 created_at=msg.created_at,
             )
         )
-        if msg.delivered_at is None:
-            to_mark.append(msg.delivery_id)
-
     incoming_receipts, delivery_receipts = await queued_receipts(session, user.id)
-
-    if to_mark:
-        await session.execute(update(PendingMessage).where(
-            PendingMessage.delivery_id.in_(to_mark),
-            PendingMessage.recipient_id == user.id,
-        ).values(delivered_at=now))
-        await session.commit()
 
     return PollResponse(messages=incoming, read_receipts=incoming_receipts,
                         delivery_receipts=delivery_receipts)
@@ -309,29 +297,24 @@ async def ack_exact(
     """Delete only the identified deliveries owned by the authenticated user."""
     messages = receipts = 0
     confirmations: list[ReadReceipt] = []
-    if payload.confirm_delivery and payload.messages:
-        await session.execute(text("BEGIN IMMEDIATE"))
     if payload.messages:
+        await session.execute(text("BEGIN IMMEDIATE"))
         statement = delete(PendingMessage).where(
             PendingMessage.recipient_id == user.id,
             or_(*(_message_match(ref) for ref in payload.messages)),
         )
-        if payload.confirm_delivery:
-            result = await session.execute(statement.returning(PendingMessage))
-            rows = list(result.scalars().all())
-            messages = len(rows)
-            now = datetime.now(timezone.utc)
-            for row in rows:
-                await _record_delivery(session, user, row, now)
-            # Queue pressure must not retain ciphertext after durable delivery.
-            # The bounded ledger provides sender-only recovery for missed events.
-            count = await session.scalar(select(func.count(ReadReceipt.id)))
-            if count + len(rows) <= _settings.max_read_receipts:
-                confirmations = [_confirmation(row, user, "delivered", now) for row in rows]
-                session.add_all(confirmations)
-        else:
-            result = await session.execute(statement)
-            messages = result.rowcount or 0
+        result = await session.execute(statement.returning(PendingMessage))
+        rows = list(result.scalars().all())
+        messages = len(rows)
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            await _record_delivery(session, user, row, now)
+        # Queue pressure must not retain ciphertext after durable delivery.
+        # The bounded ledger provides sender-only recovery for missed events.
+        count = await session.scalar(select(func.count(ReadReceipt.id)))
+        if count + len(rows) <= _settings.max_read_receipts:
+            confirmations = [_confirmation(row, user, "delivered", now) for row in rows]
+            session.add_all(confirmations)
     if payload.receipts:
         result = await session.execute(delete(ReadReceipt).where(
             ReadReceipt.sender_id == user.id,
@@ -356,45 +339,11 @@ async def mark_read_exact(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, int]:
-    if payload.viewed:
-        await session.execute(text("BEGIN IMMEDIATE"))
+    await session.execute(text("BEGIN IMMEDIATE"))
     await ensure_chat_member(session, chat_id, user)
     if any(ref.chat_id != chat_id for ref in payload.messages):
         raise HTTPException(status_code=422, detail="message chat does not match route")
-    if payload.viewed:
-        return await _mark_viewed(session, user, payload.messages)
-    # DELETE RETURNING makes row consumption atomic across concurrent tabs and
-    # workers. Only the winner creates a receipt, in the same transaction.
-    result = await session.execute(delete(PendingMessage).where(
-        PendingMessage.recipient_id == user.id,
-        or_(*(_message_match(ref) for ref in payload.messages)),
-    ).returning(PendingMessage))
-    return await _finish_read(session, user, list(result.scalars().all()))
-
-
-async def _finish_read(
-    session: AsyncSession, user: User, msgs: list[PendingMessage],
-) -> dict[str, int]:
-    if not msgs:
-        await session.commit()
-        return {"marked": 0}
-
-    receipt_count = await session.scalar(select(func.count(ReadReceipt.id)))
-    if receipt_count + len(msgs) > _settings.max_read_receipts:
-        await session.rollback()
-        raise HTTPException(429, "receipt capacity reached", headers={"Retry-After": "60"})
-    now = datetime.now(timezone.utc)
-    receipts: list[ReadReceipt] = []
-    for msg in msgs:
-        await _record_delivery(session, user, msg, now)
-        receipts.append(_confirmation(msg, user, "read", now))
-
-    session.add_all(receipts)
-    await session.flush()
-    await session.commit()
-
-    await _push_receipts(receipts)
-    return {"marked": len(msgs)}
+    return await _mark_viewed(session, user, payload.messages)
 
 
 def _confirmation(msg: PendingMessage, user: User, kind: str, now: datetime) -> ReadReceipt:
@@ -414,17 +363,13 @@ async def _record_delivery(session, user, msg, now):
         return
     sender = await session.get(User, msg.sender_id)
     state = receipt_state(record)
-    if sender is None or state.get("sender_public_id", sender.public_id) != sender.public_id:
+    if sender is None or state.get("sender_public_id") != sender.public_id:
         return
     if user.public_id not in json.loads(record.recipients_json):
         return
-    state.setdefault("sender_public_id", sender.public_id)
-    recipients = state.setdefault("recipients", {})
-    current = recipients.setdefault(user.public_id, {
-        "recipient_id": user.id, "delivery_id": msg.delivery_id,
-        "delivered_at": None, "read_at": None,
-    })
-    if current["recipient_id"] != user.id or current["delivery_id"] != msg.delivery_id:
+    current = state.get("recipients", {}).get(user.public_id)
+    if (state.get("sender_public_id") != sender.public_id or current is None
+            or current["recipient_id"] != user.id or current["delivery_id"] != msg.delivery_id):
         return
     current["delivered_at"] = current.get("delivered_at") or now.isoformat()
     record.receipt_state_json = json.dumps(state)

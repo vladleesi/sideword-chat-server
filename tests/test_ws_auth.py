@@ -7,46 +7,13 @@ from datetime import datetime, timezone
 import pytest
 from csrf_client import TestClient
 from message_key_fixtures import public_key
-from starlette.websockets import WebSocket
+from starlette.websockets import WebSocketDisconnect
 
 from app.db import SessionLocal, init_db
 from app.main import create_app
 from app.models import Link, LinkType, User
 from app.routers.sessions import issue
-from app.routers.ws import _token_from_subprotocol
 from app.ws_manager import manager
-
-
-async def _receive() -> dict:
-    return {"type": "websocket.disconnect"}
-
-
-async def _send(message: dict) -> None:
-    del message
-
-
-def test_token_can_be_read_from_websocket_subprotocol() -> None:
-    websocket = WebSocket(
-        {
-            "type": "websocket",
-            "path": "/ws",
-            "headers": [
-                (
-                    b"sec-websocket-protocol",
-                    b"sideword.v1, sideword.auth.header.payload.signature",
-                )
-            ],
-            "query_string": b"",
-            "scheme": "ws",
-            "server": ("test", 80),
-            "client": ("test", 123),
-            "subprotocols": [],
-        },
-        _receive,
-        _send,
-    )
-
-    assert _token_from_subprotocol(websocket) == "header.payload.signature"
 
 
 async def _create_websocket_user() -> tuple[User, Link]:
@@ -78,20 +45,17 @@ def _websocket_token(user, link):
     return asyncio.run(create())
 
 
-def test_websocket_accepts_private_auth_subprotocol() -> None:
+@pytest.mark.parametrize("location", ["query", "protocol"])
+def test_websocket_rejects_credentials_outside_first_frame(location):
     user, link = asyncio.run(_create_websocket_user())
     token = _websocket_token(user, link)
-
+    path = f"/ws?token={token}" if location == "query" else "/ws"
+    protocols = ["sideword.v1", f"sideword.auth.{token}"] if location == "protocol" else []
     with TestClient(create_app()) as client:
-        with client.websocket_connect(
-            "/ws",
-            subprotocols=["sideword.v1", f"sideword.auth.{token}"],
-        ) as websocket:
-            hello = websocket.receive_json()
-
-            assert websocket.accepted_subprotocol == "sideword.v1"
-            assert hello["type"] == "hello"
-            assert hello["user"] == user.public_id
+        with pytest.raises(WebSocketDisconnect) as rejected:
+            with client.websocket_connect(path, subprotocols=protocols):
+                pytest.fail("URL/protocol credentials must not authenticate")
+        assert rejected.value.code == 1008
 
 
 def test_websocket_accepts_authentication_first_frame() -> None:
@@ -173,8 +137,8 @@ def test_silent_socket_is_revalidated_before_push(invalidated, monkeypatch):
         await manager.send_json(user.id, {"type": "message", "message": "must not arrive"})
 
     with TestClient(create_app()) as client:
-        # Legacy query authentication must remain accepted too.
-        with client.websocket_connect(f"/ws?token={token}") as websocket:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"type": "auth", "token": token})
             assert websocket.receive_json()["type"] == "hello"
             client.portal.call(invalidate_and_push)
             assert websocket.receive_json()["type"] == "auth_error"
@@ -226,9 +190,11 @@ def test_revoking_one_issuing_invite_does_not_invalidate_another_socket_session(
         await manager.send_json(user.id, {"type": "read", "read": {}})
 
     with TestClient(create_app()) as client:
-        with client.websocket_connect(f"/ws?token={first_token}") as first:
+        with client.websocket_connect("/ws") as first:
+            first.send_json({"type": "auth", "token": first_token})
             assert first.receive_json()["type"] == "hello"
-            with client.websocket_connect(f"/ws?token={second_token}") as second:
+            with client.websocket_connect("/ws") as second:
+                second.send_json({"type": "auth", "token": second_token})
                 assert second.receive_json()["type"] == "hello"
                 client.portal.call(revoke_and_push)
                 assert first.receive_json()["type"] == "auth_error"
@@ -247,6 +213,7 @@ def test_failed_backlog_load_removes_socket_registration(monkeypatch):
     monkeypatch.setattr("app.routers.ws._backlog_payload", unavailable)
     with TestClient(create_app()) as client:
         with pytest.raises(RuntimeError, match="backlog unavailable"):
-            with client.websocket_connect(f"/ws?token={token}") as websocket:
+            with client.websocket_connect("/ws") as websocket:
+                websocket.send_json({"type": "auth", "token": token})
                 websocket.receive_json()
     assert not manager.is_online(user.id)

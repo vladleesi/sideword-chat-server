@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12.15-slim-trixie
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -13,7 +13,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
-RUN pip install -r requirements.txt
+RUN python -m pip install --upgrade 'pip>=26.2.2,<27' \
+    && python -m pip install -r requirements.txt
 
 COPY --chown=1000:1000 app ./app
 COPY --chown=1000:1000 scripts/serve_shared.py ./scripts/serve_shared.py

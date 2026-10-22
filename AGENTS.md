@@ -58,6 +58,9 @@
 - Keep form errors inline and accessible; validate optional empty fields deliberately on the server.
 
 ## Checks and Git
+- Use explicit numeric release tags for GitHub Actions dependencies (for example, `actions/checkout@v7.0.1`); never use commit SHA references or moving major-only tags.
+- Dependency monitoring uses `.github/renovate.json` with dashboard approval for all updates on `develop`; keep automatic merging and Renovate vulnerability PRs disabled. Preserve GitHub's dependency graph and Dependabot alerts independently; do not restore routine Dependabot version-update automation.
+- Treat each pre-release as a fresh installation: support only current formats and APIs, without legacy compatibility paths or automatic data migrations. Describe current behavior directly in documentation and record release-specific changes in `CHANGELOG.md`.
 - Make all code, documentation, and configuration changes on `develop` only; create/check out it before editing. Never work directly on `main`.
 - CI runs on pushes to every branch except `main`, and only on pull requests targeting `main`; do not trigger CI on pushes to `main`.
 - Promotion to `main` is performed by GitHub Actions only, after both checks pass on the exact `develop` commit. Push changes to `develop`; never push `main` locally. If branches diverge, integrate on `develop` and recheck. Keep `develop` checked out.

@@ -134,8 +134,8 @@ class IncomingReadReceipt(TimestampedPayload):
     client_message_id: str
     chat_id: int
     reader_public_id: str
-    message_delivery_id: str | None = None
-    view_confirmed: bool = False
+    message_delivery_id: str
+    view_confirmed: bool
     created_at: datetime
 
 
@@ -168,14 +168,12 @@ class ExactAckRequest(BaseModel):
 
     messages: list[MessageReference] = Field(default_factory=list, max_length=100)
     receipts: list[ReceiptReference] = Field(default_factory=list, max_length=100)
-    confirm_delivery: bool = False
 
 
 class ExactMarkReadRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     messages: list[MessageReference] = Field(..., min_length=1, max_length=100)
-    viewed: bool = False
 
 
 class MessageStatusRequest(BaseModel):

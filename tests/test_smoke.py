@@ -30,7 +30,7 @@ _TMPDIR = tempfile.mkdtemp(prefix="sideword-test-")
 os.environ["SIDEWORD_DB_PATH"] = str(Path(_TMPDIR) / "sideword.sqlite3")
 os.environ["SIDEWORD_EXPORTS_DIR"] = str(Path(_TMPDIR) / "exports")
 
-from httpx import ASGITransport, AsyncClient  # noqa: E402
+from httpx2 import ASGITransport, AsyncClient  # noqa: E402
 from message_key_fixtures import public_key  # noqa: E402
 
 from app.main import create_app  # noqa: E402
@@ -201,7 +201,16 @@ async def _run() -> None:
             assert msg["ciphertext"] == ciphertext
             assert pending["read_receipts"] == []
 
-            # ---------- Bob marks read ----------
+            # ---------- Bob durably acknowledges, then marks viewed ----------
+            r = await c.post(
+                "/api/v1/ack/exact",
+                json={"messages": [{field: msg[field] for field in (
+                    "delivery_id", "chat_id", "sender_public_id", "client_message_id",
+                )}]},
+                headers={"Authorization": f"Bearer {bob_token}"},
+            )
+            assert r.status_code == 200
+            assert r.json()["deleted_messages"] == 1
             r = await c.post(
                 f"/api/v1/chats/{chat_id}/read/exact",
                 json={"messages": [{field: msg[field] for field in (

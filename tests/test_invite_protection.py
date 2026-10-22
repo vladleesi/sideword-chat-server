@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from csrf_client import TestClient
-from httpx import ASGITransport, AsyncClient
+from httpx2 import ASGITransport, AsyncClient
 from message_key_fixtures import public_key
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -482,27 +482,55 @@ def test_export_import_preserves_protection_and_resume(client):
     }).status_code == 400
 
 
-def test_legacy_migration_is_additive_and_repeatable(tmp_path, monkeypatch):
+def test_incompatible_database_is_rejected_without_modification(tmp_path, monkeypatch):
     async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'legacy.sqlite3'}")
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'incompatible.sqlite3'}")
         monkeypatch.setattr(db, "engine", engine)
-        async with engine.begin() as conn:
-            await conn.execute(text(
-                "CREATE TABLE links (id INTEGER PRIMARY KEY, is_active BOOLEAN)"
-            ))
-            await conn.execute(text("CREATE TABLE chat_members (id INTEGER PRIMARY KEY)"))
-            await conn.execute(text("INSERT INTO links VALUES (1, 1)"))
-        await db.init_db()
-        await db.init_db()
-        async with engine.connect() as conn:
-            row = (await conn.execute(text(
-                "SELECT password_hash, failed_attempts, revoked_at FROM links WHERE id = 1"
-            ))).one()
-            assert tuple(row) == (None, 0, None)
-            columns = await conn.execute(text("PRAGMA table_info(chat_members)"))
-            assert "resume_hash" in {row[1] for row in columns}
-        await engine.dispose()
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(
+                    "CREATE TABLE links (id INTEGER PRIMARY KEY, is_active BOOLEAN)"
+                ))
+                await conn.execute(text("INSERT INTO links VALUES (1, 1)"))
+            with pytest.raises(RuntimeError, match="Use a fresh database"):
+                await db.init_db()
+            async with engine.connect() as conn:
+                assert [row[1] for row in await conn.execute(text(
+                    "PRAGMA table_info(links)"
+                ))] == ["id", "is_active"]
+                assert (await conn.execute(text("SELECT * FROM links"))).all() == [(1, 1)]
+        finally:
+            await engine.dispose()
     asyncio.run(check())
+
+
+def test_cli_export_uses_current_protected_configuration_format(client, tmp_path, capsys):
+    from scripts.export_config import _run
+
+    link, _ = create_invite(client)
+    assert join(client, link, join_payload()).status_code == 200
+    expected = client.get("/admin/api/export").json()
+    output = tmp_path / "configuration.json"
+    assert asyncio.run(_run(output)) == 0
+    capsys.readouterr()
+    actual = json.loads(output.read_text())
+    actual.pop("generated_at")
+    expected.pop("generated_at")
+    assert actual == expected
+
+
+@pytest.mark.parametrize("missing", ["password_hash", "password_required", "revoked_at"])
+def test_incomplete_invite_import_is_rejected_before_replace(client, missing):
+    link, _ = create_invite(client)
+    before = state(link)
+    bundle = client.get("/admin/api/export").json()
+    raw = next(item for item in bundle["links"] if item["token"] == link["token"])
+    del raw[missing]
+    response = client.post("/admin/api/import?replace=true", files={
+        "bundle": ("test.json", json.dumps(bundle), "application/json"),
+    })
+    assert response.status_code == 400
+    assert state(link) == before
 
 
 def test_deactivated_participant_cannot_resume(client):
@@ -532,12 +560,12 @@ def test_existing_jwt_cannot_bypass_another_rooms_password(client):
                 headers=auth).status_code == 200
 
 
-def test_authenticated_member_can_add_retry_credential(client):
+def test_authenticated_member_does_not_retrofit_a_resume_credential(client):
     link, _ = create_invite(client, password_mode="none")
     alice = join_payload(password=None)
     first = join(client, link, {**alice, "resume_credential": None}).json()
     assert join(client, link, alice, headers={
         "Authorization": f"Bearer {first['token']}",
     }).status_code == 200
-    assert join(client, link, alice).status_code == 200
+    assert join(client, link, alice).status_code == 409
     assert state(link)[:2] == (1, 1)

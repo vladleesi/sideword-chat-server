@@ -71,7 +71,7 @@ def status_payload(record: SendRecord) -> MessageDeliveryStatus:
 
 
 async def queued_receipts(session: AsyncSession, user_id: int) -> tuple[list, list]:
-    """Independent bounded queues keep legacy readers from being starved."""
+    """Bound delivery and viewing queues independently so neither is starved."""
     queues = []
     for delivered in (False, True):
         rows = await session.scalars(
@@ -79,7 +79,7 @@ async def queued_receipts(session: AsyncSession, user_id: int) -> tuple[list, li
             .where(
                 ReadReceipt.sender_id == user_id,
                 ReadReceipt.chat_id.in_(open_chat_ids(user_id)),
-                ReadReceipt.kind == "delivered" if delivered else ReadReceipt.kind != "delivered",
+                ReadReceipt.kind == ("delivered" if delivered else "viewed"),
             )
             .order_by(ReadReceipt.id.asc())
             .limit(100)

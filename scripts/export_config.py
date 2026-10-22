@@ -38,7 +38,9 @@ async def _run(output: Path) -> int:
                 )
             ).scalars()
         )
-        links = list((await session.execute(select(Link).order_by(Link.id.asc()))).scalars())
+        links = list((await session.execute(
+            select(Link).where(Link.is_deleted.is_(False)).order_by(Link.id.asc())
+        )).scalars())
 
     chat_index_by_id = {c.id: i for i, c in enumerate(chats)}
     bundle = {
@@ -64,6 +66,7 @@ async def _run(output: Path) -> int:
                     {
                         "public_id": m.user.public_id,
                         "joined_at": _dt_iso(m.joined_at),
+                        "resume_hash": m.resume_hash,
                     }
                     for m in c.members
                     if m.user is not None
@@ -81,6 +84,11 @@ async def _run(output: Path) -> int:
                 "max_uses": link.max_uses,
                 "uses_count": link.uses_count,
                 "is_active": link.is_active,
+                "password_required": link.password_hash is not None,
+                "password_hash": link.password_hash,
+                "failed_attempts": link.failed_attempts,
+                "failed_window_started_at": _dt_iso(link.failed_window_started_at),
+                "revoked_at": _dt_iso(link.revoked_at),
                 "note": link.note,
                 "created_at": _dt_iso(link.created_at),
                 "expires_at": _dt_iso(link.expires_at),

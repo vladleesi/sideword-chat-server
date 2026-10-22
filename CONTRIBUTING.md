@@ -28,6 +28,7 @@ Run the same checks as CI, using isolated test databases:
 
 ```sh
 python -m pip check
+python -m pip_audit --strict
 python -m ruff check .
 python -m compileall -q app scripts tests
 python -m pytest
@@ -54,6 +55,51 @@ CHANGELOG and replace obsolete status notes rather than appending work diaries.
 Before preparing a commit, review all repository documentation against the final
 changes and correct stale guidance, duplication and affected links. Reuse valid
 review evidence for unchanged material, and finish edits before final checks.
+
+## Dependency monitoring
+
+[Renovate](.github/renovate.json) maintains one **Dependency Dashboard** issue for
+`develop`. All routine updates require dashboard approval; automatic merging and
+Renovate's separate vulnerability-fix PR mechanism are disabled. Leave approval
+checkboxes unchecked when asking a coding agent to implement upgrades manually;
+checking one authorizes Renovate to create an update branch/PR.
+
+Default managers remain enabled without major/minor/patch filters. They cover
+`requirements.txt`, `requirements-dev.txt`, GitHub Actions workflows, `Dockerfile`
+and Docker Compose image references, plus other supported manifests added later.
+The Compose image is built locally, not a separately maintained upstream image.
+Inline shell installs are not a complete dependency inventory: keep the Dockerfile
+and CI pip constraints aligned with `requirements-dev.txt` manually. Unpinned OS
+packages and transitive vulnerabilities still require resolved-environment and
+container scans; the dashboard is not a comprehensive vulnerability scanner.
+
+To activate monitoring:
+
+1. Promote this configuration from `develop` to `main` through the existing CI
+   process. Renovate reads configuration from the default branch, `main`, while
+   `baseBranchPatterns` selects `develop` for dependency analysis. Do not edit or
+   merge an onboarding configuration directly into `main`.
+2. Install the [Renovate GitHub App](https://github.com/apps/renovate) for this
+   repository only, and keep repository Issues enabled. Installing before the
+   configuration reaches `main` can create an initial **Configure Renovate** PR.
+   This onboarding PR is separate from dependency updates; keep its proposed
+   defaults unmerged and deliver this configuration through `develop` instead.
+3. In **Settings > Advanced Security**, keep **Dependency graph** and **Dependabot
+   alerts** enabled, and disable **Dependabot security updates**. Check Dependabot
+   rules for separate PR-creation actions and disable those actions too. Removing
+   `dependabot.yml` stops routine version updates, not security alerts or existing
+   PRs. If an organization enforces a setting, its administrator must change it.
+4. Enable **Security alerts** in the repository's Watch settings and choose
+   notification delivery in your account settings. Use **Security > Dependabot**
+   for vulnerability alerts; GitHub evaluates the default branch independently
+   of Renovate's `develop` dashboard.
+5. After the App's next run, find **Dependency Dashboard** under repository Issues.
+   Review lookup warnings and detected files. Keep the issue open; it is updated
+   on subsequent runs, including after manually implemented upgrades are pushed.
+
+See Renovate's [approval behavior](https://docs.renovatebot.com/key-concepts/dashboard/)
+and GitHub's [security-update settings](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/configure-security-updates)
+and [alert settings](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/configure-dependabot-alerts).
 
 ## Pull requests and releases
 

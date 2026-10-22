@@ -1,8 +1,6 @@
 # Security review
 
-**Assessment baseline:** 2026-10-09 · **Source baseline:** working tree based on `bbeab25` · **Backend baseline:** 0.11.1
-
-**Latest targeted verification:** 2026-10-15 · **Backend:** 0.12.1
+**Last reviewed:** 2026-10-22 · **Backend:** 0.13.0
 
 Sideword is a ciphertext relay with a bundled browser **test client**. Source and
 regression coverage support the controls below, but the client protocol has no
@@ -50,9 +48,9 @@ access. See [session lifecycle](SESSION_LIFECYCLE.md) for the policy and edge ca
 | Area / status | Implemented protection and boundary | Evidence |
 | --- | --- | --- |
 | Invite admission — **Verified** | Body-based activation requires HTTPS or loopback even when the general HTTPS guard is disabled. Malformed credentials and invalid supplied authentication fail before admission. Password checking, throttling, and slot allocation use a SQLite write reservation. | [Admission](../app/routers/links.py), [password controls](../app/invite_security.py), [invite regressions](../tests/test_invite_protection.py). |
-| Client authentication — **Verified** | Renewable sessions use short access JWTs, hashed refresh credentials, rotation/replay detection, and per-device revocation. User, issuing invite, and session validity are rechecked; refresh cannot extend the absolute session lifetime. JWTs without a registered session are rejected; legacy issuance/migration and ambiguous ACK/read routes are removed. | [Authorization](../app/deps.py), [sessions](../app/routers/sessions.py), [issuance boundaries](../tests/test_client_session_boundaries.py), [session regressions](../tests/test_security_stages.py). |
+| Client authentication — **Verified** | Renewable sessions use short access JWTs, hashed refresh credentials, rotation/replay detection, and per-device revocation. User, issuing invite, and session validity are rechecked; refresh cannot extend the absolute session lifetime. JWTs without a registered session are rejected. WebSockets require first-frame authentication; exact ACK and viewing operations have separate meanings. | [Authorization](../app/deps.py), [sessions](../app/routers/sessions.py), [issuance boundaries](../tests/test_client_session_boundaries.py), [session regressions](../tests/test_security_stages.py). |
 | Conversation authorization — **Verified** | Membership gates HTTP delivery and status queries. WebSockets revalidate during traffic and periodically while idle. Conversation closure applies across sessions; late ownership-checked durable ACKs remain possible. Presence is membership-scoped but requires one shared process. | [Routing checks](../app/services.py), [WebSockets](../app/routers/ws.py), [closure tests](../tests/test_conversation_closure.py), [presence tests](../tests/test_presence.py). |
-| Administration — **Verified** | Registered admin sessions, bcrypt password hashing, persistent login throttles, cookie-bound CSRF and origin checks. Cookies are HttpOnly/SameSite=Strict and Secure on HTTPS or a configured HTTPS public URL. Logout/password resets revoke sessions; password-reset races are covered. Password length has a known limit (F-05). | [Admin authentication](../app/routers/admin_auth.py), [guards](../app/guards.py), [admin race tests](../tests/test_admin_login_races.py), [CSRF/revocation tests](../tests/test_security_stages.py). |
+| Administration — **Verified** | Registered admin sessions, bcrypt password hashing, persistent login throttles, cookie-bound CSRF and origin checks. Cookies are HttpOnly/SameSite=Strict and Secure on HTTPS or a configured HTTPS public URL. Logout/password resets revoke sessions; password-reset races are covered. Password creation and verification reject inputs over 72 UTF-8 bytes without truncation or compatibility hash formats. | [Admin authentication](../app/routers/admin_auth.py), [guards](../app/guards.py), [admin race tests](../tests/test_admin_login_races.py), [dependency regressions](../tests/test_dependency_security.py), [CSRF/revocation tests](../tests/test_security_stages.py). |
 | Message encryption — **Partial** | The browser uses P-256 ECDH, HKDF-SHA-256, and AES-256-GCM with conversation/sender/recipient/message context binding. Public points are validated. Interoperability and tamper tests support implementation behavior, not protocol security certification. | [Protocol code](../app/static/client-protocol.js), [point validation](../app/message_keys.py), [crypto tests](../tests/client_crypto.test.cjs), [backend key tests](../tests/test_p256.py). |
 | Device storage and delivery — **Verified** | Non-exportable origin-local identity/storage keys, atomic first-use pins, encrypted local history/outbox, and persistence before deletion ACKs. Shared rooms do not merge identities/history. Exact delivery references resist SQLite row-ID reuse; retries are bounded and transactional. Device credentials in the identity record are not covered by history encryption. | [Client](../app/static/client.js), [identity tests](../tests/client_identity.test.cjs), [delivery tests](../tests/client_delivery.test.cjs), [alias routing/authorization tests](../tests/test_cross_origin_delivery.py), [exact-ACK tests](../tests/test_exact_delivery.py). |
 | Transport and public access — **Partial** | HTTPS/WSS is required outside loopback by default. Aliases need one backend process/database for shared live delivery; the connection registry is process-local. The shared runner's public listener rejects admin/schema HTTP and WebSocket routes. Docker's default listener includes admin routes; isolation and trusted-proxy configuration remain essential. | [Transport guards](../app/guards.py), [connection registry](../app/ws_manager.py), [shared runner](../scripts/serve_shared.py), [listener tests](../tests/test_shared_listener.py), [Dockerfile](../Dockerfile). |
@@ -88,10 +86,10 @@ the [API contract](API.md) defines authorization, delivery, and presence semanti
 
 ## Delivery, local storage and retention
 
-Queued ciphertext and receipts are deleted after ACK/read or the configured TTL
+Queued ciphertext and receipts are deleted after durable ACK or the configured TTL
 (default 30 days); cleanup runs at startup and hourly. Retry/confirmation metadata
 outlives ciphertext until both retry and retention deadlines permit removal.
-Viewing does not delay ciphertext deletion. Users, memberships, invite secrets,
+Viewing neither deletes ciphertext nor delays its deletion. Users, memberships, invite secrets,
 and configuration exports have separate lifecycles. Evidence:
 [cleanup](../app/cleanup.py), [stored data](../app/models.py),
 [message-status tests](../tests/test_message_status.py).
@@ -100,8 +98,8 @@ SQLite deletion is not secure erasure of WAL/free pages, snapshots, or backups.
 The application does not encrypt database files or exported configuration;
 exported invite secrets remain sensitive. Clearing browser site data or resetting
 the device can permanently lose keys/history. Changing origins does not transfer
-them; access to the original origin's storage is needed for saved history. The retired
-pre-P-256 format is not read or converted; see [upgrade/recovery guidance](UPGRADING.md).
+them; access to the original origin's storage is needed for saved history. Other
+pre-release formats are not read or converted; see [upgrade/recovery guidance](UPGRADING.md).
 
 ## Prioritized findings and improvements
 
@@ -114,45 +112,50 @@ use; **P2** is planned hardening. Verification gaps are listed separately.
 | ID / risk / priority | Established finding and impact | Existing mitigation and next step |
 | --- | --- | --- |
 | **F-01 · Medium · P1** | **Design limit:** recipient-key compromise exposes recorded inbound messages, and the protocol has no post-compromise recovery. [Protocol implementation](../app/static/client-protocol.js). | Non-exportable keys reduce normal export exposure. Before stronger privacy claims, independently review a maintained ratcheting protocol with authenticated identity/group transitions. Require explicit migration, downgrade protection, interoperability and crash/recovery evidence. Old messages gain no retroactive forward secrecy; origin/device trust remains a separate boundary. |
-| **F-03 · Medium · P1** | **Known credential exposure paths:** invite links and legacy WebSocket authentication can place secrets in URLs/headers; request-body logging can capture activation credentials. Invite tokens are also stored in database/configuration exports. Leaked usable credentials can permit admission or disrupt delivery. [Invite navigation](../app/routers/client.py), [WebSocket authentication](../app/routers/ws.py), [exports](../app/routers/admin_export.py). | Body-based activation, first-frame WebSocket authentication, no-store/no-referrer, optional passwords, and suppressed access logs reduce exposure. Verify redaction across the entire request path and protect database/export/backup access. Plan a compatible invite handoff that reduces URL copies; revoke leaked credentials. |
+| **F-03 · Medium · P1** | **Known credential exposure paths:** invite links place secrets in URLs; request-body logging can capture activation credentials. Invite tokens are also stored in database/configuration exports. Leaked usable credentials can permit admission or disrupt delivery. [Invite navigation](../app/routers/client.py), [WebSocket authentication](../app/routers/ws.py), [exports](../app/routers/admin_export.py). | Body-based activation, first-frame WebSocket authentication, no-store/no-referrer, optional passwords, and suppressed access logs reduce exposure. Verify redaction across the entire request path and protect database/export/backup access. Plan an invite handoff that reduces URL copies; revoke leaked credentials. |
 | **F-04 · Medium · P2** | **Known host-retention gap:** deployment creates database backups and rollback image tags without automatic pruning. Repeated deployments can retain sensitive state and eventually exhaust storage. [Deployment helper](../scripts/deploy.py). | Backups have private permissions. Registry cleanup has [a separate policy](../scripts/artifact-cleanup.json) and does not prune host copies. Define and verify host retention that preserves the active image and an agreed recovery backup/image; test cleanup and restore before deleting recovery material. |
-| **F-05 · Low · P2** | **Known password-input limitation:** admin password hashing and verification silently truncate UTF-8 input to 72 bytes; creation/bootstrap do not reject overlength input. [Password helpers](../app/security.py), [admin creation](../scripts/create_admin.py), [bootstrap](../app/admin_setup.py). | Private administration and login throttling limit exposure. Reject unsupported new inputs with a clear byte-length rule, or plan a compatible hashing migration. Verify creation, login, and reset boundaries without unexpectedly invalidating existing accounts. |
-| **F-06 · Low · P2** | **Partial supply-chain reproducibility:** dependency ranges, the base-image tag, and action version tags can resolve to different inputs on later builds. This is not evidence of a vulnerable dependency. [Requirements](../requirements.txt), [Dockerfile](../Dockerfile), [CI](../.github/workflows/test.yml). | Immutable deployment digests preserve the already-checked build. [Dependabot](../.github/dependabot.yml) schedules pip/action updates. Record resolved build inputs and establish recurring advisory review; dependency compatibility checks alone are not vulnerability scans. |
+| **F-06 · Low · P2** | **Partial supply-chain reproducibility:** dependency ranges, the numbered base-image tag, and numeric action release tags can resolve to different inputs on later builds. Numeric action tags are repository policy. This is not evidence of a vulnerable dependency. [Requirements](../requirements.txt), [Dockerfile](../Dockerfile), [CI](../.github/workflows/test.yml). | Immutable deployment digests preserve the already-checked build. [Renovate](../.github/renovate.json) requires dashboard approval for dependency updates against develop, with automatic merging and vulnerability PRs disabled; [activation instructions](../CONTRIBUTING.md#dependency-monitoring) preserve separate GitHub alerts. CI runs pip-audit on resolved Python dependencies. Record resolved build inputs and continue advisory review. Final-image and bundled-action advisory scans remain gaps. |
+| **F-07 · High · P1** | **Base-image advisory findings:** Trivy 0.76.1 reports 71 distinct Debian advisories (164 package findings, including 8 distinct High advisories) in `python:3.12.15-slim-trixie` on linux/amd64 as of 2026-10-22. The scanner lists no fixed Debian version for these findings. This is package-presence evidence, not proof of a remotely exploitable application path. | Follow Debian/upstream fixes and rebuild when available. The backend remains non-root; that does not eliminate affected libraries. A distribution change requires container build/runtime verification. The final application image, including installed curl, has not been built or scanned. High advisory identifiers are listed below. |
 
 ## Verification record and gaps
 
-Verification on 2026-10-09 covers source/configuration inspection, repository
-references, Python regressions, Node client regressions, lint, and compilation.
-Session regressions reject unregistered JWTs across HTTP/WebSocket/admission,
-require activation credentials before database writes, exercise revocation/expiry
-at issuance, and confirm removed deletion routes preserve queued messages.
-Browser adapter tests cover retired-login handling without key/history deletion.
-Alias regressions cover same-host and mixed-host bidirectional delivery, distinct
-device identities, refresh/reconnect backlog, immutable retry IDs, recipient ACKs,
-unrelated-participant isolation and expired-session rejection. Client regressions
-cover origin-relative endpoints, identity mismatch, stalled requests/connections,
-backoff, offline/navigation recovery, and obsolete socket events. Native crypto
-tests exchange envelopes between independent origin-specific devices.
-Suites use isolated databases and Node adapters, not a live browser. They do not
-establish authenticated end-to-end delivery through an operator's complete proxy
-chain or verify third-party client migration. No production configuration or
-deployment was changed for this release.
+Verification on 2026-10-22 used a clean Python 3.12.12 environment and isolated
+SQLite databases. The full suite and targeted reruns verified all 418 Python
+cases; all 194 Node tests passed. Coverage includes session registration and
+revocation, invite admission, bcrypt byte limits, JWT validation, exact delivery,
+durable storage before ACK, viewing, retries, origin isolation and native crypto.
+Database tests reject incompatible schemas without rewriting them and preserve
+current backup/delivery identities. Ruff, Python compilation, JavaScript syntax,
+pip check and actionlint 1.7.12 passed. A real isolated Uvicorn HTTP/WebSocket test
+covered activation, first-frame authentication, invalid-session closure and public
+administration blocking. Node adapters do not establish browser/device behavior
+or end-to-end operation through an installation's proxy chain.
 
-The latest targeted verification covers keyboard composition, waiting notices,
-saved history, closure and key-change blocks. Node adapters also
-check message ordering, delivery indicators and locale/time-zone updates while
-reducing repeated rendering work. [Roster regressions](../tests/test_roster_loading.py)
-count database queries and retain invalid-key rejection, consumed-invite reconnects
-and key matching when members and users load together. Regression checks
-use synthetic client state and isolated SQLite databases. These checks do not
-extend the broader security assessment above or add browser/live-load evidence.
+Clean installation and binary-wheel resolution succeeded for the configured
+Python 3.12 Linux target. pip-audit 2.10.1 reported zero known advisories across
+67 resolved distributions in both the clean local environment and the exact Linux
+wheel set, including transitive dependencies and pip 26.2.2. Trivy's Dockerfile
+configuration checks reported zero findings. GitHub-hosted workflows were
+inspected and linted, not executed; a complete application-image build and scan
+remain unverified.
+
+The base-image scan has the unresolved findings in F-07. Its eight distinct High
+advisories are CVE-2025-69720 (ncurses), CVE-2026-16742 (systemd/libudev),
+CVE-2026-54369 (libacl), CVE-2026-76642, CVE-2026-78408, CVE-2026-78409 and
+CVE-2026-78410 (util-linux), and CVE-2026-9538 (Perl/Archive::Tar).
+Renovate configuration passed validation against its current official schema;
+the three dependency/workflow regression tests passed. A read-only GitHub check
+on 2026-10-22 confirmed the Dependabot alert API was accessible with no open
+alerts returned, while automatic Dependabot security updates were disabled.
+GitHub settings were not changed. These checks do not establish the absence of
+unknown vulnerabilities or replace the environment and container scans above.
 
 | Unverified area | Evidence needed to establish the property |
 | --- | --- |
 | Runtime isolation and configuration | Per-installation review of proxy trust, TLS/HSTS, public HTTP/WS route blocking, log redaction, IAM/federation restrictions, secret handling, storage permissions, and resource limits. Source configuration alone cannot establish these. |
 | Recovery | An isolated operator-backup restore with signing-key rotation, removal of restored sessions/refresh state, and reapplication of later revocations/resets. [Restore tests](../tests/test_session_recovery.py) cover fixtures, not the operator's backups or historical rollback. |
 | Browser/native interoperability | Real-device key persistence, recovery after interrupted storage/refresh, and message exchange. Node/OpenSSL checks do not verify Safari/iOS storage or native-client interoperability. |
-| Dependency and independent assessment | Current resolved Python/OS/container advisory review, confirmation of repository security settings, and appropriately scoped independent cryptographic/security assessment. No current comprehensive advisory scan or penetration/load assessment is established here. |
+| Dependency and independent assessment | Resolve the known base-image findings, scan the complete application image and bundled actions, and obtain an appropriately scoped independent cryptographic/security assessment. Python scanning does not establish the absence of other vulnerabilities. No penetration/load assessment is established here. |
 
 ## Reporting and upkeep
 

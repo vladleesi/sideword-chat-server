@@ -38,3 +38,19 @@ def test_explicit_development_settings_are_accepted() -> None:
     )
 
     assert settings.admin_username == "admin"
+
+
+def test_settings_source_precedence_and_empty_dotenv_value(tmp_path, monkeypatch):
+    config = tmp_path / "settings.env"
+    config.write_text(
+        "SIDEWORD_PUBLIC_URL=https://file.example\n"
+        "SIDEWORD_ADMIN_PASSWORD= # intentionally empty\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("SIDEWORD_ADMIN_PASSWORD", raising=False)
+    monkeypatch.setenv("SIDEWORD_PUBLIC_URL", "https://environment.example")
+    settings = Settings(_env_file=config)
+    assert settings.public_url == "https://environment.example"
+    assert settings.admin_password == ""
+    settings = Settings(_env_file=config, PuBlIc_Url="https://argument.example")
+    assert settings.public_url == "https://argument.example"

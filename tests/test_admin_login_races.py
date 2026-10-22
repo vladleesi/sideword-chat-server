@@ -94,6 +94,42 @@ def test_password_reset_after_issuance_revokes_cookie_and_bearer(account):
     assert login(client, username, "new-test-password").status_code == 303
 
 
+def test_overlong_reset_preserves_existing_password_and_session(account):
+    client, username = account
+    assert login(client, username).status_code == 303
+    before = session_count(username)
+    with pytest.raises(ValueError, match="72 UTF-8 bytes"):
+        asyncio.run(_run(username, "é" * 37))
+    assert session_count(username) == before
+    assert client.get("/admin/", follow_redirects=False).status_code == 200
+    assert login(client, username).status_code == 303
+
+
+def test_bootstrap_rejects_overlong_new_password_but_preserves_existing_admin(
+    account, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from app import admin_setup
+
+    client, username = account
+    settings = SimpleNamespace(admin_username=username, admin_password="é" * 37)
+    monkeypatch.setattr(admin_setup, "get_settings", lambda: settings)
+    asyncio.run(admin_setup.ensure_default_admin())
+    assert login(client, username).status_code == 303
+    settings.admin_username = "new-" + secrets.token_hex(8)
+    with pytest.raises(ValueError, match="72 UTF-8 bytes"):
+        asyncio.run(admin_setup.ensure_default_admin())
+
+    async def absent():
+        async with SessionLocal() as session:
+            assert await session.scalar(select(Admin.id).where(
+                Admin.username == settings.admin_username,
+            )) is None
+
+    asyncio.run(absent())
+
+
 def fill_sessions(username, total, *, expired=False):
     async def fill():
         async with SessionLocal() as session:

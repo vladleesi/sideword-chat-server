@@ -47,7 +47,9 @@ async def load_chat_info(session: AsyncSession, chat: Chat) -> ChatInfo:
     )
     members = [m.user for m in result.scalars().all() if m.user is not None]
     if any(not valid_public_key(u.public_key) for u in members):
-        raise HTTPException(409, "This room uses retired encryption. Create a new invite.")
+        raise HTTPException(
+            409, "This room has an invalid P-256 participant key. Create a new invite.",
+        )
     return ChatInfo(
         id=chat.id,
         chat_type=chat.chat_type.value,
@@ -116,7 +118,9 @@ async def activate_link(
             .options(joinedload(ChatMember.user))
         )).all())
         if any(m.user is not None and not valid_public_key(m.user.public_key) for m in members):
-            raise HTTPException(409, "This room uses retired encryption. Create a new invite.")
+            raise HTTPException(
+                409, "This room has an invalid P-256 participant key. Create a new invite.",
+            )
         for member in members:
             authenticated = (
                 current_user is not None and member.user_id == current_user.id
@@ -126,9 +130,6 @@ async def activate_link(
                     raise HTTPException(401, "invalid or revoked participant")
                 if member.user.public_key != public_key:
                     raise HTTPException(409, "public_key mismatch with existing participant")
-                if member.resume_hash is None and credential_hash is not None:
-                    # Upgrade a legacy participant while its JWT authenticates it.
-                    member.resume_hash = credential_hash
                 # Sealing only blocks new admissions, never an authenticated reconnect.
                 await session.commit()
                 return member.user, chat, link
@@ -214,5 +215,7 @@ async def chat_members(session: AsyncSession, chat_id: int) -> list[User]:
     )
     members = list(result.scalars().all())
     if any(not valid_public_key(u.public_key) for u in members):
-        raise HTTPException(409, "This room uses retired encryption. Create a new invite.")
+        raise HTTPException(
+            409, "This room has an invalid P-256 participant key. Create a new invite.",
+        )
     return members

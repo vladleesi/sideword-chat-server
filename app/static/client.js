@@ -78,7 +78,7 @@ const viewTimers = new Map();
 let openMessageDetails = null;
 let messageDetailsTrigger = null;
 let statusPollCursor = 0;
-let messageConfirmationsSupported = false;
+let messageProfileReady = false;
 const participantNodes = new Map();
 let participantChatId;
 const presenceByChat = new Map();
@@ -648,7 +648,7 @@ function requestError(status, detail, context = "Chat request failed") {
     "link revoked": "The administrator disabled this invite.",
     "conversation closed": "This conversation is closed. Your saved history and pending messages are kept; other conversations remain available.",
     "room sealed; reconnect with your saved session": "This room is full or closed to new devices. Joining again cannot recover an existing participant slot.",
-    "This room uses retired encryption. Create a new invite.": "This room was created with the old test encryption and cannot accept P-256 devices.",
+    "This room has an invalid P-256 participant key. Create a new invite.": "This room contains an invalid participant encryption key and cannot accept devices.",
     "The room phrase or password is incorrect.": "The room password does not match, or a required password was left empty.",
     "Too many failed attempts. Try again later.": "Password checks for this room are temporarily blocked after too many failed attempts.",
     "public_key mismatch with existing session": "Your saved login belongs to a different encryption key than this device is using.",
@@ -656,7 +656,7 @@ function requestError(status, detail, context = "Chat request failed") {
     "This device has joined. Use its saved session or resume credential.": "This device already claimed a room slot, but its saved login or recovery credential is missing.",
     "personal chat has no peer yet": "The other participant has not joined this room yet.",
     "message identity already has a different payload": "This message ID was already used for different encrypted data. The new upload was rejected.",
-    "message predates retry ledger; verify delivery": "The service cannot safely retry this older message because its original delivery record is missing.",
+    "message has no retry record; verify delivery": "The service cannot safely retry this message because its delivery record is missing.",
     "credential already rotated; use saved refresh state": "The saved login recovery credential is older than the server's current credential.",
   };
   const defaults = {
@@ -716,7 +716,7 @@ class SessionExpiredError extends ClientError {}
 async function invalidateSession(reason = "Session expired") {
   if (!identity) return;
   clearPresence();
-  messageConfirmationsSupported = false;
+  messageProfileReady = false;
   refreshVisibleReads();
   if (identity.token) identity.suspendedToken = identity.token;
   identity.token = null;
@@ -758,7 +758,7 @@ async function ensureFreshSession(force = false) {
     if ((!force || identity.token !== previousToken) && identity.refreshCredential
         && Date.now() < identity.tokenExpiresAt - 60000) return;
     if (!identity.refreshCredential) {
-      await invalidateSession("This saved login uses a retired session format; reopen its invite to recover access");
+      await invalidateSession("This saved login is missing its refresh credential; reopen its invite to recover access");
     }
     identity.pendingRefreshCredential ||= randomCredential();
     await writeIdentity(identity, true); // Keep the proposed rotation if the response/save is lost.
@@ -820,7 +820,6 @@ async function decryptMessage(message) {
 }
 
 async function appendMessage(chatId, entry, persist = true) {
-  normalizeHistoryEntry(chatId, entry);
   const entries = messagesByChat.get(chatId) || [];
   if (entry.id && entries.some((candidate) => candidate.id === entry.id)) {
     return Promise.resolve();
@@ -861,30 +860,11 @@ function metadataFor(chatId, messageId) {
 }
 
 function outgoingMessageId(entry) {
-  return entry.clientMessageId || (entry.id?.startsWith("outgoing:") ? entry.id.slice(9) : null);
-}
-
-function normalizeHistoryEntry(chatId, entry) {
-  if (typeof entry.id !== "string" || !entry.id.startsWith("receipt:")) return;
-  if (entry.kind === "system") {
-    entry.kind = "receipt";
-    entry.receiptKind = "legacy";
-    entry.legacyText = entry.text;
-  }
-  if (!entry.readerPublicId || !entry.clientMessageId) {
-    try {
-      const [cid, peer, messageId] = JSON.parse(entry.id.slice(8));
-      if (cid === chatId && typeof peer === "string" && typeof messageId === "string") {
-        entry.readerPublicId = peer;
-        entry.clientMessageId = messageId;
-      }
-    } catch { /* Retain unrecognized receipt history privately, outside the timeline. */ }
-  }
+  return entry.clientMessageId;
 }
 
 function hiddenMessageEntry(entry) {
-  return ["receipt", "acceptance", "viewed", "read_ack", "delivery_ack", "delivery_ref", "send_failed"].includes(entry.kind)
-    || entry.id?.startsWith("receipt:");
+  return ["receipt", "acceptance", "viewed", "read_ack", "delivery_ack", "delivery_ref", "send_failed"].includes(entry.kind);
 }
 
 function indexMessageMetadata(chatId, entry) {
@@ -936,7 +916,7 @@ function outgoingStatus(chatId, entry) {
   const ids = recipientsKnown ? recipientIds : [...new Set(
     [...metadata.receipts.values()].map(receipt => receipt.readerPublicId))];
   const states = ids.map(publicId => ({ publicId, delivered: false, read: false,
-    deliveredAt: null, readAt: null, legacy: false }));
+    deliveredAt: null, readAt: null }));
   for (const receipt of metadata.receipts.values()) {
     const state = states.find(peer => peer.publicId === receipt.readerPublicId);
     if (!state) continue;
@@ -949,10 +929,9 @@ function outgoingStatus(chatId, entry) {
       if (time !== null) state.readAt = state.readAt === null ? time : Math.min(state.readAt, time);
     } else {
       if (time !== null) state.deliveredAt = state.deliveredAt === null ? time : Math.min(state.deliveredAt, time);
-      state.legacy ||= receipt.receiptKind === "legacy";
     }
   }
-  const accepted = Boolean(acceptance || !entry.statusVersion || states.some(peer => peer.delivered));
+  const accepted = Boolean(acceptance || states.some(peer => peer.delivered));
   const attempt = outgoingAttempts.get(metadataKey(chatId, messageId));
   const readCount = states.filter(peer => peer.read).length;
   const allRead = recipientsKnown && readCount === states.length;
@@ -1008,41 +987,13 @@ function messageMeta(chatId, entry) {
     return label ? `Sent by ${label}` : entry.meta;
   }
   if (entry.kind !== "theirs") return entry.meta;
-  let senderPublicId = entry.senderPublicId;
-  if (!senderPublicId && typeof entry.id === "string" && entry.id.startsWith("incoming:")) {
-    try {
-      const [storedChatId, storedSenderId] = JSON.parse(entry.id.slice("incoming:".length));
-      if (storedChatId === chatId) senderPublicId = storedSenderId;
-    } catch {
-      // Older history without a routing identity keeps its saved label.
-    }
-  }
-  const label = participantLabel(chatId, senderPublicId);
+  const label = participantLabel(chatId, entry.senderPublicId);
   return label ? `From ${label}` : entry.meta;
-}
-
-function messageText(chatId, entry) {
-  if (entry.kind !== "system") return entry.text;
-  let readerPublicId = entry.readerPublicId;
-  let clientMessageId = entry.clientMessageId;
-  if (!readerPublicId && typeof entry.id === "string" && entry.id.startsWith("receipt:")) {
-    try {
-      const [storedChatId, storedReaderId, storedMessageId] = JSON.parse(entry.id.slice("receipt:".length));
-      if (storedChatId === chatId) {
-        readerPublicId = storedReaderId;
-        clientMessageId = storedMessageId;
-      }
-    } catch {
-      // Older history without a routing identity keeps its saved text.
-    }
-  }
-  const label = participantLabel(chatId, readerPublicId);
-  return label && clientMessageId ? `Message ${clientMessageId} was read by ${label}.` : entry.text;
 }
 
 function readableNow(node) {
   if (chats.find(chat => chat.id === selectedChatId)?.closed_at
-      || !messageConfirmationsSupported || !conversationVisible() || document.visibilityState !== "visible"
+      || !messageProfileReady || !conversationVisible() || document.visibilityState !== "visible"
       || typeof document.hasFocus !== "function" || !document.hasFocus()
       || elements.detailsDialog.open || elements.deviceDialog.open || elements.messageDetails.open
       || !visibleMessageNodes.has(node) || renderedMessages.get(node.messageEntry?.id) !== node) return false;
@@ -1104,12 +1055,6 @@ function displayTimestamp(value, full = false, formatters = null) {
 function messageSenderId(chatId, entry) {
   if (entry.senderPublicId) return entry.senderPublicId;
   if (entry.kind === "mine") return identity?.publicId || null;
-  if (entry.kind === "theirs" && entry.id?.startsWith("incoming:")) {
-    try {
-      const [cid, sender] = JSON.parse(entry.id.slice(9));
-      if (cid === chatId && typeof sender === "string") return sender;
-    } catch { /* Unrecognized older identities never become display names. */ }
-  }
   return null;
 }
 
@@ -1118,7 +1063,7 @@ function messageSenderName(chatId, entry) {
   const peer = chats.find(chat => chat.id === chatId)?.participants
     .find(peer => peer.public_id === publicId);
   if (peer) return peer.display_name?.trim() || (entry.kind === "mine" ? "You" : "Participant");
-  // Preserve older saved names while keeping routing IDs out of the timeline.
+  // Preserve saved labels while keeping routing IDs out of the timeline.
   let saved = entry.meta?.replace(/^(?:From |Sent by )/, "").trim();
   if (publicId && saved?.endsWith(` (${publicId})`)) saved = saved.slice(0, -(publicId.length + 3));
   if (saved && saved !== publicId && /^(?:From |Sent by )/.test(entry.meta)) return saved;
@@ -1253,7 +1198,6 @@ function refreshMessageDetails() {
   }
   const note = document.querySelector("#message-details-note");
   note.textContent = !state.recipientsKnown ? "The original recipient list is unavailable. Full delivery and reading cannot be confirmed."
-    : state.states.some(peer => peer.legacy) ? "Older confirmations show receipt on a device; they do not confirm viewing."
     : "Pending means delivery has not been confirmed. Confirmations may be delayed.";
   // Keep technical controls and focus stable as receipt updates arrive.
   const technical = document.querySelector("#message-details-technical");
@@ -1353,7 +1297,7 @@ function renderMessages(openAtLatest = false) {
   let position = 0;
   for (const entry of entries) {
     const key = entry.id || entry;
-    const messageTextContent = messageText(selectedChatId, entry);
+    const messageTextContent = entry.text;
     const previous = entries[position - 1];
     const existing = renderedMessages.get(key);
     if (existing) {
@@ -1536,9 +1480,11 @@ async function loadChats() {
   }
   identity.publicId = data.user.public_id;
   identity.retryWindowSeconds = data.send_retry_window_seconds;
-  identity.receiptRetentionSeconds = data.receipt_retention_seconds || 0;
-  messageConfirmationsSupported = Number.isSafeInteger(data.receipt_retention_seconds)
-    && data.receipt_retention_seconds > 0;
+  if (!Number.isSafeInteger(data.receipt_retention_seconds) || data.receipt_retention_seconds <= 0) {
+    throw new ClientError("The service returned incomplete message retention information.");
+  }
+  identity.receiptRetentionSeconds = data.receipt_retention_seconds;
+  messageProfileReady = true;
   await writeIdentity(identity);
   chats = checkedChats;
   if (selectedChatId && !chats.some((chat) => chat.id === selectedChatId)) {
@@ -1587,14 +1533,14 @@ function queueDelivery(message) {
   pendingDeliveries.set(message.delivery_id, deliveryReference(message, "sender_public_id"));
 }
 
-async function flushDeliveryBatch(path, field, pending, extra = {}, marker = null) {
+async function flushDeliveryBatch(path, field, pending, marker = null) {
   // Keep each failed batch queued. Delete only the successful snapshot so a
   // delivery added during the request cannot be lost.
   while (pending.size) {
     const batch = [...pending.values()].slice(0, 100);
     await api(path, {
       method: "POST",
-      body: JSON.stringify({ [field]: batch, ...extra }),
+      body: JSON.stringify({ [field]: batch }),
     });
     for (const reference of batch) {
       if (marker) await appendMessage(reference.chat_id, {
@@ -1607,16 +1553,16 @@ async function flushDeliveryBatch(path, field, pending, extra = {}, marker = nul
 
 async function flushDurableDeliveries() {
   await flushDeliveryBatch("/api/v1/ack/exact", "messages", pendingDeliveries,
-    messageConfirmationsSupported ? { confirm_delivery: true } : {}, "delivery_ack");
+    "delivery_ack");
 }
 
 async function flushAcknowledgements() {
   await flushDurableDeliveries();
-  if (messageConfirmationsSupported) {
+  if (messageProfileReady) {
     for (const [chatId, ids] of pendingReadsByChat) {
       if (chats.find(chat => chat.id === chatId)?.closed_at) continue;
       await flushDeliveryBatch(`/api/v1/chats/${chatId}/read/exact`, "messages", ids,
-        { viewed: true }, "read_ack");
+        "read_ack");
       pendingReadsByChat.delete(chatId);
     }
   }
@@ -1677,9 +1623,15 @@ async function processMessages(messages) {
 async function processReceipts(receipts, delivered = false) {
   for (const receipt of receipts) {
     const reference = deliveryReference(receipt, "reader_public_id");
-    const stage = delivered ? "delivered" : receipt.view_confirmed ? "read" : "legacy";
+    if (!/^[0-9a-f]{32}$/.test(receipt.message_delivery_id || "")) {
+      throw new ClientError("The service returned incomplete confirmation information.");
+    }
+    if (!delivered && receipt.view_confirmed !== true) {
+      throw new ClientError("The service returned an invalid viewing confirmation.");
+    }
+    const stage = delivered ? "delivered" : "read";
     const key = await messageEventId("receipt", [receipt.chat_id, receipt.reader_public_id,
-      receipt.client_message_id, receipt.message_delivery_id || null, stage]);
+      receipt.client_message_id, receipt.message_delivery_id, stage]);
     if (seenReceiptIds.has(key)) {
       pendingReceiptIds.set(receipt.delivery_id, reference);
       continue;
@@ -1688,7 +1640,7 @@ async function processReceipts(receipts, delivered = false) {
       id: key,
       kind: "receipt",
       receiptKind: stage,
-      messageDeliveryId: receipt.message_delivery_id || null,
+      messageDeliveryId: receipt.message_delivery_id,
       readerPublicId: receipt.reader_public_id,
       clientMessageId: receipt.client_message_id,
       confirmedAt: receiptTime(receipt.created_at),
@@ -1956,7 +1908,7 @@ elements.activationForm.addEventListener("submit", async (event) => {
       acknowledgedDeliveries.clear();
       acknowledgedReads.clear();
       outgoingAttempts.clear();
-      messageConfirmationsSupported = false;
+      messageProfileReady = false;
       visibleMessageNodes.clear();
       messageVisibilityObserver?.disconnect();
       for (const timer of viewTimers.values()) window.clearTimeout(timer);
@@ -2104,7 +2056,7 @@ async function flushOutbox() {
 
 async function storeOutgoing(record) {
   const entry = { id: `outgoing:${record.messageId}`, kind: "mine",
-    statusVersion: 1, clientMessageId: record.messageId,
+    clientMessageId: record.messageId,
     recipients: record.envelopes.map(envelope => envelope.recipient_public_id),
     senderPublicId: identity.publicId,
     text: record.plaintext, meta: `Sent by ${identity.publicId}`,
@@ -2122,7 +2074,7 @@ async function storeAcceptance(chatId, messageId, result) {
 }
 
 async function recoverMessageStatuses() {
-  if (!messageConfirmationsSupported || !identity?.receiptRetentionSeconds || !selectedChatId
+  if (!messageProfileReady || !identity?.receiptRetentionSeconds || !selectedChatId
       || chats.find(chat => chat.id === selectedChatId)?.closed_at) return;
   const entries = (messagesByChat.get(selectedChatId) || []).filter(entry => entry.kind === "mine"
     && Date.now() - historyTimestamp(entry) < identity.receiptRetentionSeconds * 1000

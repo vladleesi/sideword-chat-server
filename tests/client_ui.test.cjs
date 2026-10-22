@@ -40,7 +40,7 @@ test('chat state notifications refresh archive permissions and leave other conve
   app.run(`identity.publicKey = 'own-key';
     globalThis.archived = { ...chats[0], closed_at: '2026-10-08T00:00:00Z' };
     globalThis.active = { ...chats[0], id: 8, title: 'Other room', closed_at: null };
-    api = async () => ({user: {public_id:'me', public_key:'own-key'}, chats:[archived, active]});
+    api = async () => ({receipt_retention_seconds: 86400, user: {public_id:'me', public_key:'own-key'}, chats:[archived, active]});
     writeIdentity = async () => {}; observePeerKey = async peer => peer;
     renderOutbox = async () => {};`);
   await app.run("handleSocketPayload({type:'chat_state', chat_id:7});");
@@ -186,7 +186,7 @@ test('missing restored chats return mobile to the list without persisting an una
     sidewordChatView: { publicId: 'me', chatId: 99, view: 'conversation' },
   } });
   app.run(`restoreChatView(); identity.publicKey = 'own-key';
-    api = async () => ({ user: { public_id: 'me', public_key: 'own-key' }, chats: chats });
+    api = async () => ({ receipt_retention_seconds: 86400, user: { public_id: 'me', public_key: 'own-key' }, chats: chats });
     writeIdentity = async () => {}; observePeerKey = async peer => peer;`);
   await app.run('loadChats();');
   assert.equal(app.nodes.get('#client-panel').dataset.mobileView, 'chats');
@@ -537,7 +537,7 @@ for (const chatType of ['group', 'personal']) {
     assert.equal(input.value, 'saved draft');
     await app.run(`(async () => {
       identity.publicKey = 'own-key';
-      api = async () => ({ user: { public_id: 'me', public_key: 'own-key' }, chats: [
+      api = async () => ({ receipt_retention_seconds: 86400, user: { public_id: 'me', public_key: 'own-key' }, chats: [
         { ...chats[0], participants: [...chats[0].participants,
           { public_id: 'new-peer', display_name: 'New participant' }] }
       ] });
@@ -778,13 +778,13 @@ test('late messages recompute adjacent groups without replacing selected content
   assert.equal(original.messageHeader.sender.hidden,false);
 });
 
-test('unnamed and legacy participants keep readable names and hide routing identifiers in the timeline', async () => {
+test('unnamed and saved participants keep readable names and hide routing identifiers in the timeline', async () => {
   const app=client();
   await app.run(`persistHistoryEntry=async()=>{};
     chats[0].participants[1].display_name=null;
     messagesByChat.set(7,[
-      {id:'incoming:'+JSON.stringify([7,'peer-a','old']),kind:'theirs',text:'unnamed',meta:'From peer-a',createdAt:1000},
-      {id:'incoming:'+JSON.stringify([7,'former-id','old']),kind:'theirs',text:'saved',meta:'From Former Name (former-id)',createdAt:2000},
+      {id:'incoming:'+JSON.stringify([7,'peer-a','saved']),kind:'theirs',senderPublicId:'peer-a',text:'unnamed',meta:'From peer-a',createdAt:1000},
+      {id:'incoming:'+JSON.stringify([7,'former-id','saved']),kind:'theirs',senderPublicId:'former-id',text:'saved',meta:'From Former Name (former-id)',createdAt:2000},
       {id:'outgoing:old',kind:'mine',senderPublicId:'former-me',text:'saved reply',meta:'Sent by Former Me',createdAt:3000}
     ]); renderMessages();`);
   const rows=app.nodes.get('#message-list').children;

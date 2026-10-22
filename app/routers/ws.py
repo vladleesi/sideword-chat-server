@@ -7,8 +7,8 @@ import base64
 from datetime import datetime, timezone
 
 from anyio import CancelScope
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
-from sqlalchemy import select, update
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import SessionLocal
@@ -22,16 +22,7 @@ from ..ws_manager import manager
 router = APIRouter()
 
 _BASE_PROTOCOL = "sideword.v1"
-_AUTH_PROTOCOL_PREFIX = "sideword.auth."
 SESSION_CHECK_SECONDS = 30
-
-
-def _token_from_subprotocol(websocket: WebSocket) -> str | None:
-    protocols = websocket.headers.get("sec-websocket-protocol", "")
-    for protocol in (item.strip() for item in protocols.split(",")):
-        if protocol.startswith(_AUTH_PROTOCOL_PREFIX):
-            return protocol.removeprefix(_AUTH_PROTOCOL_PREFIX)
-    return None
 
 
 async def _resolve_user(session: AsyncSession, token: str) -> User | None:
@@ -66,34 +57,34 @@ async def _backlog_payload(
 
 
 @router.websocket("/ws")
-async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=None)) -> None:
-    auth_token = token or _token_from_subprotocol(websocket)
+async def ws_endpoint(websocket: WebSocket) -> None:
     requested_protocols = {
         item.strip()
         for item in websocket.headers.get("sec-websocket-protocol", "").split(",")
     }
     accepted_protocol = _BASE_PROTOCOL if _BASE_PROTOCOL in requested_protocols else None
-    presence_requested = False
-
-    # Browsers authenticate in the first frame so JWTs stay out of URLs and
-    # WebSocket protocol headers. Query/subprotocol auth remains compatible.
-    if auth_token is None:
-        await websocket.accept(subprotocol=accepted_protocol)
-        try:
-            payload = await asyncio.wait_for(websocket.receive_json(), timeout=5)
-        except (TimeoutError, ValueError, WebSocketDisconnect):
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
-        if (
-            not isinstance(payload, dict)
-            or payload.get("type") != "auth"
-            or not isinstance(payload.get("token"), str)
-        ):
-            await websocket.send_json({"type": "auth_error", "reason": "auth required"})
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
-        auth_token = payload["token"]
-        presence_requested = payload.get("presence") is True
+    # Credentials are accepted only in the first frame, never URLs or protocols.
+    if "token" in websocket.query_params or any(
+        protocol.startswith("sideword.auth.") for protocol in requested_protocols
+    ):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    await websocket.accept(subprotocol=accepted_protocol)
+    try:
+        payload = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+    except (TimeoutError, ValueError, WebSocketDisconnect):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    if (
+        not isinstance(payload, dict)
+        or payload.get("type") != "auth"
+        or not isinstance(payload.get("token"), str)
+    ):
+        await websocket.send_json({"type": "auth_error", "reason": "auth required"})
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    auth_token = payload["token"]
+    presence_requested = payload.get("presence") is True
 
     connected_user_id: int | None = None
     try:
@@ -107,8 +98,6 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
             user.last_seen_at = datetime.now(timezone.utc)
             await session.commit()
 
-            if websocket.application_state.name != "CONNECTED":
-                await websocket.accept(subprotocol=accepted_protocol)
             async def validate_session() -> bool:
                 # A fresh session avoids stale ORM state after remote revocation.
                 async with SessionLocal() as current:
@@ -124,15 +113,6 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
             connected_user_id = user.id
             messages, receipts, deliveries = await _backlog_payload(session, user)
 
-            # Backlog rows are treated as delivered once streamed down.
-            if messages:
-                await session.execute(update(PendingMessage).where(
-                    PendingMessage.delivery_id.in_([m.delivery_id for m in messages]),
-                    PendingMessage.recipient_id == user.id,
-                    PendingMessage.delivered_at.is_(None),
-                ).values(delivered_at=datetime.now(timezone.utc)))
-                await session.commit()
-
             if not await manager.validate(user.id, websocket):
                 return
             await websocket.send_json(
@@ -146,7 +126,7 @@ async def ws_endpoint(websocket: WebSocket, token: str | None = Query(default=No
                     },
                 }
             )
-            # Opt-in preserves the event stream for legacy clients.
+            # Presence remains optional and requires application heartbeats.
             if presence_requested:
                 await manager.enable_presence(websocket)
             else:

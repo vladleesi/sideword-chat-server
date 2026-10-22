@@ -181,7 +181,7 @@
         <li><p class="number">02 / RELAY</p><h3>Authenticate and deliver.</h3><p>Sideword validates revocable sessions and membership, deduplicates send retries, and delivers queued ciphertext.</p></li>
         <li><p class="number">03 / ACKNOWLEDGE</p><h3>After local persistence.</h3><p>The recipient decrypts and saves locally before acknowledging the exact delivery identity. ACK removes ciphertext; TTL clears stale deliveries.</p></li>
       </ol>
-      <p class="architecture-note">Password admission trusts the server and HTTPS terminator; it does not replace client-side encryption or peer key verification. The reference client pins first-use keys but has no recipient forward secrecy or post-compromise recovery. <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/SECURITY_REVIEW.md">Security review and migration plan <span aria-hidden="true">&#8599;</span></a></p>
+      <p class="architecture-note">Password admission trusts the server and HTTPS terminator; it does not replace client-side encryption or peer key verification. The reference client pins first-use keys but has no recipient forward secrecy or post-compromise recovery. <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/SECURITY_REVIEW.md">Security review <span aria-hidden="true">&#8599;</span></a></p>
     </section>
 
     <section class="developer wrap" id="api" aria-labelledby="api-title">
@@ -197,7 +197,7 @@
             <li>Receive messages over WebSocket or HTTP polling.</li>
             <li>Persist locally, then acknowledge exact delivery.</li>
           </ol>
-          <p class="muted">OpenAPI is available at <code>/docs</code> on your local administration listener. Use registered sessions and exact acknowledgements; legacy authentication and ambiguous deletion are removed in 0.11.0. Clients must agree on an authenticated encryption format.</p>
+          <p class="muted">OpenAPI is available at <code>/docs</code> on your local administration listener. Use registered sessions, first-frame WebSocket authentication and exact acknowledgements. Clients must agree on an authenticated encryption format.</p>
         </div>
         <div class="code-panel">
           <div class="code-heading"><span>HTTP + WEBSOCKET</span><span>API V1</span></div>
@@ -211,7 +211,7 @@
       </div>
       <aside class="reference-note">
         <p class="number">REFERENCE CLIENT</p>
-        <div><h3>A tool for testing the contract.</h3><p>The reference client at <code>/client</code> exercises invite activation, encrypted delivery and local history with non-exportable P-256 keys. Each browser origin keeps an independent device identity and history. It is for testing, not a production-ready messenger. Compare peer fingerprints out of band: first-use pinning cannot prevent initial key substitution or malicious server-delivered code. Rooms from before the P-256 update require fresh invites and identities; see the <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/UPGRADING.md">upgrade guide</a>.</p><a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/PROTOCOL.md">Reference protocol <span aria-hidden="true">&#8599;</span></a></div>
+        <div><h3>A tool for testing the contract.</h3><p>The reference client at <code>/client</code> exercises invite activation, encrypted delivery and local history with non-exportable P-256 keys. Each browser origin keeps an independent device identity and history. It is for testing, not a production-ready messenger. Compare peer fingerprints out of band: first-use pinning cannot prevent initial key substitution or malicious server-delivered code. Each pre-release requires fresh server and browser state; see the <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/UPGRADING.md">setup and recovery guide</a>.</p><a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/PROTOCOL.md">Reference protocol <span aria-hidden="true">&#8599;</span></a></div>
       </aside>
     </section>
 

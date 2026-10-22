@@ -78,7 +78,7 @@ function inviteClient() {
       if (path === '/api/v1/me') return { user: { public_id: nextPublicId,
         public_key: 'device-public-key' }, chats: [...(nextPublicId === 'alice'
           ? [{ id: 7, participants: [] }] : []),
-        { id: 8, participants: [] }], send_retry_window_seconds: 3600 };
+        { id: 8, participants: [] }], send_retry_window_seconds: 3600, receipt_retention_seconds: 86400 };
       if (path === '/api/v1/poll') return { messages: [], read_receipts: [] };
       throw new Error('Unexpected request ' + path);
     };
@@ -124,7 +124,7 @@ test('activation errors explain HTTP failures without rendering server inputs or
     [403, 'The room phrase or password is incorrect.', /room password does not match/],
     [410, 'link expired', /invite has expired/],
     [410, 'room sealed; reconnect with your saved session', /full or closed to new devices/],
-    [409, 'This room uses retired encryption. Create a new invite.', /old test encryption/],
+    [409, 'This room has an invalid P-256 participant key. Create a new invite.', /invalid participant encryption key/],
     [429, 'Too many failed attempts. Try again later.', /Password checks.*temporarily blocked/],
     [422, [{ loc: ['body', 'public_key'], input: privateMarker, msg: privateMarker }], /rejected this device's public encryption key/],
     [422, [{ loc: ['body', 'token'], input: privateMarker, msg: privateMarker }], /request fields as invalid/],
@@ -512,7 +512,7 @@ test('retired sessions pause without migration requests or losing saved device k
     elements.inviteToken.focus = () => {};
     window.clearTimeout = window.clearInterval = () => {};
   })()`);
-  await assert.rejects(run('ensureFreshSession()'), /retired session format/);
+  await assert.rejects(run('ensureFreshSession()'), /missing its refresh credential/);
   assert.equal(requests, 0);
   assert.equal(saved.token, null);
   assert.equal(saved.suspendedToken, 'retired-access');

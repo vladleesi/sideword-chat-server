@@ -2,8 +2,8 @@
 
 This documents the current test format for interoperability, not a recommendation
 to build a new cryptographic protocol. It is unaudited, has no recipient forward
-secrecy or post-compromise recovery, and is not the Signal Protocol. See the
-[security review and migration plan](SECURITY_REVIEW.md).
+secrecy or post-compromise recovery. See the
+[security review](SECURITY_REVIEW.md).
 
 Conversation closure does not change encryption or keys. Respect `closed_at` in
 the authenticated roster: keep local history readable, pause outgoing retries and
@@ -17,11 +17,8 @@ are independent. The backend handles opaque ciphertext, never message plaintext
 or private keys. Clients using different envelope formats cannot interoperate
 just because they use the same HTTP API.
 
-Backend 0.6.0 replaces the prior test format completely. This format retains
-`v: 1` with a distinct P256 algorithm identifier and authenticated context;
-there is no X25519 encryption/decryption support or algorithm negotiation.
-Old device credentials, rooms and configuration exports containing retired keys
-are incompatible. Start new rooms with new invites and fresh P-256 identities.
+The envelope uses `v: 1`, a P256 algorithm identifier and authenticated context.
+There is no algorithm negotiation or conversion of other key/ciphertext formats.
 
 ## Implementation boundary
 
@@ -82,8 +79,8 @@ epochs. The server requires envelopes to cover all peers.
 
 The fingerprint is lowercase hex SHA-256 of the raw public key (64 characters).
 Calculate it locally, and compare the full value and intended participant with
-the key's owner over another trusted channel. The displayed fingerprints are
-not a Signal safety number and do not imply a verified identity.
+the key's owner over another trusted channel. Displaying a fingerprint alone
+does not establish a verified identity.
 
 The test client stores the first fingerprint for each peer public ID, scoped to
 the local device public key and browser origin. Atomic IndexedDB transactions
@@ -98,10 +95,8 @@ but their private keys, pins and history remain independent. There is no automat
 identity or history transfer; see [device lifecycle](SESSION_LIFECYCLE.md#persistence-devices-and-reconnects).
 
 The IndexedDB database is `sideword-test-client-p256`, version 1, store `device`.
-The prior database is left untouched and is never read by this client. It is
-not a compatibility or recovery path. New identities require fresh peer
-fingerprint verification. The encrypted `history:` format within this database
-uses a separate non-exportable AES-256-GCM
+New identities require fresh peer fingerprint verification. Encrypted `history:`
+records use a separate non-exportable AES-256-GCM
 key, a fresh 12-byte IV per record, and the complete history storage key as AAD.
 Private identity and storage keys are browser CryptoKeys, never uploaded. New
 private identity and ephemeral keys are generated non-exportable directly;
@@ -115,11 +110,9 @@ are aborted. Missing or unreadable device storage blocks renewal without being
 reported as a concurrent device change; an actual changed participant/public key
 still requires a reload.
 
-P-256 removes this client's dependency on the key type affected by the reported
-[WebKit persistence bug](https://bugs.webkit.org/show_bug.cgi?id=312279).
-The preflight still detects failed storage round trips before admission. It cannot
-repair browser storage or recover inaccessible keys. Startup failures remain visible
-on the activation form. Storage and platform behavior still require device QA.
+The preflight detects failed storage round trips before admission. It cannot
+repair browser storage or recover inaccessible keys. Startup failures remain
+visible on the activation form. Storage and platform behavior require device QA.
 
 History stores participant labels alongside routing identities. Current roster
 names can update displayed labels without changing stored history, delivery IDs
@@ -133,11 +126,11 @@ it does not change message envelopes, receipts, key checks or delivery ACKs.
 See the [presence contract](API.md#participant-presence) for opt-in authentication,
 heartbeat deadlines, membership scoping and mandatory unknown/expiry behavior.
 
-Authenticate, decrypt, and commit local history before `/ack/exact` with
-`confirm_delivery:true`, which removes ciphertext and confirms durable delivery.
-Use `/read/exact` with `viewed:true` only after actual viewing; it never requires
+Authenticate, decrypt, and commit local history before `/ack/exact`, which removes
+ciphertext and confirms durable delivery.
+Use `/read/exact` only after actual viewing; it never requires
 retained ciphertext. See [delivery and viewing](API.md#durable-delivery-and-actual-viewing)
-for visibility, authorization and backward compatibility. Failed decryption, pin checks, or
+for visibility and authorization. Failed decryption, pin checks, or
 storage must leave messages retryable. Serialize incoming processing across WS
 and polling. Deduplicate messages by chat, sender public ID, and client message
 ID; receipt identities also include the original message delivery ID and stage. SQLite row IDs
@@ -148,22 +141,16 @@ Use the [exact delivery endpoints](API.md#exact-delivery-identities), binding
 delivery identity is relay metadata, outside the v1 ciphertext and HKDF context.
 It identifies one queued row and survives a full database backup/restore. Batch
 at most 100 references per list; retain failed batches for retry. A zero count
-is a successful no-op when the referenced delivery no longer exists. Legacy exact read
-consumes a row and creates its receipt atomically. Distinct delivery/viewing
+is a successful no-op when the referenced delivery no longer exists. Delivery/viewing
 confirmations update the bounded ledger atomically and are idempotent across
 concurrent requests. Store acceptance, per-recipient receipts, viewing intent and
-ACK markers as encrypted history metadata, not timeline messages. Legacy receipt
-entries remain available as hidden delivery evidence; they cannot confirm viewing.
+ACK markers as encrypted history metadata, not timeline messages.
 
-Row-ID `/ack` and client-message-ID `/read` are removed in backend 0.11.0.
-Clients must use exact delivery references and must not fall back to ambiguous
-deletion. Persist outgoing ciphertext before
+Clients must use exact delivery references. Persist outgoing ciphertext before
 upload and retry the same envelopes within the [server retry window](API.md#send-retries-and-capacity).
 Delivery IDs do not authenticate relay metadata or prevent malicious relay replay.
 The browser uses an encrypted outbox and Web Locks across tabs; browser-independent
 interoperability still requires release QA.
 
-`tests/client_crypto.test.cjs` checks both directions of P-256 interoperability
-against Node's independent OpenSSL APIs using synthetic fixed keys, salt, and
-IV, plus group isolation, tampering, malformed keys, non-exportable ephemeral keys,
-and the encrypted local-history format.
+See the [verification record](SECURITY_REVIEW.md#verification-record-and-gaps)
+for automated coverage and remaining browser/native interoperability gaps.

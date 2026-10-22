@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -30,7 +31,6 @@ def delivered(client, user, message):
         "/api/v1/ack/exact",
         headers=headers(user),
         json={
-            "confirm_delivery": True,
             "messages": [reference(message)],
         },
     )
@@ -40,7 +40,7 @@ def viewed(client, user, message):
     return client.post(
         f"/api/v1/chats/{message['chat_id']}/read/exact",
         headers=headers(user),
-        json={"viewed": True, "messages": [reference(message)]},
+        json={ "messages": [reference(message)]},
     )
 
 
@@ -169,7 +169,7 @@ def test_colliding_sender_ids_and_concurrent_tabs_are_idempotent(room):
         assert sum(peer["read_at"] is not None for peer in own["recipients"]) == 1
 
 
-def test_legacy_read_confirms_delivery_without_claiming_viewing(room):
+def test_read_without_prior_delivery_never_consumes_ciphertext(room):
     client, users = room()
     send(client, users)
     message = poll(client, users[1])["messages"][0]
@@ -178,10 +178,11 @@ def test_legacy_read_confirms_delivery_without_claiming_viewing(room):
         headers=headers(users[1]),
         json={"messages": [reference(message)]},
     )
-    assert response.json()["marked"] == 1
-    assert poll(client, users[0])["read_receipts"][0]["view_confirmed"] is False
+    assert response.json()["marked"] == 0
+    assert poll(client, users[1])["messages"] == [message]
+    assert poll(client, users[0])["read_receipts"] == []
     state = statuses(client, users[0]).json()["statuses"][0]["recipients"][0]
-    assert state["delivered_at"] and state["read_at"] is None
+    assert state["delivered_at"] is None and state["read_at"] is None
 
 
 def test_full_receipt_queue_never_delays_durable_ack_and_status_recovers(room, monkeypatch):
@@ -240,7 +241,7 @@ def test_metadata_expiry_retention_and_no_stale_confirmations(room):
     asyncio.run(count())
 
 
-def test_receipt_backlog_queues_are_independent_for_legacy_clients(room):
+def test_delivery_and_viewing_backlogs_are_bounded_independently(room):
     client, users = room()
 
     async def seed():
@@ -255,6 +256,7 @@ def test_receipt_backlog_queues_are_independent_for_legacy_clients(room):
                         reader_public_id=users[1]["user"]["public_id"],
                         client_message_id=str(index),
                         kind="delivered",
+                        message_delivery_id=secrets.token_hex(16),
                     )
                 )
             session.add(
@@ -266,6 +268,7 @@ def test_receipt_backlog_queues_are_independent_for_legacy_clients(room):
                     reader_public_id=users[1]["user"]["public_id"],
                     client_message_id="viewed",
                     kind="viewed",
+                    message_delivery_id=secrets.token_hex(16),
                 )
             )
             await session.commit()

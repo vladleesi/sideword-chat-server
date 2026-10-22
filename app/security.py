@@ -18,14 +18,17 @@ JWT_ALG = "HS256"
 
 
 def hash_password(password: str) -> str:
-    # bcrypt passwords must not exceed 72 bytes.
-    pw = password.encode("utf-8")[:72]
+    pw = password.encode("utf-8")
+    if len(pw) > 72:
+        raise ValueError("Admin passwords must be at most 72 UTF-8 bytes.")
     return bcrypt.hashpw(pw, bcrypt.gensalt()).decode("ascii")
 
 
 def verify_password(password: str, password_hash: str) -> bool:
     try:
-        pw = password.encode("utf-8")[:72]
+        pw = password.encode("utf-8")
+        if len(pw) > 72:
+            return False
         return bcrypt.checkpw(pw, password_hash.encode("ascii"))
     except (ValueError, TypeError):
         return False

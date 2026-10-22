@@ -22,16 +22,17 @@ from app.security import hash_password
 
 
 async def _run(username: str, password: str) -> int:
+    password_hash = hash_password(password)
     await init_db()
     async with session_scope() as session:
         result = await session.execute(select(Admin).where(Admin.username == username))
         admin = result.scalar_one_or_none()
         if admin is None:
-            admin = Admin(username=username, password_hash=hash_password(password))
+            admin = Admin(username=username, password_hash=password_hash)
             session.add(admin)
             print(f"created admin '{username}'")
         else:
-            admin.password_hash = hash_password(password)
+            admin.password_hash = password_hash
             await session.execute(delete(AdminSession).where(AdminSession.admin_id == admin.id))
             print(f"updated password for admin '{username}'")
         await session.commit()
@@ -47,6 +48,9 @@ def main() -> int:
     password = args.password or getpass.getpass("Password: ")
     if not password:
         print("empty password rejected", file=sys.stderr)
+        return 2
+    if len(password.encode("utf-8")) > 72:
+        print("Admin passwords must be at most 72 UTF-8 bytes.", file=sys.stderr)
         return 2
     return asyncio.run(_run(args.username, password))
 

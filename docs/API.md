@@ -3,6 +3,8 @@
 See `/docs` on the local administration listener (port 8000) for the complete
 schema. Send JSON bodies with `Content-Type: application/json`. After activation,
 HTTP API requests require `Authorization: Bearer <JWT>`.
+JSON endpoints reject missing or non-JSON content types with 422; validation
+responses omit submitted values.
 
 For password-protected rooms, include `password` in activation. Persist a random
 `resume_credential` and a separate `session_credential` before the first activation
@@ -51,11 +53,8 @@ Content-Type: application/json
 }
 ```
 
-This is the only activation route. The former
-`POST /api/v1/links/{token}/activate` route is removed and returns 404; all clients
-must send the invite secret in the JSON body. The invite landing paths
-`/l/{token}` and `/client?invite={token}` remain unchanged and still require URL
-log protection.
+Send the invite secret in the JSON body. Invite landing paths `/l/{token}` and
+`/client?invite={token}` also contain secrets and require URL log protection.
 
 Room passwords are optional. The admin can generate a 16-character password or
 set a custom phrase of 8–32 characters, matched exactly including case and whitespace.
@@ -153,8 +152,8 @@ normal server retention still applies.
 Authenticated administration can POST `/admin/chats/{chat_id}/close` or `/reopen`
 with the usual CSRF protections. Closure is serialized with sends across workers.
 Reopening resumes authorized delivery of retained queues, subject to their TTL,
-and leaves invite revocation/expiry and session validity unchanged. Old clients
-cannot bypass server closure by ignoring the new field.
+and leaves invite revocation/expiry and session validity unchanged. The server
+enforces closure independently of client state.
 
 ## Send message
 
@@ -197,8 +196,7 @@ Rules:
    unknown event types for forward compatibility. Periodic `/me` refresh also
    observes changes from other workers. Session authentication and closure
    authorization remain server-enforced even if a client misses the event.
-   Legacy `/ws?token=<JWT>` and `sideword.auth.<JWT>` subprotocol authentication
-   remain supported, but can expose credentials to URL/header logs.
+   Credentials in query strings or WebSocket subprotocols are rejected.
 
    Check that `hello.user` matches the authenticated HTTP participant before
    consuming its backlog. The bundled client marks the connection live after
@@ -254,12 +252,9 @@ of identity, attention, or successful message decryption.
 Opted-in clients send textual `ping` at least every 25 seconds; the server replies
 `pong` and refreshes their snapshot. These sockets close after 75 seconds without
 an incoming frame, with periodic credential checks at most 30 seconds apart.
-Connect/disconnect transitions update observers immediately. Legacy clients keep
-their existing `hello`/`message`/`read` event stream and transport ping/pong policy;
-their authenticated sockets also count while connected. Keep Uvicorn's transport
-ping interval/timeout enabled (defaults: 20/20 seconds) for stale legacy cleanup.
-There is no HTTP presence endpoint, stored activity history, or last-seen field
-in this feature; HTTP polling alone cannot establish presence.
+Connect/disconnect transitions update observers immediately. Presence is optional;
+sockets without presence use transport ping/pong cleanup. Keep Uvicorn's ping
+interval/timeout enabled (defaults: 20/20 seconds).
 
 Presence is process-local. Use one shared process (including the bundled
 two-listener runner); set `SIDEWORD_PRESENCE_ENABLED=false` on every independent
@@ -270,22 +265,21 @@ registries authoritative. No broker or additional dependency is required.
 ## Exact delivery identities
 
 Every message and receipt returned by polling, WS backlog, or live WS events has
-an additive `delivery_id`: a server-generated, random 32-character lowercase hex
+a `delivery_id`: a server-generated, random 32-character lowercase hex
 identifier. It stays stable while that row exists, including database restarts
 and backups. A newly queued row gets a fresh identity even if SQLite reuses its
 integer `id` or a sender repeats its `client_message_id`. It is metadata, not a
 secret or proof of decryption. All operations still require the owner's JWT.
 
-Use the exact endpoints below for new clients. The bundled browser uses them
-without falling back to legacy deletion if an older server rejects the request.
+Use the exact endpoints below. The bundled browser retains failed acknowledgements
+for retry.
 
 ## Mark read
 
-The request below is the legacy durable-consumption operation. New clients use
-[distinct delivery and viewing confirmations](#durable-delivery-and-actual-viewing).
+After durable acknowledgement and actual viewing, post 1–100 exact message
+references to `POST /api/v1/chats/{chat_id}/read/exact`:
 
-```
-POST /api/v1/chats/7/read/exact
+```json
 {
   "messages": [{
     "delivery_id": "0123456789abcdef0123456789abcdef",
@@ -296,12 +290,9 @@ POST /api/v1/chats/7/read/exact
 }
 ```
 
-Copy all reference fields from the received message. All must match a row
-addressed to the authenticated recipient; `chat_id` must also match the route.
-Send 1–100 references per request. Deletion and receipt creation occur in one
-transaction. Concurrent readers or retries after a lost response consume a row
-at most once. The response is `{"marked": N}`; stale references return zero.
-The sender receives the receipt through poll/WS and can then acknowledge it.
+See [delivery and viewing](#durable-delivery-and-actual-viewing) for authorization
+and retry guarantees. Viewing never deletes ciphertext or confirms delivery
+implicitly.
 
 ## Acknowledge server-side deletion
 
@@ -321,9 +312,8 @@ POST /api/v1/ack/exact
 }
 ```
 
-`messages` accepts the same references as exact read. With the default
-`confirm_delivery:false`, it deletes ciphertext without creating receipts.
-[Opt in to durable confirmation](#durable-delivery-and-actual-viewing) for new clients. `receipts` binds the delivery, chat, reader, and client message
+`messages` accepts the same references as exact read and always confirms durable
+delivery when it removes ciphertext. `receipts` binds the delivery, chat, reader, and client message
 ID to the authenticated original sender. Both lists are optional and limited to
 100 items each; unknown fields are rejected. The response is
 `{"deleted_messages": N, "deleted_receipts": N}`. Repeat a failed request with
@@ -333,11 +323,9 @@ After ACK, rows are gone from the server. SQLite row IDs may be reused: deduplic
 messages by chat, sender, and client message ID; receipts additionally include
 the original message delivery ID and confirmation stage. Treat timestamps without a timezone as UTC when ordering history.
 
-`POST /api/v1/ack` and `POST /api/v1/chats/{chat_id}/read` are removed in
-0.11.0 and return 404. Clients must use exact delivery references; no compatibility
-setting restores ambiguous deletion. Sends deduplicate within the retry window
-described below. Use a fresh client message ID for each logical message. Stolen
-bearer tokens can still delete their owner's deliveries through the exact API.
+Sends deduplicate within the retry window described below. Use a fresh client
+message ID for each logical message. Stolen bearer tokens can still delete their
+owner's deliveries through the exact API.
 
 ## Drop own undelivered messages
 
@@ -358,12 +346,9 @@ verify fingerprints locally. V1 has no recipient forward secrecy or recovery
 after key compromise. See [threat model and limits](SECURITY_REVIEW.md#threat-model-and-limits)
 for relay, browser, bearer-token and retention boundaries.
 
-Backend 0.6.0 replaces the prior test encryption format without compatibility
-support. `/api/v1` remains the HTTP API prefix. Retired device keys cannot activate,
-authenticate over HTTP or WebSocket, bootstrap sessions, or refresh credentials.
-An invite attached to a room with a retired key rejects admission with 409;
-create a new room/invite. Configuration imports reject invalid/retired public
-keys with 400 before modifying any state, including in replace mode.
+Invalid public keys fail authentication, renewal, admission and configuration
+import. The bundled client validates the [v1 envelope format](PROTOCOL.md);
+the server does not inspect its contents.
 
 ## Send retries and capacity
 
@@ -373,8 +358,7 @@ ciphertext and recipient sets return the original 200 response; conflicting
 payloads return 409. An identical retry after read/ACK or partial fanout delivery
 does not recreate deleted rows. Recipient order and equivalent base64 encoding
 do not change the comparison. IDs must be unique for each logical message.
-The guarantee requires a ledger record from the first successful upload;
-pre-upgrade sends without that evidence have no retroactive retry guarantee.
+The guarantee requires the ledger record from the first successful upload.
 
 `/me.send_retry_window_seconds` advertises the current window. Persist envelopes
 before uploading; never re-encrypt a retry under the same ID. A shorter later
@@ -399,8 +383,7 @@ On activation, include the required `session_credential`: 32 random bytes encode
 as 43 unpadded base64url characters, persisted before the request. The response
 includes `session_id`, `access_expires_at`, and `session_expires_at`. Identical
 initial credentials can retry a lost activation response before their first rotation.
-All client access JWTs require a live registered session. `POST /api/v1/sessions`
-is removed (405); session listing and revocation remain available at that prefix.
+All client access JWTs require a live registered session issued through activation.
 Issuance rechecks the current participant identity, active state, invite, and any
 supplied authenticated session under the database write reservation, including
 retries of an existing credential.
@@ -418,22 +401,13 @@ Access defaults to 15 minutes; the absolute session lifetime defaults to 30 days
 and never extends on refresh. Refresh after that deadline requires invite recovery.
 New session lifetimes are capped by the invite expiry at issuance. Activation
 and refresh responses cap both deadline fields by the current invite
-expiry, including sessions created by earlier releases. Extending an invite does
-not extend a session's stored lifetime.
+expiry. Extending an invite does not extend a session's stored lifetime.
 
 GET `/api/v1/sessions` lists the authenticated user's sessions; DELETE
 `/api/v1/sessions/{session_id}` revokes one. Revocation affects HTTP and WS session
 checks. `/me` reports `access_expires_at` and `session_expires_at`; access ends at
 the earliest JWT, session or invite deadline. Consumed/sealed invites still permit valid session refresh;
 revoked, deleted, expired invites and inactive users do not.
-
-Legacy client JWTs and activation without a session credential are unsupported.
-The retired `JWT_TTL_HOURS`, `LEGACY_TOKEN_DEADLINE`, and `ALLOW_LEGACY_ACK`
-settings have no effect and should be removed from runtime configuration.
-Invite resume secrets remain separate: revoke the invite if those credentials
-are compromised.
-This does not invalidate sessions issued through other invites or remove chat
-membership; deactivate a compromised identity to block its access across chats.
 
 ## Admin requests
 
@@ -451,32 +425,33 @@ transaction, so a concurrent reset cannot be bypassed by an in-flight login.
 Logins return 401 if that record changed. The global 1,000-session cap is enforced
 in the same transaction; expired admin sessions are removed before checking it.
 At capacity, login returns 429 without evicting any live session.
-Old stateless admin JWTs require login again. Administrator/schema endpoints
+Admin JWTs require a registered active session. Administrator/schema endpoints
 are local-only by default; HTTPS is required outside loopback for all APIs.
 
 ## Durable delivery and actual viewing
 
 Server acceptance, durable delivery and viewing are distinct. The send response
-includes the original `recipients` and an additive `deliveries` map from public ID
+includes the original `recipients` and a `deliveries` map from public ID
 to exact message delivery ID. Preserve this set; subsequent membership changes
 must not change an original message's aggregate confirmation requirements.
 
 After authenticating, decrypting and committing local storage, post the message's
-exact reference to `/api/v1/ack/exact` with `"confirm_delivery": true`. This deletes
+exact reference to `/api/v1/ack/exact`. This deletes
 ciphertext independently of viewing, records durable delivery once, and queues a
 `delivery_receipts` event for the sender. Poll and WS `hello.backlog` include this
-additive array; live WS events have `{"type":"delivered","delivery":{...}}`.
+array; live WS events have `{"type":"delivered","delivery":{...}}`.
 Delivery events use the existing receipt reference/acknowledgement format and add
 `message_delivery_id` for the original ciphertext row. Streaming to a socket or
 poll response alone does not confirm durable delivery.
 
-After actual viewing, post the same message reference to `/read/exact` with
-`"viewed": true`. The server requires prior confirmed delivery and matches the
+After actual viewing, use [exact read](#mark-read) with the same message reference.
+The server requires prior confirmed delivery and matches the
 original chat, sender public ID, recipient identity, client message ID and random
 delivery ID in the retained ledger. The recipient must still belong to the chat.
 It records the first viewing timestamp once, without retaining ciphertext, and
 returns `{"marked": N}`. Duplicate, stale, unauthorized recipient references and
-out-of-order viewing before delivery mark zero; nonmembers receive 404 to conceal conversation existence. Retries
+out-of-order viewing before delivery mark zero; nonmembers receive 404 to conceal
+conversation existence. Retries
 use the original reference. Read events add `"view_confirmed": true` and
 `message_delivery_id`; their own `delivery_id` remains the receipt ACK identity.
 These are authenticated recipient assertions, not cryptographic proof of a person
@@ -489,18 +464,10 @@ document and no open client dialog. Hiding, leaving or losing focus resets the
 dwell. Without intersection observation it fails closed. Durable ACKs continue
 independently. Persist viewing intent before sending so offline failures retry.
 
-Legacy `/read/exact` without `viewed` retains its original delete-and-receipt
-behavior. Legacy read events have `view_confirmed:false`; new clients treat them
-as delivery evidence, never as actual viewing. `/ack/exact` without
-`confirm_delivery` retains its original deletion-only behavior. Upgrade the
-bundled client and backend together to enable the full feature; no encryption or
-session format changes. The browser enables confirmation requests only after a
-fresh `/me` response advertises a positive integer `receipt_retention_seconds`.
-On older backends it uses exact deletion-only ACKs after durable storage, omits
-the unsupported flags/status requests and preserves pending viewing intents. It
-never substitutes legacy automatic-read requests or fabricates confirmation.
-Delivery/viewing already acknowledged without ledger support cannot be recovered
-retroactively by upgrading.
+The current protocol always separates durable delivery from actual viewing.
+The client requires a positive integer `receipt_retention_seconds` from its
+authenticated profile before viewing/status recovery. Unsupported response formats
+fail closed.
 
 ## Message status recovery
 
@@ -513,8 +480,8 @@ Requires conversation membership and returns only the authenticated sender's
 records. Accepts 1–100 IDs, each 1–64 characters; unknown fields are rejected.
 Response `statuses` entries contain `client_message_id`, `created_at` and the
 original `recipients` array with each recipient's `public_id`, `delivery_id`,
-`delivered_at` and `read_at`. Unconfirmed times and unavailable pre-upgrade delivery
-IDs are null. Unknown, expired and other senders' IDs are omitted. No message
+`delivered_at` and `read_at`. Unconfirmed times are null until confirmation.
+Unknown, expired and other senders' IDs are omitted. No message
 content, names, keys, sessions or device activity is returned.
 
 The bounded send ledger retains this metadata until the later of its original
@@ -525,23 +492,16 @@ exports do not. Receipt queues keep their message TTL and existing capacity limi
 If receipt capacity is exhausted, durable ACK/viewing state still commits and
 sender-only status recovery supplies the missing event. Ciphertext never waits
 for human viewing. Read and delivery queues each return at most 100 events per
-poll/backlog, so older clients ignoring delivery events can still consume reads.
+poll/backlog, so neither event stream starves the other.
 
-## Client indicators and receipt history
+## Receipt history
 
-Single check means server acceptance; double neutral checks require delivery to
-all original recipients; orange double checks appear once at least one original
-recipient confirms viewing. Group status labels report how many recipients read
-the message, and details retain each recipient’s independent progress. Recovery
+Track server acceptance, delivery and viewing separately for each original
+recipient. Complete aggregate delivery requires confirmation from all original
+recipients; viewing by one recipient does not imply viewing by the rest. Recovery
 continues until every original recipient confirms viewing or metadata expires.
-Sending/pending/failed states retain the encrypted retry workflow. Missing
-confirmation is pending, not proof that delivery failed. Unknown original sets
-cannot justify complete aggregate confirmation; an actual read confirmation can
-still show orange checks with the confirmed reader count. Message details show per-recipient
-progress, confirmed times and roster names, with public-ID fallbacks and duplicate
-name disambiguation. Full IDs are available in expandable technical details.
-Displayed message and confirmation times use the client browser locale and local
-timezone through `Intl.DateTimeFormat`; stored timestamps and ordering remain UTC.
+Missing confirmation is pending, not proof that delivery failed. Keep stored
+timestamps and ordering in UTC; local display time does not change their meaning.
 
 Store immutable acceptance, receipt, exact reference, viewing intent and ACK
 records encrypted with the existing history key/AAD; hash new event keys to keep
@@ -550,6 +510,5 @@ chat, reader public ID, client message ID, original message delivery ID and even
 stage; ACK each received receipt's own exact reference only after persistence.
 Merge polling, WS and other-tab records without overwriting independent recipients.
 Status recovery covers events consumed in other tabs or omitted under queue limits.
-Receipt events must never become standalone timeline messages. Retain older local
-receipt entries as hidden delivery evidence; unavailable timestamps remain unknown
-and old auto-read entries must not become human-read confirmations.
+Receipt events are encrypted local metadata, never standalone timeline messages.
+They carry explicit reader, message and delivery identities.

@@ -6,7 +6,7 @@
 Sideword is a self-hosted messenger backend built with FastAPI and SQLite. It
 supports invite-only personal and group chats, optional room passwords, expiring
 invites, and an admin UI. Clients encrypt messages, while the server relays
-ciphertext and deletes it after acknowledgement, reading, or expiry.
+ciphertext and deletes it after durable acknowledgement or expiry.
 
 The bundled browser client helps test deployments and client integrations. The
 protocol has not been independently audited; see the [security policy](SECURITY.md).
@@ -15,6 +15,9 @@ protocol has not been independently audited; see the [security policy](SECURITY.
 
 Clone the repository, then choose Python or Docker below. Neither requires a
 frontend build.
+
+Each pre-release requires fresh server and browser state. Before replacing an
+installation, follow the [backup and setup guidance](docs/UPGRADING.md#upgrade).
 
 ```sh
 git clone https://github.com/vladleesi/sideword-chat-server.git
@@ -107,9 +110,9 @@ below uses the `SIDEWORD_` prefix, for example `SIDEWORD_MESSAGE_TTL_DAYS=30`.
 For other limits and operator procedures, see [.env.example](.env.example) and
 the [upgrade guide](docs/UPGRADING.md).
 
-Clients must supply a persisted `session_credential` on activation and use exact
-ACK/read endpoints. Legacy client JWTs, session migration, and ambiguous deletion
-routes are removed in 0.11.0; see [upgrade requirements](docs/UPGRADING.md#retire-legacy-clients).
+Clients must persist a `session_credential` before activation and use registered
+renewable sessions, first-frame WebSocket authentication and exact ACK/read
+references. See the [API contract](docs/API.md).
 
 Bootstrap credentials can be removed from `.env` after the admin account exists.
 To create an account or reset its password, run the interactive command:
@@ -119,6 +122,7 @@ python -m scripts.create_admin --username admin
 ```
 
 For Docker, prefix it with `docker compose exec sideword`.
+Admin passwords must fit within 72 UTF-8 bytes.
 Password resets revoke existing admin sessions and reject in-flight logins that
 verified the previous password. Sign in again after a reset.
 Follow the [restore procedure](docs/UPGRADING.md#restore-safely) when restoring
@@ -158,32 +162,22 @@ with an optional password. Share passwords separately. Opening a link does not
 claim a slot; participants, including the creator, must activate it.
 See [activation rules](docs/API.md#activate-link) for limits and reconnects.
 Invite revocation/expiry disables sessions issued through that invite, not chat
-membership; another valid session for the same identity retains access. See
-[session and history lifecycle](docs/SESSION_LIFECYCLE.md) before removing access.
-Different browser origins keep independent identities and history; joining from
-another origin requires admission as a separate participant, including a free slot.
-To pause messaging for everyone without deleting data, close the conversation in
-Admin > Chats. Members retain saved history; other conversations remain usable.
+membership. Closing a conversation pauses live messaging for everyone while
+preserving saved history. See the [lifecycle reference](docs/SESSION_LIFECYCLE.md)
+before removing access. Each browser origin keeps an independent device identity
+and needs its own participant slot.
 
 To test, open the invite in two separate browser profiles and compare peer key
 fingerprints out of band using **Conversation details**; local pins do not verify
 identity. `/client` requires HTTPS or localhost; keys and history
 stay in the browser. **Reset device** or clearing site data can permanently lose
-access. Do not reset to dismiss key or storage errors.
-Participant presence updates over WebSocket; unavailable status is shown as
-unknown. Outgoing messages show delivery/read indicators and per-recipient details.
-See [presence semantics](docs/API.md#participant-presence) and
-[confirmation semantics](docs/API.md#durable-delivery-and-actual-viewing).
-
-Rooms from before the P-256 update (0.6.0) require fresh invites and identities;
-see [upgrade guidance](docs/UPGRADING.md#compatibility-notes). This is a reference
-client; see the [protocol](docs/PROTOCOL.md) and
-[security review](docs/SECURITY_REVIEW.md) for its limitations.
+keys and history. Do not reset to dismiss key or storage errors. See the
+[API reference](docs/API.md) for presence and delivery/viewing semantics.
 
 ## Further documentation
 
 - [Client API](docs/API.md) explains encryption, delivery, and acknowledgement rules.
 - [Browser protocol](docs/PROTOCOL.md) defines v1 interoperability and client responsibilities.
-- [Backups and upgrades](docs/UPGRADING.md) covers configuration exports, storage, and migrations.
+- [Backups and upgrades](docs/UPGRADING.md) covers configuration exports, storage, and fresh pre-release setup.
 - [Contributing](CONTRIBUTING.md) covers development setup, checks, and releases.
 - [Changelog](CHANGELOG.md), [Security](SECURITY.md), [Code of conduct](CODE_OF_CONDUCT.md), and [MIT license](LICENSE).

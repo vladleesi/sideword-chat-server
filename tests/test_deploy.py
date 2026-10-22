@@ -781,7 +781,9 @@ def test_deployment_workflow_is_manual_and_independent_of_ci_and_release():
         for checked_job in checked_workflow["jobs"].values():
             for step in checked_job.get("steps", []):
                 if "uses" in step:
-                    assert step["uses"].split("@")[1] in {"v3", "v4", "v5"}
+                    assert step["uses"].split("@")[1] in {
+                        "v3.0.0", "v3.0.1", "v7.0.1", "v7.0.2", "v7.1.0", "v8.0.2",
+                    }
     for name in job["env"]:
         if name.startswith("GCP_"):
             assert job["env"][name] == "${{ secrets." + name + " }}"
@@ -1058,7 +1060,7 @@ def test_publication_uses_masked_auth_output_only_for_the_publish_step():
     )
     steps = workflow["jobs"]["deploy"]["steps"]
     auth = next(step for step in steps if step.get("id") == "auth")
-    assert auth["uses"] == "google-github-actions/auth@v3"
+    assert auth["uses"] == "google-github-actions/auth@v3.0.0"
     assert auth["with"]["token_format"] == "access_token"
     assert auth["with"]["access_token_lifetime"] == "1800s"
     consumers = [step for step in steps if "GCP_ACCESS_TOKEN" in step.get("env", {})]

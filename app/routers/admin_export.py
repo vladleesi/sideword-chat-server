@@ -158,8 +158,15 @@ async def import_bundle(
     if not isinstance(data, dict) or data.get("version") != 1:
         raise HTTPException(status_code=400, detail="unsupported bundle version")
 
+    if not {"users", "chats", "links"} <= data.keys() or any(
+        not isinstance(data[name], list) for name in ("users", "chats", "links")
+    ):
+        raise HTTPException(400, "Incomplete configuration bundle.")
+
     # Validate before mutating anything. Never silently downgrade protected links.
     for raw_user in data.get("users", []):
+        if not isinstance(raw_user, dict):
+            raise HTTPException(400, "Invalid participant configuration.")
         try:
             public_key = base64.b64decode(raw_user.get("public_key", ""), validate=True)
         except (ValueError, TypeError) as exc:
@@ -167,17 +174,25 @@ async def import_bundle(
         if not valid_public_key(public_key):
             raise HTTPException(400, "Invalid participant P-256 public key.")
     for raw_link in data.get("links", []):
+        if not isinstance(raw_link, dict) or not {
+            "password_required", "password_hash", "revoked_at"
+        } <= raw_link.keys():
+            raise HTTPException(400, "Incomplete invite configuration.")
         verifier = raw_link.get("password_hash")
         protected = verifier is not None or raw_link.get("password_required")
         if protected and not valid_verifier(verifier):
             raise HTTPException(400, "Invalid or missing room password verifier.")
     for raw_chat in data.get("chats", []):
+        if not isinstance(raw_chat, dict) or "closed_at" not in raw_chat:
+            raise HTTPException(400, "Incomplete conversation configuration.")
         closed_at = raw_chat.get("closed_at")
         if closed_at is not None and (
             not isinstance(closed_at, str) or _parse_dt(closed_at) is None
         ):
             raise HTTPException(400, "Invalid conversation closure timestamp.")
         for raw_member in raw_chat.get("members", []):
+            if not isinstance(raw_member, dict) or "resume_hash" not in raw_member:
+                raise HTTPException(400, "Incomplete participant configuration.")
             value = raw_member.get("resume_hash")
             if value is not None and (
                 not isinstance(value, str) or len(value) != 64

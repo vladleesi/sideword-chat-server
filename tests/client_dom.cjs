@@ -135,7 +135,7 @@ function client({ mobile = false, clipboardBlocked = false, viewportAware = fals
         set: value => { top = Math.max(0, Math.min(value, list.scrollHeight - list.clientHeight)); } },
     });
   }
-  run(`messageConfirmationsSupported = true; identity = { publicId: 'me', token: 'not-for-display', privateKey: 'never-display',
+  run(`messageProfileReady = true; identity = { publicId: 'me', token: 'not-for-display', privateKey: 'never-display',
     refreshCredential: 'never-display-refresh' };
     chats = [{ id: 7, title: '<script>chat</script>', chat_type: 'group', participants: [
       { public_id: 'me', display_name: 'Alex', local_fingerprint: '01:'.repeat(31) + '01' },

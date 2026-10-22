@@ -7,7 +7,7 @@ async function outgoing(options = {}) {
   await app.run(`(async () => {
     persistHistoryEntry = async () => {};
     globalThis.message = {id:'outgoing:stable', clientMessageId:'stable', kind:'mine',
-      statusVersion:1, recipients:['peer-a','peer-b'], text:'selectable body', createdAt:1000};
+      recipients:['peer-a','peer-b'], text:'selectable body', createdAt:1000};
     await appendMessage(7, message);
     globalThis.receipt = {chat_id:7, client_message_id:'stable', reader_public_id:'peer-a',
       delivery_id:'c'.repeat(32), message_delivery_id:'a'.repeat(32),
@@ -25,7 +25,7 @@ test('timeline sorting and grouping aggregate delivery status only for each outg
   app.run(`
     const entries = Array.from({length: 40}, (_, index) => ({
       id: 'outgoing:timestamp-' + index, clientMessageId: 'timestamp-' + index,
-      kind: 'mine', statusVersion: 1, recipients: ['peer-a', 'peer-b'],
+      kind: 'mine', recipients: ['peer-a', 'peer-b'],
       text: 'message ' + index, createdAt: 1000 + (40 - index) * 1000
     }));
     for (const [index, entry] of entries.entries()) {
@@ -56,7 +56,7 @@ test('timeline sorting and grouping aggregate delivery status only for each outg
   assert.equal(list.children[39].className, 'message mine continuation');
 });
 
-test('display time retains the status timestamp for legacy, pending and accepted outgoing messages', () => {
+test('display time retains the status timestamp for pending and accepted outgoing messages', () => {
   const app = client();
   app.run(`
     globalThis.entry = {id:'outgoing:time', clientMessageId:'time', kind:'mine', createdAt:5000};
@@ -66,7 +66,7 @@ test('display time retains the status timestamp for legacy, pending and accepted
     assert.equal(app.run('messageDisplayTime(7, entry)'), createdAt || 5000);
     assert.equal(app.run('messageDisplayTime(7, entry)'), app.run('outgoingStatus(7, entry).timestamp'));
   }
-  app.run("metadataFor(7, 'time').acceptance = null; entry.statusVersion = 1;");
+  app.run("metadataFor(7, 'time').acceptance = null; ");
   assert.equal(app.run('messageDisplayTime(7, entry)'), 5000);
   app.run("entry = {kind:'theirs', createdAt:'2026-10-15T12:00:00Z'};");
   assert.equal(app.run('messageDisplayTime(7, entry)'), Date.parse('2026-10-15T12:00:00Z'));
@@ -232,7 +232,7 @@ async function incoming(options = {}) {
 test('durable incoming delivery is immediate and viewing requires continuous visible dwell', async () => {
   const app = await incoming(); const bubble=app.nodes.get('#message-list').firstChild;
   assert.equal(bubble.messageFooter,undefined);
-  assert.equal(app.run('calls[0].body.confirm_delivery'),true);
+  assert.equal(app.run('Object.hasOwn(calls[0].body,"confirm_delivery")'),false);
   assert.equal(app.run('pendingReadsByChat.size'),0);
   app.intersect(bubble);
   assert.equal(app.run('pendingReadsByChat.size'),0);
@@ -240,7 +240,7 @@ test('durable incoming delivery is immediate and viewing requires continuous vis
   const calls=JSON.parse(app.run('JSON.stringify(calls)'));
   assert.equal(calls.length,2);
   assert.match(calls[1].path,/read\/exact$/);
-  assert.equal(calls[1].body.viewed,true);
+  assert.equal(Object.hasOwn(calls[1].body,'viewed'),false);
   app.intersect(bubble); await app.fireViews();
   assert.equal(app.run('calls.length'),2);
 });
@@ -293,7 +293,8 @@ test('a receipt persistence failure cannot delay acknowledgements for durable in
   };`);
   await assert.rejects(app.run(`processIncoming({messages:[{...incoming,delivery_id:'b'.repeat(32),
     client_message_id:'another'}],read_receipts:[{delivery_id:'c'.repeat(32),chat_id:7,
-    reader_public_id:'peer-b',client_message_id:'stable',view_confirmed:true}]})`),/receipt storage failed/);
+    reader_public_id:'peer-b',client_message_id:'stable',view_confirmed:true,
+    message_delivery_id:'b'.repeat(32)}]})`),/receipt storage failed/);
   assert.equal(app.run('acknowledgedDeliveries.has("b".repeat(32))'),true);
   assert.equal(app.run('pendingReceiptIds.size'),0);
   assert.equal(app.run('pendingReadsByChat.size'),0);
@@ -328,46 +329,26 @@ test('lost local ACK-marker persistence retries the exact delivery without dupli
 });
 
 
-for (const advertised of [undefined,0,'86400',86400]) {
-  test(`confirmation capability comes from the current backend: ${String(advertised)}`, async () => {
-    const app=client({observeVisibility:true});
-    const supported=advertised===86400;
-    const field=advertised===undefined?'':`,receipt_retention_seconds:${JSON.stringify(advertised)}`;
-    await app.run(`(async()=>{
-      identity.publicKey='own-key'; identity.receiptRetentionSeconds=86400;
+for (const advertised of [undefined, 0, '86400', 86400]) {
+  test(`current profile requires a positive numeric retention: ${String(advertised)}`, async () => {
+    const app = client();
+    const field = advertised === undefined ? '' : `,receipt_retention_seconds:${JSON.stringify(advertised)}`;
+    app.run(`identity.publicKey='own-key'; messageProfileReady=false;
       writeIdentity=async()=>{}; observePeerKey=async peer=>peer;
-      persistHistoryEntry=async()=>{}; decryptMessage=async message=>message.ciphertext;
-      globalThis.requests=[];
-      api=async(path,options)=>{
-        if(path==='/api/v1/me') return {user:{public_id:'me',public_key:'own-key'},chats:chats${field}};
-        const body=JSON.parse(options.body); requests.push({path,body});
-        if(!${supported} && ('confirm_delivery' in body || 'viewed' in body || path.endsWith('/read/exact')))
-          throw new Error('HTTP 422: unsupported fields');
-        return {};
-      };
-      await loadChats();
-      globalThis.incoming={delivery_id:'a'.repeat(32),chat_id:7,sender_public_id:'peer-a',
-        client_message_id:'mixed-version',ciphertext:'safely stored'};
-      await processIncoming({messages:[incoming]});
-    })()`);
-    assert.equal(app.run('messageConfirmationsSupported'),supported);
-    assert.equal(app.run('acknowledgedDeliveries.has(incoming.delivery_id)'),true);
-    assert.equal(app.run('Object.hasOwn(requests[0].body,"confirm_delivery")'),supported);
-    const bubble=app.nodes.get('#message-list').firstChild;
-    app.intersect(bubble); await app.fireViews();
-    assert.equal(app.run('requests.length'),supported?2:1);
-    if(!supported) {
-      await app.run(`appendMessage(7,{id:'viewed:'+incoming.delivery_id,kind:'viewed',delivery:incoming});
-        flushAcknowledgements(); recoverMessageStatuses();`);
-      assert.equal(app.run('requests.length'),1);
-      assert.equal(app.run('pendingReadsByChat.get(7).size'),1);
+      api=async()=>({user:{public_id:'me',public_key:'own-key'},chats:chats${field}});`);
+    if (advertised === 86400) {
+      await app.run('loadChats()');
+      assert.equal(app.run('messageProfileReady'), true);
+    } else {
+      await assert.rejects(app.run('loadChats()'), /incomplete message retention/);
+      assert.equal(app.run('messageProfileReady'), false);
     }
   });
 }
 
 test('saved capabilities cannot enable read confirmations before current-server negotiation', async () => {
   const app=client({observeVisibility:true});
-  await app.run(`messageConfirmationsSupported=false;identity.receiptRetentionSeconds=86400;
+  await app.run(`messageProfileReady=false;identity.receiptRetentionSeconds=86400;
     persistHistoryEntry=async()=>{};decryptMessage=async message=>message.ciphertext;
     globalThis.requests=[];api=async(path,options)=>requests.push({path,body:JSON.parse(options.body)});
     processIncoming({messages:[{delivery_id:'a'.repeat(32),chat_id:7,sender_public_id:'peer-a',
@@ -428,9 +409,11 @@ test('partial reads keep status recovery active until all original recipients ha
 });
 
 
-test('legacy automatic-read receipts never produce orange checks with recipients still pending', async () => {
+test('unconfirmed read receipts are rejected without fabricating viewing or acknowledging deletion', async () => {
   const app=await outgoing();
-  await app.run('(async()=>{await accept(); await processReceipts([{...receipt,view_confirmed:false}]);})()');
+  await app.run('accept()');
+  await assert.rejects(app.run('processReceipts([{...receipt,view_confirmed:false}])'), /invalid viewing confirmation/);
+  assert.equal(app.run('pendingReceiptIds.size'), 0);
   assert.equal(state(app).status,'sent');
   assert.equal(state(app).readCount,0);
   const indicator=app.nodes.get('#message-list').firstChild.messageFooter.indicator;
