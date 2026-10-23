@@ -2,33 +2,24 @@
 
 ## Supported versions
 
-Sideword Server is pre-1.0. Security fixes are applied only to the latest code on
-the `main` branch until stable releases are published.
+Sideword is pre-1.0. Security fixes target the latest `main` code only.
 
-## Reporting a vulnerability
+## Report a vulnerability
 
-Please do not disclose suspected vulnerabilities in public issues, discussions,
-or pull requests.
+Use **Security → Report a vulnerability** for a private GitHub advisory. Include
+reproduction steps, affected endpoints/versions, impact and suggested mitigations.
+Do not publish details in issues, discussions or pull requests. If private reporting
+is unavailable, ask for a private contact channel without including the findings.
 
-Use GitHub's **Report a vulnerability** option in the repository's Security tab
-to submit a private security advisory. Include reproduction steps, affected
-endpoints or versions, expected impact, and any suggested mitigation.
+Initial acknowledgement is expected within seven days; remediation and coordinated
+disclosure depend on severity and complexity.
 
-If private reporting is unavailable, open a minimal issue asking a maintainer
-for a private contact channel without including vulnerability details.
+## Security limits
 
-You should receive an initial acknowledgement within seven days. Timelines for
-validation, remediation, and coordinated disclosure depend on severity and
-complexity.
+The bundled browser client is an unaudited testing aid. Clients must encrypt and
+verify peers correctly; the server relays opaque ciphertext. The v1 protocol has
+no recipient forward secrecy or post-compromise recovery. First-use pinning cannot
+authenticate an initial key or protect against malicious origin code.
 
-## Scope notes
-
-- The bundled browser client is a testing aid, not an audited end-user client.
-- Client applications are responsible for generating keys and encrypting message
-  payloads correctly.
-- The project has not undergone an independent security audit.
-- The test-client v1 protocol has no recipient forward secrecy or post-compromise
-  recovery. Local first-use key pinning cannot authenticate an initial key or
-  protect against malicious code delivered by the server.
-- See the [security review](docs/SECURITY_REVIEW.md) and
-  [v1 protocol contract](docs/PROTOCOL.md) for boundaries and remaining risks.
+See the [security review](docs/SECURITY_REVIEW.md) for controls, open findings and
+verification limits, and the [protocol](docs/PROTOCOL.md) for the wire contract.

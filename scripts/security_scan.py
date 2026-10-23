@@ -189,7 +189,9 @@ def audit(selected_image):
                 "docker", "run", "--rm", "--network", "none", "--read-only",
                 "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                 "--entrypoint", "python", image_id(selected_image),
-                "-m", "pip", "list", "--format=json",
+                "-c", "import importlib.metadata, json; "
+                "print(json.dumps([{'name': d.metadata['Name'], 'version': d.version} "
+                "for d in importlib.metadata.distributions()]))",
             ]))
             if not isinstance(inventory, list) or not inventory:
                 raise ValueError("Missing image package inventory.")

@@ -3,181 +3,98 @@
 [![Tests](https://github.com/vladleesi/sideword-chat-server/actions/workflows/test.yml/badge.svg)](https://github.com/vladleesi/sideword-chat-server/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Sideword is a self-hosted messenger backend built with FastAPI and SQLite. It
-supports invite-only personal and group chats, optional room passwords, expiring
-invites, and an admin UI. Clients encrypt messages, while the server relays
-ciphertext and deletes it after durable acknowledgement or expiry.
+Sideword is a self-hosted FastAPI/SQLite backend for invite-only personal and group
+chats. Clients encrypt messages; the server relays ciphertext and deletes it after
+durable acknowledgement or expiry.
 
-The bundled browser client helps test deployments and client integrations. The
-protocol has not been independently audited; see the [security policy](SECURITY.md).
+- Expiring invites, optional room passwords and participant limits.
+- Renewable sessions, WebSocket delivery, HTTP polling and optional presence.
+- Separate delivery/viewing confirmations, retry protection and an admin UI.
+- Python or Docker deployment; no frontend build.
+
+The bundled `/client` is an unaudited test client. Each pre-release requires fresh
+server/browser state. See the [security limits](SECURITY.md) and
+[backup and upgrade procedure](docs/UPGRADING.md#upgrade) before replacing an installation.
 
 ## Setup
-
-Clone the repository, then choose Python or Docker below. Neither requires a
-frontend build.
-
-Each pre-release requires fresh server and browser state. Before replacing an
-installation, follow the [backup and setup guidance](docs/UPGRADING.md#upgrade).
 
 ```sh
 git clone https://github.com/vladleesi/sideword-chat-server.git
 cd sideword-chat-server
 ```
 
-Copy `.env.example` to a new file named `.env` using your editor or file manager.
-Set `SIDEWORD_ADMIN_USERNAME` and replace `SIDEWORD_ADMIN_PASSWORD` with your
-admin credentials. Set `SIDEWORD_SECRET_KEY` to a cryptographically random value
-of at least 32 characters. With Python installed, generate one using:
+Copy [.env.example](.env.example) to `.env`. Set `SIDEWORD_ADMIN_USERNAME`,
+`SIDEWORD_ADMIN_PASSWORD` and a random `SIDEWORD_SECRET_KEY` of at least 32 characters:
 
 ```sh
 python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
 
-Without a local Python installation, run the same command prefixed with
-`docker run --rm python:3.12-slim`. Paste the generated value into `.env` before
-starting the server, and keep that file out of version control.
+Without local Python, prefix that command with `docker run --rm python:3.12-slim`.
+Keep `.env` private. Other settings and defaults are in `.env.example`.
 
 ### Run locally
 
-Use Python 3.12 or newer and create a virtual environment:
+Use Python 3.12+; create and activate a virtual environment, then run:
 
 ```sh
 python -m venv .venv
-```
-
-Activate `.venv` using your shell's virtual-environment activation method, or
-select its Python interpreter in your IDE. The following commands assume
-`python` uses that environment; if your Python command is named `python3`, use
-that name instead.
-
-```sh
+# Activate .venv using your shell, or select its interpreter in your IDE.
 python -m pip install -r requirements.txt
 python -m scripts.serve_shared
 ```
 
-The shared runner binds both listeners to loopback: port **8000** includes
-administration, while port **8001** serves the public API and browser client
-with administration blocked.
+Both listeners bind to loopback: **8000** includes administration; **8001** blocks
+admin/schema routes and is the public proxy target.
 
 ### Docker
 
-With Docker and Compose v2 installed and `.env` configured, build and start the
-server:
+With Docker Compose v2 and `.env` configured:
 
 ```sh
 docker compose up -d --build
 ```
 
-Compose exposes the server on loopback port **8000**, including administration.
-The service is `sideword`, its database persists in the `sideword-data` volume,
-and exports are mounted to the local `exports/` directory. Use
-`docker compose stop` and `docker compose start` to stop and resume it.
-`docker compose down` preserves the database volume; adding `-v` deletes it.
+Service `sideword` binds loopback **8000**, including administration. Its database
+uses volume `sideword-data`; exports use `./exports`. `docker compose down`
+preserves the database; **adding `-v` deletes it**. Rebuild to change Python
+packages: the runtime image omits pip/ensurepip and uses a Python health probe.
 
 ### Open the server
 
-Use these paths on localhost, port **8000**, for either installation method:
-
-| Path | Purpose |
+| Local path on port 8000 | Purpose |
 | --- | --- |
-| `/admin/links` | Sign in with your configured admin credentials and create invites |
-| `/client` | Test the browser client |
-| `/docs` | Explore the interactive API reference |
-| `/health` | Check server health and the backend version |
+| `/admin/links` | Create and manage invites |
+| `/client` | Test the client |
+| `/docs` | OpenAPI reference |
+| `/health` | Health and backend version |
 
-## Configuration
-
-Settings can be supplied through environment variables or `.env`. Every setting
-below uses the `SIDEWORD_` prefix, for example `SIDEWORD_MESSAGE_TTL_DAYS=30`.
-
-| Setting | Default / purpose |
-| --- | --- |
-| `SECRET_KEY` | Required random signing secret, at least 32 characters |
-| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | Create an admin on first startup |
-| `PUBLIC_URL` | Invite origin; defaults to HTTP on localhost, port 8000 |
-| `DB_PATH` | `./data/sideword.sqlite3`; `/data/sideword.sqlite3` in Docker |
-| `EXPORTS_DIR` | `./exports`; `/exports` in Docker |
-| `ADMIN_SESSION_TTL_HOURS` | `12`; admin session lifetime in hours |
-| `MESSAGE_TTL_DAYS` | `30`; pending ciphertext lifetime in days |
-| `MAX_CIPHERTEXT_BYTES` | `65536`; maximum ciphertext size per envelope |
-| `CLIENT_ACCESS_MINUTES`, `CLIENT_SESSION_DAYS` | `15`, `30`; renewable access and absolute session lifetime |
-| `SEND_IDEMPOTENCY_DAYS` | `30`; send retry metadata retention after first acceptance |
-| `REQUIRE_HTTPS`, `PRIVATE_ADMIN` | `true`; TLS outside loopback and local-only administration |
-| `MAX_REQUEST_BYTES`, `REQUESTS_PER_MINUTE` | `2097152`, `600`; body and per-IP/process request limits |
-| `PRESENCE_ENABLED` | `true`; ephemeral presence, requires one shared process; disable across independent workers/replicas |
-| `MAX_PENDING_MESSAGES`, `MAX_PENDING_BYTES` | `10000`, `268435456`; shared queued ciphertext limits |
-
-For other limits and operator procedures, see [.env.example](.env.example) and
-the [upgrade guide](docs/UPGRADING.md).
-
-Clients must persist a `session_credential` before activation and use registered
-renewable sessions, first-frame WebSocket authentication and exact ACK/read
-references. See the [API contract](docs/API.md).
-
-Bootstrap credentials can be removed from `.env` after the admin account exists.
-To create an account or reset its password, run the interactive command:
-
-```sh
-python -m scripts.create_admin --username admin
-```
-
-For Docker, prefix it with `docker compose exec sideword`.
-Admin passwords must fit within 72 UTF-8 bytes.
-Password resets revoke existing admin sessions and reject in-flight logins that
-verified the previous password. Sign in again after a reset.
-Follow the [restore procedure](docs/UPGRADING.md#restore-safely) when restoring
-backups so old credentials do not regain access.
+Create/reset an admin interactively with `python -m scripts.create_admin --username admin`
+(prefix with `docker compose exec sideword` for Docker). Passwords must fit within
+72 UTF-8 bytes; resets revoke admin sessions. Remove bootstrap credentials from
+`.env` after the account exists.
 
 ## Public access
 
-Set `SIDEWORD_PUBLIC_URL=https://chat.example.com` to your public HTTPS origin
-before starting the server so generated invitations use the correct address.
-Configure an HTTPS reverse proxy or tunnel with WebSocket forwarding, and trust
-forwarded scheme headers only from the actual proxy address.
-
-Multiple public hostnames can serve the same rooms when all HTTP and WebSocket
-routes reach one backend process and database. Sharing SQLite across independent
-workers does not share live connections. `SIDEWORD_PUBLIC_URL` selects the address
-for generated invitations; it does not route domain aliases.
-
-| Installation | Proxy target | Administration |
-| --- | --- | --- |
-| Shared Python runner | Loopback port 8001 | Blocked on 8001; available locally on 8000 |
-| Docker Compose | Loopback port 8000 | Proxy must block `/admin` and its subpaths, `/docs`, `/redoc`, and `/openapi.json` |
-
-Keep administration private. Protected invites require HTTPS except during
-direct loopback development. A temporary tunnel can forward to port 8001 of the
-shared runner; update `SIDEWORD_PUBLIC_URL` and restart the backend whenever its
-public origin changes. A named tunnel with a personal domain provides a stable
-address. Keep tunnel addresses and credentials out of version control.
-
-Invite paths and session credentials must not enter logs. Apply the
-[public deployment controls](docs/UPGRADING.md#public-deployment-controls) for
-proxy trust, log suppression, resource limits, public asset caching and backup protection.
+Set `SIDEWORD_PUBLIC_URL=https://chat.example.com`. Use an HTTPS/WSS proxy, trust
+only its actual IPs and keep administration private. Proxy the shared runner's
+8001 listener; Docker's 8000 listener requires explicit admin/schema blocking.
+Aliases must route HTTP and WebSocket traffic to one backend process/database.
+See [deployment controls](docs/UPGRADING.md#public-deployment-controls) for logging,
+proxy trust, caching, resource limits and presence configuration.
 
 ## Invites and chats
 
-Create a personal room (two participants) or a group in **Admin > Invite links**,
-with an optional password. Share passwords separately. Opening a link does not
-claim a slot; participants, including the creator, must activate it.
-See [activation rules](docs/API.md#activate-link) for limits and reconnects.
-Invite revocation/expiry disables sessions issued through that invite, not chat
-membership. Closing a conversation pauses live messaging for everyone while
-preserving saved history. See the [lifecycle reference](docs/SESSION_LIFECYCLE.md)
-before removing access. Each browser origin keeps an independent device identity
-and needs its own participant slot.
+Create a personal or group invite in the admin UI; share any password separately.
+Opening a link claims no slot. Compare peer fingerprints through a trusted channel.
+Each browser origin has independent keys/history; clearing site data or resetting
+the device can permanently lose both. Invite revocation, session revocation and
+conversation closure have different effects; see the [lifecycle reference](docs/SESSION_LIFECYCLE.md).
 
-To test, open the invite in two separate browser profiles and compare peer key
-fingerprints out of band using **Conversation details**; local pins do not verify
-identity. `/client` requires HTTPS or localhost; keys and history
-stay in the browser. **Reset device** or clearing site data can permanently lose
-keys and history. Do not reset to dismiss key or storage errors. See the
-[API reference](docs/API.md) for presence and delivery/viewing semantics.
+## Reference
 
-## Further documentation
-
-- [Client API](docs/API.md) explains encryption, delivery, and acknowledgement rules.
-- [Browser protocol](docs/PROTOCOL.md) defines v1 interoperability and client responsibilities.
-- [Backups and upgrades](docs/UPGRADING.md) covers configuration exports, storage, and fresh pre-release setup.
-- [Contributing](CONTRIBUTING.md) covers development setup, checks, and releases.
-- [Changelog](CHANGELOG.md), [Security](SECURITY.md), [Code of conduct](CODE_OF_CONDUCT.md), and [MIT license](LICENSE).
+- [API](docs/API.md) · [Encryption protocol](docs/PROTOCOL.md)
+- [Backups, upgrades and deployment](docs/UPGRADING.md)
+- [Security policy](SECURITY.md) · [Security review](docs/SECURITY_REVIEW.md)
+- [Contributing and CI](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
+- [Code of conduct](CODE_OF_CONDUCT.md) · [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)

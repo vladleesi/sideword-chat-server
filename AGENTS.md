@@ -1,82 +1,70 @@
 # Working agreement
 
-## Scope and communication
-- Follow the current user request; preserve unrelated changes and running services.
-- Reply in the user's language, concisely. Report outcome, verification, and remaining limitations.
-- Inspect before editing. Resolve routine choices autonomously; ask only when a missing decision materially changes scope or requires new authority.
-- Do not create commits, push, deploy, restart services, or contact others unless authorized.
-- Commit and push require the user's explicit approval for the current changes. A request to implement work or prepare it for commit/push is not approval to commit or push; approval for an earlier change does not carry over.
-- Never open, control, or inspect a browser, including browser discovery, automation, screenshots, and browser-based verification. Use source inspection and non-browser automated checks instead.
+## Authority and workflow
+- Follow the current request; preserve unrelated changes and running services. Reply concisely in the user's language with outcomes, verification and limits.
+- Inspect before editing. Decide routine details autonomously; ask only for missing decisions that change scope or authority.
+- Work on `develop` only and leave it checked out. Never edit or push `main` locally.
+- Do not commit, push, deploy, restart services or contact others without authorization. Commit/push approval must cover the current changes; preparing them or approving an earlier change is not permission.
+- Never open, inspect or automate a browser. Use source inspection and non-browser checks.
+- Start with `git status --short` and targeted `rg` searches. Read affected flows, callers and nearby tests; avoid whole-repository reads unless the task requires them.
+- Batch independent reads/checks; sequence dependent work. Reuse existing code, tools and passing evidence. Avoid unnecessary dependencies, one-use abstractions, speculative changes and unrelated refactoring.
+- Use relevant skills; delegate only when explicitly authorized. No automatic installations or hooks.
+- Finish implementation, tests, configuration and documentation before one final validation phase. After failures, fix them and rerun only invalidated or unresolved checks. Never report readiness with required checks failing or unrun.
+- Use isolated test databases, never a running instance's data. Bound output without hiding failures. Keep progress updates short and maintain a local progress note for multi-stage security work.
+- Reuse unchanged verification across turns. Run dependency checks when dependencies/environment change, compilation when import/build behavior changes, and documentation checks for changed docs. Documentation-only work needs no backend tests.
 
-## Efficient workflow
-- Start with `git status --short` and targeted `rg` searches. Read relevant functions and nearby tests, not the whole repository.
-- Batch independent reads/checks; keep dependent steps sequential. Bound tool output and avoid repetitive polling.
-- Reuse existing code, dependencies, and scripts. Prefer the smallest complete fix; avoid speculative abstractions and unrelated refactors.
-- For complex tasks, finish all planned implementation, tests, documentation, and configuration edits before running validation. Do not run checks between implementation stages.
-- Use skills only when relevant; read required instructions once. Delegate only when explicitly authorized and the subtask is independent.
-- Keep a brief working summary for long tasks: objective, decisions, files, verification, next action. Do not repeat completed exploration.
-- Reuse session findings and passing check results. Do not reread unchanged files or rerun tests merely because a new turn, commit, push, or deployment was requested.
-- Run all applicable non-browser checks in one final validation phase before reporting that everything is complete or ready for commit/push. If validation fails, finish the necessary fixes, then rerun only checks invalidated by those fixes or unresolved failures. Do not report readiness while required checks fail or remain unrun.
-- Run dependency checks only when dependencies/environment change, compile checks when import/build behavior changes, and documentation checks only for changed documentation. Documentation-only edits do not require backend tests.
-- Review unchanged landing metadata/social assets by their existing verification record; rerender or inspect them again only when their content or claims change.
-- Prefer bounded search results, diff summaries, and failure summaries over full files, full test logs, and repeated status calls. Never suppress failures to save output.
-- Keep progress updates short: new finding, material decision, or blocker. Avoid repeating plans and successful checks.
-- For multi-stage security work, maintain a concise local progress note with completed stages and verification so context recovery does not restart exploration. Efficiency must not remove security regression coverage or isolated-database safeguards.
-- Keep `docs/SECURITY_REVIEW.md` aligned with affected code and tests in the same change. Remove resolved or superseded open findings, narrow partially fixed findings, record verified protections and current verification evidence, and preserve unresolved limitations. Keep release history in `CHANGELOG.md`; do not claim deployment or audit evidence that was not obtained.
-- Keep all documentation clean, concise, and readable. Use plain language and clear structure, remove repetition and unnecessary detail, and keep one authoritative explanation per topic while preserving essential usage, security, and deployment guidance.
-- Keep the README's "Invites and chats" section and UI descriptions in other docs brief. Focus public documentation on essential usage, API/protocol contracts, security, data-loss warnings, and upgrade/deployment requirements; link to the relevant reference instead of repeating details. Record minor UI changes in `CHANGELOG.md` without expanding public docs with button labels, layout, scroll behavior, or other cosmetic details unless needed to use the client correctly.
-- After code changes, assess whether the GitHub Pages site in `docs/` needs updating. Update it in the same change only when affected API contracts, described capabilities/client behavior, architecture, security/retention behavior, or deployment steps make its published information inaccurate or incomplete. Internal refactors, tests, tooling, and maintenance that do not affect published information require no site edits. Review only affected landing copy, API/deployment snippets, links, SEO/structured data, and social assets; reuse existing verification for unchanged material and preserve the site's backend-focused positioning.
-
-## Ponytail integration
-- Adapted from https://github.com/DietrichGebert/ponytail/blob/main/skills/ponytail/SKILL.md. This section supplements the working agreement; all other repository rules take precedence over it. Upstream updates are not adopted automatically.
-- Ponytail is licensed under the MIT License. Copyright (c) 2026 DietrichGebert. The full upstream notice is retained in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-- Apply to coding, debugging, reviews, and design. Understand the affected flow and callers first; fix the shared root cause rather than patching one symptom. Keep investigation targeted.
-- Choose the first adequate solution: existing repository code, standard library, native platform feature, installed dependency, then minimal custom code. Exclude speculative additions, never requested functionality.
-- Prefer readable, small changes and fewer dependencies. Avoid one-use abstractions, future scaffolding, unrelated cleanup, and compressed one-liners that obscure intent.
-- Preserve validation, security, accessibility, data-loss protection, and every explicit requirement. Document material simplification limits where useful.
-- Use existing test infrastructure and meaningful regression coverage; no one-test ceiling or mandatory self-check scripts. Run checks only in the existing final validation phase.
-- No automatic installation, hooks, delegation, browser use, commits, pushes, or deployment. Existing approval, privacy, branch, version, and changelog rules remain intact.
-- `stop ponytail` or `normal mode` disables only this supplemental guidance; other instructions remain active. Requested intensity changes cannot override them.
+## Security and data invariants
+- Never print or commit `.env`, keys, passwords, invite tokens, databases, exports, personal paths, tunnel URLs or runtime logs. Use placeholders and repository-relative paths; keep this file tracked and free of machine details.
+- Block public administration on the shared listener for both HTTP and WebSocket paths.
+- Validate live sessions in HTTP and WebSocket paths. Consumed invites differ from explicitly revoked invites.
+- SQLite row IDs can be reused. Deduplicate messages by chat, sender and client message ID; receipts also bind reader identity. Preserve exact delivery references.
+- Treat naive SQLite timestamps as UTC; preserve ordering across polling, WebSocket and local history.
+- Authenticate, decrypt and persist locally before deletion ACKs. Serialize incoming processing and keep failures retryable.
+- Keep browser private keys non-exportable, render user content with `textContent`, and preserve CSP/no-store headers.
+- Keep form errors inline and accessible; validate optional empty fields deliberately on the server.
+- Each pre-release uses fresh state and current APIs/formats only. Do not add legacy fallbacks or automatic migrations.
 
 ## Repository map
-- FastAPI entry point: `app/main.py`; settings: `app/config.py`; async SQLite: `app/db.py`, `app/models.py`.
-- Authentication: `app/deps.py`, `app/security.py`; invites: `app/services.py`, `app/routers/links.py`.
+- Entry/settings/database: `app/main.py`, `app/config.py`, `app/db.py`, `app/models.py`.
+- Auth/invites: `app/deps.py`, `app/security.py`, `app/routers/sessions.py`, `app/services.py`, `app/routers/links.py`.
 - Delivery: `app/routers/chats.py`, `app/routers/ws.py`, `app/ws_manager.py`.
-- Browser client: `app/static/client.js`, `client.css`, `app/templates/client.html`.
-- Admin UI: `app/routers/admin_ui.py`, `app/templates/`, `app/static/admin.css`.
-- Shared test hosting: `scripts/serve_shared.py`; local admin on 8000, restricted shared listener on 8001, shared process/connection registry.
+- Client: `app/static/client.js`, `client.css`, `app/templates/client.html`; admin: `app/routers/admin_ui.py`, templates and `admin.css`.
+- Shared runner: `scripts/serve_shared.py`; local admin on 8000, restricted public listener on 8001, one process/connection registry.
 
-## Invariants
-- Never print or commit `.env`, private keys, passwords, invite tokens, databases, exports, personal paths, tunnel URLs, or runtime logs. Use placeholders in examples.
-- Keep `AGENTS.md` tracked as shared repository guidance; use repository-relative paths and placeholders, and exclude private machine or runtime details.
-- Keep public administration blocked on the shared listener, including HTTP and WebSocket paths.
-- SQLite row IDs may be reused after deletion: deduplicate messages using chat, sender, and client message ID; receipts also include reader identity.
-- Treat naive SQLite timestamps as UTC. Preserve chronological ordering across polling, WebSocket, and local history reload.
-- Persist authenticated decrypted messages before acknowledging deletion. Serialize incoming processing and keep failed items retryable.
-- Validate sessions in HTTP and WebSocket paths. Distinguish consumed invites from explicit revocation.
-- Keep private browser keys non-exportable; render user content using textContent. Preserve CSP and no-store headers.
-- Keep form errors inline and accessible; validate optional empty fields deliberately on the server.
+## Documentation
+- Keep one authoritative explanation per topic: README for quick start, API for requests, PROTOCOL for cryptography/client requirements, SESSION_LIFECYCLE for access/device behavior, UPGRADING for operations, SECURITY_REVIEW for current evidence/limits, CHANGELOG for release history. Link instead of repeating.
+- Use concise English, short paragraphs and descriptive headings. Keep UI descriptions brief; cosmetic changes belong in the changelog unless needed for correct use.
+- Update `docs/SECURITY_REVIEW.md` with affected security code/tests: remove resolved findings, narrow partial ones, retain limits and record only obtained evidence. Do not claim deployment or independent audit results.
+- Before preparing a commit, review all repository documentation against the final change; fix stale guidance, duplication and affected links before validation. Reuse valid evidence for unchanged material.
+- Update the `docs/` site when published API, capabilities, client behavior, architecture, security/retention or deployment guidance changes. Preserve its backend focus and visual identity. Review affected copy, snippets, links and metadata; reuse unchanged social-asset verification. Internal maintenance alone needs no site edits.
 
-## Checks and Git
-- Use explicit numeric release tags for GitHub Actions dependencies (for example, `actions/checkout@v7.0.1`); never use commit SHA references or moving major-only tags.
-- Dependency monitoring uses `.github/renovate.json` with dashboard approval for all updates on `develop`; keep automatic merging and Renovate vulnerability PRs disabled. Preserve GitHub's dependency graph and Dependabot alerts independently; do not restore routine Dependabot version-update automation.
-- Treat each pre-release as a fresh installation: support only current formats and APIs, without legacy compatibility paths or automatic data migrations. Describe current behavior directly in documentation and record release-specific changes in `CHANGELOG.md`.
-- Make all code, documentation, and configuration changes on `develop` only; create/check out it before editing. Never work directly on `main`.
-- CI runs on pushes to every branch except `main`, and only on pull requests targeting `main`; do not trigger CI on pushes to `main`.
-- Promotion to `main` is performed by GitHub Actions only, after both checks pass on the exact `develop` commit. Push changes to `develop`; never push `main` locally. If branches diverge, integrate on `develop` and recheck. Keep `develop` checked out.
-- Before committing changes to application behavior, logic, APIs, or functionality, increment the backend version in `app/version.py`, update `CHANGELOG.md`, and update affected documentation. Documentation-only, formatting, agent-instruction, and other nonfunctional maintenance changes must not bump the version or create a release section solely to record that maintenance. Always update affected documentation as needed (including README, API/protocol, security, upgrade/deployment guidance, and the `docs/` site). Complete required updates before final validation and reporting readiness for commit. Reuse an appropriate version bump already prepared for the current changes; do not bump again merely because a commit is retried. Explicit user approval is still required to commit or push.
-- Before preparing any commit, review all repository documentation for accuracy, consistency and relevance to the final changes. Keep it clean and up to date: correct stale or contradictory guidance, remove obsolete or duplicated explanations, check affected links, and align release notes, version and security evidence. Reuse valid review evidence for unchanged material; finish necessary documentation edits before final validation and reporting readiness.
-- Backend versions use `MAJOR.MINOR.PATCH`, following [Semantic Versioning](https://semver.org/spec/v2.0.0.html) with the pre-1.0 project policy below. Backend release, HTTP API and encryption protocol versions remain independent.
-- At `1.0.0` and later, increment MAJOR for incompatible public API/behavior changes, MINOR for backward-compatible functionality or API deprecation, and PATCH for backward-compatible bug/security fixes.
-- Before `1.0.0`, project policy is to increment MINOR for new functionality, API deprecation, or breaking API/behavior changes; use PATCH only for backward-compatible bug/security fixes. Removing an endpoint requires a minor bump, e.g. `0.3.3` to `0.4.0`, not `0.3.4`.
-- Select the highest required bump from the final combined change set. Reassess a prepared bump when scope changes; a security fix that breaks compatibility is not a PATCH. Reset PATCH to zero for MINOR bumps, and MINOR/PATCH to zero for MAJOR bumps. Do not advance to `1.0.0` solely to record a pre-1.0 breaking change.
-- Preserve already published version contents and release history; corrections require a new version, not rewriting a pushed release or Git history. The documentation-only exemption above still applies.
-- Release automation runs after both CI checks and exact-commit promotion from `develop` to `main`. Prepare `app/version.py` and its dated changelog section together; `.github/workflows/release.yml` creates `vX.Y.Z` and uses that section as the GitHub release notes. Preserve existing releases and tags; retry failures by rerunning CI for the current commit. Publication does not deploy the backend or Pages.
-- Windows Python: `.\.venv\Scripts\python.exe`; elsewhere use the active virtualenv Python.
-- Checks: `python -m ruff check .`, `python -m pytest`, `node --check app/static/client.js`, `node --check app/static/link-form.js`, `node --test tests/client_delivery.test.cjs`.
-- Dependency/build checks when relevant: `python -m pip check`, `python -m compileall -q app scripts tests`.
-- Use isolated test databases; never exercise destructive tests against the running instance.
-- Before an authorized commit: inspect diff, staged filenames, privacy exclusions, and `git diff --cached --check`.
-- Changelog style: preserve this format in future updates. List releases newest first with `## X.Y.Z — YYYY-MM-DD` headings and concise English `- ` bullets describing user-visible changes. Keep each bullet on one source line, with no blank lines between bullets; keep one blank line after headings and between release sections. Include `## Unreleased` only when it contains pending changes; remove it when empty after preparing a release. Preserve published release history and do not invent dates for older undated releases. Use the corresponding release section as the GitHub release notes.
-- Commit style: concise English Conventional Commits, lowercase imperative subject, e.g. `feat: add ...`, `fix: handle ...`, `chore: update ...`.
-- After a successful authorized push, stop and report the commit hash using information already available. Do not watch or poll CI, monitor promotion, check push/tracking status, fetch, or verify remote refs unless the user explicitly requests those follow-up checks. Never force-push or rewrite history without explicit authorization.
+## CI, versions and Git
+- Use full numeric GitHub Action release tags, such as `actions/checkout@v7.0.1`; never SHA references or moving major-only tags.
+- Renovate's dashboard monitors `develop` with approval for every update. Keep auto-merge and vulnerability PRs disabled; preserve GitHub dependency graph/Dependabot alerts and do not restore routine Dependabot PR automation.
+- Test CI runs on pushes except `main` and PRs targeting `main`. Promotion is Actions-only after `smoke` and `container` succeed on the exact `develop` commit. Integrate divergence on `develop` and recheck. Separate asynchronous security scans are not promotion gates unless enforcement is verified.
+- Before committing behavior/API/functionality changes, update `app/version.py`, its dated changelog section and affected docs. Reuse the prepared bump; reassess only when scope changes. Documentation, formatting, instructions and other nonfunctional maintenance need no version bump or release section solely for maintenance.
+- Use `MAJOR.MINOR.PATCH` ([SemVer](https://semver.org/spec/v2.0.0.html)). Before 1.0, MINOR covers features, deprecations and breaking changes; PATCH covers compatible bug/security fixes. At 1.0+, MAJOR covers breaking changes, MINOR compatible features/deprecations, PATCH compatible fixes. Choose the highest required bump and reset lower components. Do not advance to 1.0 solely for a pre-release break. Backend, HTTP API and encryption versions are independent.
+- Preserve published changelog entries, releases, tags and Git history. Corrections need a new release. Changelog sections use `## X.Y.Z — YYYY-MM-DD`, newest first, with concise English bullets on single source lines, no blank lines between bullets, and one blank line after headings/between releases. Keep `## Unreleased` only while nonempty; never invent old release dates.
+- After exact-commit promotion, `release.yml` creates `vX.Y.Z` and publishes that changelog section. Retry failed publication by rerunning CI for the current commit. Publication deploys neither backend nor Pages.
+- Before an authorized commit, inspect the diff, staged filenames, privacy exclusions and `git diff --cached --check`. Use concise lowercase imperative Conventional Commit subjects, e.g. `fix: handle expired invites`.
+- After a successful authorized push, stop and report the known commit hash. Do not poll CI/promotion, fetch or verify remote refs unless requested. Never force-push or rewrite history without explicit permission.
+
+## Checks
+
+Use the active virtualenv Python; on Windows use `.\.venv\Scripts\python.exe`.
+
+```sh
+python -m ruff check .
+python -m pytest
+node --check app/static/client.js
+node --check app/static/link-form.js
+node --test tests/client_delivery.test.cjs
+```
+
+When relevant: `python -m pip check`, `python -m compileall -q app scripts tests`, and the additional checks in [CI](.github/workflows/test.yml).
+
+## Ponytail integration
+
+Adapted from [Ponytail](https://github.com/DietrichGebert/ponytail/blob/main/skills/ponytail/SKILL.md), MIT, copyright 2026 DietrichGebert; full notice in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Upstream changes are not adopted automatically.
+
+Understand callers and fix shared causes. Choose the first adequate existing code, standard library, native feature, installed dependency, then minimal custom code. Keep changes readable and preserve validation, security, accessibility, data-loss protection and explicit requirements. Use meaningful tests without an arbitrary test ceiling or mandatory self-check scripts. All rules above take precedence. `stop ponytail` or `normal mode` disables only this supplement; intensity changes cannot override permissions or repository rules.

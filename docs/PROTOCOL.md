@@ -1,156 +1,98 @@
 # Browser test-client P-256 protocol v1
 
-This documents the current test format for interoperability, not a recommendation
-to build a new cryptographic protocol. It is unaudited, has no recipient forward
-secrecy or post-compromise recovery. See the
-[security review](SECURITY_REVIEW.md).
-
-Conversation closure does not change encryption or keys. Respect `closed_at` in
-the authenticated roster: keep local history readable, pause outgoing retries and
-viewing confirmations, and refresh roster state on `chat_state` updates. The
-server independently rejects live messaging for a closed conversation. Reopening
-preserves original ciphertext/message IDs and normal retry deadlines; never
-delete or re-encrypt saved messages merely because a conversation was closed.
-
-The backend's `/api/v1` version, backend release version, and ciphertext version
-are independent. The backend handles opaque ciphertext, never message plaintext
-or private keys. Clients using different envelope formats cannot interoperate
-just because they use the same HTTP API.
-
-The envelope uses `v: 1`, a P256 algorithm identifier and authenticated context.
-There is no algorithm negotiation or conversion of other key/ciphertext formats.
+This unaudited interoperability format has no recipient forward secrecy or
+post-compromise recovery. Backend release, `/api/v1` and envelope versions are
+independent; sharing an HTTP API does not imply compatible encryption.
 
 ## Implementation boundary
 
-`app/static/client-protocol.js` implements the existing wire operations with
-Web Crypto and explicit identity/peer inputs. It has no network, DOM, session,
-or storage access. `client.js` owns peer pinning, identity/history persistence,
-delivery queues, ACKs, sessions, and rendering. The protocol module alone does
-**not** enforce trust: callers must authenticate the supplied peer key first.
-Protocol failures use `ProtocolError` with fixed explanations. The UI distinguishes
-these from browser storage, login and HTTP failures; raw exception messages and
-unrecognized server details are not rendered.
+`app/static/client-protocol.js` implements Web Crypto wire operations with explicit
+identity/peer inputs, without network, DOM, sessions or storage. `client.js` owns
+trust checks, persistence, sessions and delivery. Callers must authenticate peer
+keys; protocol failures use fixed `ProtocolError` messages, never raw exceptions.
+The backend validates public P-256 points but treats ciphertext as opaque.
 
 ## Wire representation
 
-The `ciphertext` API field is standard base64 of UTF-8 JSON:
+The API's `ciphertext` is standard base64 of UTF-8 JSON:
 
 ```json
 {
   "v": 1,
   "alg": "P256-2DH-HKDF-SHA256-AES256GCM",
-  "epk": "<base64 uncompressed ephemeral P-256 point, 65 bytes>",
+  "epk": "<base64 uncompressed P-256 point, 65 bytes>",
   "salt": "<base64 random salt, 16 bytes>",
   "iv": "<base64 random IV, 12 bytes>",
   "ct": "<base64 ciphertext followed by 16-byte GCM tag>"
 }
 ```
 
-Public identity keys are standard base64 of uncompressed SEC1 P-256 points:
-`0x04 || X || Y`, with two 32-byte big-endian coordinates (65 bytes total).
-Both backend admission and native Web Crypto imports validate curve membership;
-compressed points and other curves are rejected. Keys use ECDH with `namedCurve: "P-256"`.
-For each recipient and message, the sender generates a fresh ephemeral P-256
-key pair, 16-byte random salt, and 12-byte random IV using the platform CSPRNG.
-Given sender identity key `S`, recipient identity key `R`, and ephemeral key `E`:
+Identity keys encode uncompressed SEC1 `0x04 || X || Y`: 65 bytes, coordinates
+32 bytes each, ECDH `namedCurve: "P-256"`. Validate curve membership; reject
+compressed points and other curves. For each message/recipient generate a fresh
+ephemeral P-256 pair, 16-byte salt and 12-byte IV with the platform CSPRNG.
+For sender identity S, recipient identity R and ephemeral E:
 
-1. Compute `DH(S_private, R_public) || DH(E_private, R_public)` in that order
-   (64 bytes total). The receiver computes the same values using `R_private`.
-2. Define `context` as UTF-8 of
+1. Concatenate `DH(S_private, R_public) || DH(E_private, R_public)` (64 bytes).
+   The recipient obtains the same outputs using `R_private`.
+2. Set UTF-8 context to
    `sideword-web-p256-v1|{chat_id}|{client_message_id}|{sender_public_id}|{recipient_public_id}`.
-   Chat IDs use decimal text; IDs otherwise use their exact API strings.
-3. Derive a 32-byte key with HKDF-SHA-256: input key material is the concatenated
-   DH outputs, salt is the envelope salt, and info is `context`.
-4. Encrypt the UTF-8 message with AES-256-GCM, the envelope IV, `context` as
-   associated data, and a 128-bit authentication tag. Append the tag to ciphertext.
-5. Discard ephemeral private keys and derived secrets after use. JavaScript
-   garbage collection and buffer overwrites do not guarantee physical erasure.
+   Use decimal chat IDs and exact API ID strings.
+3. HKDF-SHA-256 derives 32 bytes from those DH outputs, envelope salt and context as info.
+4. AES-256-GCM encrypts UTF-8 plaintext with that key, IV, context as AAD and a
+   128-bit tag appended to ciphertext.
+5. Discard derived secrets/ephemeral private keys; JavaScript cannot guarantee physical erasure.
 
-Reject unsupported versions/algorithms and failed authentication. Do not retry
-them using a weaker algorithm. Web Crypto rejects invalid DH operations; never
-replace a rejected shared secret with zeros or fall back to plaintext. The v1
-context does not authenticate display names, server timestamps, or a group roster.
-
-Groups use independent pairwise envelopes for every other member, under the same
-client message ID. They have no shared group ratchet or authenticated membership
-epochs. The server requires envelopes to cover all peers.
+Reject unsupported versions/algorithms, invalid DH and authentication failures.
+No negotiation, weaker fallback, zero secret or plaintext fallback is allowed.
+Context does not authenticate names, timestamps or group membership. Groups use
+separate pairwise envelopes under one client message ID, without a shared ratchet
+or authenticated membership epochs; cover every peer.
 
 ## Identity checks and local state
 
-The fingerprint is lowercase hex SHA-256 of the raw public key (64 characters).
-Calculate it locally, and compare the full value and intended participant with
-the key's owner over another trusted channel. Displaying a fingerprint alone
-does not establish a verified identity.
+Fingerprints are lowercase hex SHA-256 of raw public points (64 characters).
+Compute locally and compare the full fingerprint/participant through another
+trusted channel; the relay's fingerprint is not a trust anchor.
 
-The test client stores the first fingerprint for each peer public ID, scoped to
-the local device public key and browser origin. Atomic IndexedDB transactions
-prevent competing tabs from overwriting a pin. Subsequent mismatches block use
-of that key. A newly assigned public ID is a new trust decision, including after
-a peer resets their device. Pinning cannot detect substitution before first use,
-a malicious initial roster, or malicious JavaScript served by the origin.
+First-use pins are scoped to peer public ID, local device key and origin. Atomic
+IndexedDB writes prevent tabs overwriting pins; later mismatches block that key.
+A new public ID requires new verification. Pinning cannot detect initial
+substitution, a malicious roster or malicious code served by the origin.
 
-Encryption contexts bind room and participant identities, not hostnames. Devices
-on different origins can exchange envelopes through the same authorized room,
-but their private keys, pins and history remain independent. There is no automatic
-identity or history transfer; see [device lifecycle](SESSION_LIFECYCLE.md#persistence-devices-and-reconnects).
+IndexedDB `sideword-test-client-p256`, version 1, store `device` holds non-exportable
+identity/history CryptoKeys. `history:` records use a separate AES-256-GCM key,
+fresh 12-byte IV and full storage key as AAD. Private/ephemeral keys are generated
+non-exportable; no export/wrapping/plaintext fallback exists. Device keys are not uploaded.
 
-The IndexedDB database is `sideword-test-client-p256`, version 1, store `device`.
-New identities require fresh peer fingerprint verification. Encrypted `history:`
-records use a separate non-exportable AES-256-GCM
-key, a fresh 12-byte IV per record, and the complete history storage key as AAD.
-Private identity and storage keys are browser CryptoKeys, never uploaded. New
-private identity and ephemeral keys are generated non-exportable directly;
-there is no private-key export, wrapping, or plaintext storage fallback.
-Before invite admission, the client reads the saved identity in a separate
-transaction and checks that both device keys and the expected participant/public
-key are restored. Identity reads settle only after transaction completion.
-An absent record is distinguished from a null deserialization result or a null
-key field. Unreadable records are retained and writes that would replace them
-are aborted. Missing or unreadable device storage blocks renewal without being
-reported as a concurrent device change; an actual changed participant/public key
-still requires a reload.
+Before admission, read saved identity in a separate completed transaction and
+verify both keys and expected participant/public key. Distinguish absent records
+from null/unreadable keys; preserve unreadable state and abort replacement writes.
+Block renewal on storage failure; an actual device identity change requires reload.
+These checks cannot recover lost keys or establish device compatibility.
 
-The preflight detects failed storage round trips before admission. It cannot
-repair browser storage or recover inaccessible keys. Startup failures remain
-visible on the activation form. Storage and platform behavior require device QA.
-
-History stores participant labels alongside routing identities. Current roster
-names can update displayed labels without changing stored history, delivery IDs
-or acknowledgements; records without a matching roster keep their saved labels.
-Display names are server-provided metadata, unauthenticated by the envelope.
+Names are unauthenticated labels stored beside routing IDs. Roster label updates
+must not change saved delivery identities or history. Origins have independent
+keys/pins/history despite sharing rooms; see [device lifecycle](SESSION_LIFECYCLE.md#persistence-devices-and-reconnects).
 
 ## Delivery requirements for future clients
 
-Optional participant presence is a separate, unencrypted connection-status event;
-it does not change message envelopes, receipts, key checks or delivery ACKs.
-See the [presence contract](API.md#participant-presence) for opt-in authentication,
-heartbeat deadlines, membership scoping and mandatory unknown/expiry behavior.
+- Authenticate, decrypt, verify pins and commit local history **before** exact ACK
+  removes ciphertext. Failed crypto/storage stays retryable; serialize WS/poll processing.
+- Deduplicate messages by chat/sender/client message ID; receipts also bind reader,
+  original delivery ID and event stage. SQLite row IDs can be reused. Treat naive timestamps as UTC.
+- Exact operations bind random delivery ID, chat, sender/reader and message ID;
+  batch at most 100 per list. IDs survive full backups but are relay metadata,
+  outside ciphertext/HKDF context and not proof against relay replay.
+- Persist immutable outgoing envelopes before upload; retry identical ciphertext
+  within the [retry window](API.md#send-retries-and-capacity). The browser uses encrypted outboxes and Web Locks.
+- Store acceptance, per-recipient confirmations, viewing intent and ACK markers as
+  encrypted history metadata. ACK receipts only after persistence; zero counts can mean an earlier retry committed.
+- Send viewing confirmations only after actual viewing and prior durable delivery;
+  presence is separate connection metadata, never viewing/delivery proof. See
+  [confirmation semantics](API.md#durable-delivery-and-actual-viewing).
+- Respect conversation closure without erasing local history or re-encrypting
+  pending messages. Resume only within ordinary deadlines when reopened.
 
-Authenticate, decrypt, and commit local history before `/ack/exact`, which removes
-ciphertext and confirms durable delivery.
-Use `/read/exact` only after actual viewing; it never requires
-retained ciphertext. See [delivery and viewing](API.md#durable-delivery-and-actual-viewing)
-for visibility and authorization. Failed decryption, pin checks, or
-storage must leave messages retryable. Serialize incoming processing across WS
-and polling. Deduplicate messages by chat, sender public ID, and client message
-ID; receipt identities also include the original message delivery ID and stage. SQLite row IDs
-are not durable message identities. Treat naive database timestamps as UTC.
-
-Use the [exact delivery endpoints](API.md#exact-delivery-identities), binding
-`delivery_id`, chat, sender/reader public ID, and client message ID. The random
-delivery identity is relay metadata, outside the v1 ciphertext and HKDF context.
-It identifies one queued row and survives a full database backup/restore. Batch
-at most 100 references per list; retain failed batches for retry. A zero count
-is a successful no-op when the referenced delivery no longer exists. Delivery/viewing
-confirmations update the bounded ledger atomically and are idempotent across
-concurrent requests. Store acceptance, per-recipient receipts, viewing intent and
-ACK markers as encrypted history metadata, not timeline messages.
-
-Clients must use exact delivery references. Persist outgoing ciphertext before
-upload and retry the same envelopes within the [server retry window](API.md#send-retries-and-capacity).
-Delivery IDs do not authenticate relay metadata or prevent malicious relay replay.
-The browser uses an encrypted outbox and Web Locks across tabs; browser-independent
-interoperability still requires release QA.
-
-See the [verification record](SECURITY_REVIEW.md#verification-record-and-gaps)
-for automated coverage and remaining browser/native interoperability gaps.
+See [verification gaps](SECURITY_REVIEW.md#verification-record-and-gaps) before
+claiming browser/native interoperability or cryptographic assurance.

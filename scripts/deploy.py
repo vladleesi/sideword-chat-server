@@ -273,9 +273,14 @@ def package_image(directory, sha, retain=True):
                 "--entrypoint",
                 "python",
                 image_id,
-                "-m",
-                "pip",
-                "check",
+                "-c",
+                "import importlib.util; "
+                "assert all(importlib.util.find_spec(name) is None "
+                "for name in ('pip', 'ensurepip')), 'Build tools remain in the runtime image'; "
+                "assert importlib.util.find_spec('scripts.create_admin') is not None, "
+                "'Admin recovery command missing'; "
+                "import fastapi, uvicorn, sqlalchemy, aiosqlite, pydantic, pydantic_settings, "
+                "python_multipart, jinja2, itsdangerous, bcrypt, cryptography, jwt, dotenv",
             ]
         )
     validate_metadata(argparse.Namespace(sha=sha, image_id=image_id, version=version))

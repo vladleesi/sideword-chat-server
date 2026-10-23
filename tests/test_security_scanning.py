@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import venv
 from pathlib import Path
 
 import pytest
@@ -171,7 +172,8 @@ def test_image_inventory_is_exact_isolated_and_audited_without_reinstallation(sc
         assert command[command.index("--network") + 1] == "none"
         assert "--read-only" in command and "no-new-privileges" in command
         assert IMAGE in command
-        assert command[-5:] == [IMAGE, "-m", "pip", "list", "--format=json"]
+        assert command[-3:-1] == [IMAGE, "-c"]
+        assert "importlib.metadata.distributions()" in command[-1]
         return json.dumps([{"name": "example", "version": "1.0"},
                            {"name": "transitive-example", "version": "2.0"}])
 
@@ -189,6 +191,37 @@ def test_image_inventory_is_exact_isolated_and_audited_without_reinstallation(sc
     monkeypatch.setattr(deploy, "run", docker)
     monkeypatch.setattr(security_scan.subprocess, "run", audit)
     assert security_scan.audit(IMAGE) == 0
+
+
+def test_inventory_command_works_without_pip(scan, monkeypatch):
+    environment = scan / "runtime"
+    venv.EnvBuilder(with_pip=False, symlinks=sys.platform != "win32").create(environment)
+    python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    site = Path(subprocess.check_output([
+        str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))",
+    ], text=True).strip())
+    metadata = site / "runtime_example-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Name: runtime-example\nVersion: 1.0\n")
+    captured = []
+    run = subprocess.run
+
+    def docker(command, **kwargs):
+        assert command[-2] == "-c"
+        inventory = run([str(python), "-c", command[-1]], capture_output=True,
+                        text=True, check=True).stdout
+        captured.extend(json.loads(inventory))
+        return inventory
+
+    def audit(command, **kwargs):
+        payload = {"dependencies": [{"name": "runtime-example", "version": "1.0", "vulns": []}]}
+        Path(command[command.index("--output") + 1]).write_text(json.dumps(payload))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(deploy, "run", docker)
+    monkeypatch.setattr(security_scan.subprocess, "run", audit)
+    assert security_scan.audit(IMAGE) == 0
+    assert captured == [{"name": "runtime-example", "version": "1.0"}]
 
 
 @pytest.mark.parametrize("failure", ["missing", "extra", "wrong-version", "duplicate"])
@@ -332,6 +365,9 @@ def test_ci_exports_the_same_image_id_it_verifies_and_retains(scan, monkeypatch,
     assert (scan / "outputs").read_text() == f"image_id={IMAGE}\n"
     containers = [cmd for cmd in commands if cmd[:2] == ["docker", "run"]]
     assert len(containers) == 2 and all(IMAGE in cmd for cmd in containers)
+    assert "Build tools remain in the runtime image" in containers[1][-1]
+    assert "Admin recovery command missing" in containers[1][-1]
+    assert "import fastapi, uvicorn" in containers[1][-1]
     saves = [cmd for cmd in commands if cmd[:2] == ["docker", "save"]]
     assert len(saves) == int(retain)
     if retain:
@@ -358,6 +394,28 @@ def test_failed_image_scan_blocks_retention_promotion_and_release():
     assert ci["jobs"]["promote"]["needs"] == ["smoke", "container"]
     assert ci["jobs"]["release"]["needs"] == ["smoke", "container", "promote"]
     assert not any("continue-on-error" in step for step in steps)
+
+
+def test_codeql_analyzes_both_languages_without_builds_or_duplicate_gates():
+    config = workflow("codeql.yml")
+    assert config["on"]["push"]["branches"] == ["develop"]
+    assert config["on"]["pull_request"]["branches"] == ["main"]
+    assert config["on"]["schedule"] == [{"cron": "47 7 * * 1"}]
+    assert config["permissions"] == {"contents": "read"}
+    assert list(config["jobs"]) == ["analyze"]
+    job = config["jobs"]["analyze"]
+    assert job["permissions"] == {"contents": "read", "security-events": "write"}
+    assert job["strategy"]["matrix"]["language"] == ["python", "javascript-typescript"]
+    assert job["strategy"]["fail-fast"] == "false"
+    steps = job["steps"]
+    assert [step["uses"] for step in steps] == [
+        "actions/checkout@v7.0.1", "github/codeql-action/init@v4.39.1",
+        "github/codeql-action/analyze@v4.39.1",
+    ]
+    assert steps[0]["with"]["persist-credentials"] == "false"
+    assert steps[1]["with"] == {"languages": "${{ matrix.language }}", "build-mode": "none"}
+    assert steps[2]["with"]["category"] == "/language:${{ matrix.language }}"
+    assert "codeql" not in workflow("test.yml")["jobs"]["promote"]["needs"]
 
 
 def test_workflows_share_severity_policy_and_retain_failure_reports():

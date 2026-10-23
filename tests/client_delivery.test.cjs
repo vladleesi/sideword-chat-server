@@ -453,6 +453,26 @@ test('failed local persistence can retry without acknowledging an unsaved messag
   assert.equal(run('messagesByChat.get(7).filter(e => e.kind === "theirs").length'), 1);
 });
 
+test('failed envelope authentication never queues deletion and remains retryable', async () => {
+  const run = client();
+  await run(`
+    globalThis.incoming = {delivery_id: 'a'.repeat(32), chat_id: 7,
+      sender_public_id: 'alice', client_message_id: 'auth-failure', ciphertext: 'envelope'};
+    decryptMessage = async () => { throw new DOMException('synthetic-private', 'OperationError'); };
+    processMessages([incoming]);
+  `);
+  assert.equal(run('pendingDeliveries.size'), 0);
+  assert.equal(run('pendingReadsByChat.size'), 0);
+  assert.equal(run('seenMessageIds.size'), 0);
+  assert.equal(run('processingMessageIds.size'), 0);
+  assert.equal(run('messagesByChat.get(7).some(e => e.kind === "theirs")'), false);
+  assert.equal(run('messagesByChat.get(7).some(e => e.text.includes("synthetic-private"))'), false);
+  await run(`decryptMessage = async () => 'authenticated'; processMessages([incoming]);`);
+  assert.equal(run('pendingDeliveries.size'), 1);
+  assert.equal(run('failedMessageReasons.size'), 0);
+  assert.equal(run('messagesByChat.get(7).filter(e => e.kind === "theirs").length'), 1);
+});
+
 test('exact acknowledgements retain colliding group identities and retry lost responses', async () => {
   const run = client();
   await run(`(async () => {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.1 — 2026-10-22
+
+- Remove curl, pip and its bundled libraries from the runtime image, apply available Debian updates during builds, and use a local Python health check while preserving dependency validation and strict vulnerability gates.
+- Include the administrator password-reset command in container images and verify its presence before retaining a build.
+
 ## 0.13.0 — 2026-10-22
 
 - Refresh runtime and development dependencies, exclude older vulnerable ASGI/JWT/template/parser versions, and scan resolved Python dependencies in CI.

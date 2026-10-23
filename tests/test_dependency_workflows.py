@@ -35,7 +35,7 @@ def test_workflows_use_numeric_action_releases_on_hosted_runners():
             assert job["runs-on"] == "ubuntu-latest"
             for step in job.get("steps", []):
                 if "uses" in step:
-                    assert re.fullmatch(r"[\w-]+/[\w-]+@v\d+\.\d+\.\d+", step["uses"])
+                    assert re.fullmatch(r"[\w-]+/[\w-]+(?:/[\w-]+)*@v\d+\.\d+\.\d+", step["uses"])
 
 
 def test_dependency_monitoring_requires_approval_without_automatic_security_prs():

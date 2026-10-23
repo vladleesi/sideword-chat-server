@@ -87,6 +87,28 @@ def test_group_collision_only_deletes_authenticated_sender_delivery(room):
     assert poll(client, users[1])["read_receipts"] == []
 
 
+def test_mixed_ack_cannot_delete_another_recipients_or_rooms_ciphertext(room):
+    client, users = room(3)
+    _, other = room()
+    send(client, users)
+    send(client, other)
+    own = poll(client, users[1])["messages"][0]
+    peer = poll(client, users[2])["messages"][0]
+    foreign = poll(client, other[1])["messages"][0]
+    response = client.post("/api/v1/ack/exact", headers=headers(users[1]), json={
+        "messages": [reference(item) for item in (own, peer, foreign)],
+    })
+    assert response.status_code == 200
+    assert response.json() == {"deleted_messages": 1, "deleted_receipts": 0}
+    assert poll(client, users[1])["messages"] == []
+    assert poll(client, users[2])["messages"] == [peer]
+    assert poll(client, other[1])["messages"] == [foreign]
+    assert client.post(f"/api/v1/chats/{other[0]['chat']['id']}/read/exact",
+                       headers=headers(users[1]), json={"messages": [reference(foreign)]}
+                       ).status_code == 404
+    assert poll(client, other[0])["read_receipts"] == []
+
+
 def test_delayed_read_and_ack_cannot_consume_reused_row_or_logical_id(room):
     client, users = room()
     send(client, users)

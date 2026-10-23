@@ -285,6 +285,45 @@ def test_device_revocation_preserves_other_registered_sessions(room):
     assert client.get("/api/v1/me", headers=headers(users[0])).status_code == 200
 
 
+def test_revoked_open_socket_receives_no_ciphertext_on_server_push(room):
+    client, users = room()
+    with client.websocket_connect("/ws", subprotocols=["sideword.v1"]) as socket:
+        socket.send_json({"type": "auth", "token": users[1]["token"]})
+        assert socket.receive_json()["type"] == "hello"
+
+        async def revoke_without_notification():
+            async with SessionLocal() as session:
+                record = await session.get(ClientSession, users[1]["session_id"])
+                record.revoked = True
+                await session.commit()
+
+        client.portal.call(revoke_without_notification)
+        assert upload(client, users).status_code == 200
+        assert socket.receive_json() == {"type": "auth_error", "reason": "invalid session"}
+    async def pending():
+        async with SessionLocal() as session:
+            return await session.scalar(select(func.count(PendingMessage.id)).where(
+                PendingMessage.chat_id == users[0]["chat"]["id"]))
+    assert asyncio.run(pending()) == 1
+    assert client.get("/api/v1/poll", headers=headers(users[1])).status_code == 401
+
+
+def test_admin_and_participant_tokens_cannot_cross_authority_boundaries(room):
+    client, users = room()
+    assert client.post("/admin/login", data={"username": "admin", "password": "adminpass"},
+                       follow_redirects=False).status_code == 303
+    admin_token = client.cookies.get("sideword_admin_session")
+    assert admin_token
+    client.cookies.clear()
+    assert client.get("/admin/api/export", headers=headers(users[0])).status_code == 401
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    assert client.get("/api/v1/poll", headers=admin_headers).status_code == 401
+    with client.websocket_connect("/ws", subprotocols=["sideword.v1"]) as socket:
+        socket.send_json({"type": "auth", "token": admin_token})
+        assert socket.receive_json()["type"] == "auth_error"
+    assert client.get("/api/v1/me", headers=headers(users[0])).status_code == 200
+
+
 def test_refresh_after_grace_revokes_and_hashes_only_are_stored(room):
     client, users = room()
     old, new = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
