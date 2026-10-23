@@ -101,6 +101,59 @@ See Renovate's [approval behavior](https://docs.renovatebot.com/key-concepts/das
 and GitHub's [security-update settings](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/configure-security-updates)
 and [alert settings](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/configure-dependabot-alerts).
 
+## Vulnerability scans
+
+CI audits the installed Python environment with `pip-audit --strict` and scans
+the exact verified Docker image ID with Trivy. The
+[scan workflow](.github/workflows/scan-container-vulnerabilities.yml) applies the
+same policy during daily runs. Trivy scans OS and
+application packages at every severity, including unfixed vulnerabilities.
+High/Critical findings block the container job; any Python advisory blocks the
+Python check. Scanner errors, incomplete reports and database download failures
+also fail. Both successful jobs remain mandatory for promotion and release.
+Only a successfully scanned CI image is retained for manual deployment.
+
+The [daily workflow](.github/workflows/security.yml) runs at **06:23 UTC** and
+supports manual runs on `main`. Checkout is pinned to the main commit recorded by
+the triggering event. It needs only `contents: read`, never deploys or
+promotes, and serializes scheduled/manual executions. It installs main's runtime
+and development requirements once and audits that environment. By default it
+also rebuilds `main` once, scans that image, and audits its exact installed Python
+inventory without another dependency installation or resolution. Missing, extra,
+duplicate or mismatched package entries in the audit report fail the check. A rebuild can
+resolve different dependency ranges or base-image contents from a deployed artifact.
+
+Optionally set the repository variable `SECURITY_IMAGE_REF` to the current deployed
+image's full `registry/repository@sha256:<64 lowercase hex digits>` reference.
+Keep it synchronized after deployments. The workflow pulls this immutable image
+instead of rebuilding; a missing, invalid or inaccessible configured digest fails
+without silently falling back. This configuration does not prove what is running
+on a host. No private-registry credentials or cloud access are configured, so the
+existing private deployment registry requires separately authorized read-only
+authentication before this option can be used. Never put credentials in the variable.
+
+Find package, installed version, severity, advisory ID and available fixes in job
+summaries and logs. Download `security-python-*`, `security-container-*` or
+`security-daily-*` artifacts for sanitized JSON, retained for 14 days even on
+vulnerability/scanner failure. Only allowlisted finding fields are uploaded;
+raw scanner reports, image environment/configuration and runtime credentials are
+excluded. `pip-audit` does not supply severity, so its findings show `UNKNOWN`
+and all block. Logs/summaries show at most 50 findings; JSON includes the full list.
+
+Enable GitHub Actions email/web notifications and **Send notifications for failed
+workflows only** in account notification settings. Scheduled notifications go to
+the user who last changed the cron expression. The workflow must reach the default
+branch through normal promotion before scheduling starts; GitHub may delay runs
+and disables public-repository schedules after 60 days of inactivity. Check that
+the schedule remains enabled. See [workflow notifications](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs)
+and [schedule limits](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+
+Scanning is not an independent audit or proof of exploitability. Known unresolved
+base-image findings and remaining verification gaps are tracked in the
+[security review](docs/SECURITY_REVIEW.md#prioritized-findings-and-improvements).
+No vulnerability exclusions are configured; unfixed High/Critical findings keep
+promotion blocked until remediation is verified.
+
 ## Pull requests and releases
 
 Open a pull request targeting `main` that describes the problem, change, and

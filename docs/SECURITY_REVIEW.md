@@ -114,14 +114,34 @@ use; **P2** is planned hardening. Verification gaps are listed separately.
 | **F-01 · Medium · P1** | **Design limit:** recipient-key compromise exposes recorded inbound messages, and the protocol has no post-compromise recovery. [Protocol implementation](../app/static/client-protocol.js). | Non-exportable keys reduce normal export exposure. Before stronger privacy claims, independently review a maintained ratcheting protocol with authenticated identity/group transitions. Require explicit migration, downgrade protection, interoperability and crash/recovery evidence. Old messages gain no retroactive forward secrecy; origin/device trust remains a separate boundary. |
 | **F-03 · Medium · P1** | **Known credential exposure paths:** invite links place secrets in URLs; request-body logging can capture activation credentials. Invite tokens are also stored in database/configuration exports. Leaked usable credentials can permit admission or disrupt delivery. [Invite navigation](../app/routers/client.py), [WebSocket authentication](../app/routers/ws.py), [exports](../app/routers/admin_export.py). | Body-based activation, first-frame WebSocket authentication, no-store/no-referrer, optional passwords, and suppressed access logs reduce exposure. Verify redaction across the entire request path and protect database/export/backup access. Plan an invite handoff that reduces URL copies; revoke leaked credentials. |
 | **F-04 · Medium · P2** | **Known host-retention gap:** deployment creates database backups and rollback image tags without automatic pruning. Repeated deployments can retain sensitive state and eventually exhaust storage. [Deployment helper](../scripts/deploy.py). | Backups have private permissions. Registry cleanup has [a separate policy](../scripts/artifact-cleanup.json) and does not prune host copies. Define and verify host retention that preserves the active image and an agreed recovery backup/image; test cleanup and restore before deleting recovery material. |
-| **F-06 · Low · P2** | **Partial supply-chain reproducibility:** dependency ranges, the numbered base-image tag, and numeric action release tags can resolve to different inputs on later builds. Numeric action tags are repository policy. This is not evidence of a vulnerable dependency. [Requirements](../requirements.txt), [Dockerfile](../Dockerfile), [CI](../.github/workflows/test.yml). | Immutable deployment digests preserve the already-checked build. [Renovate](../.github/renovate.json) requires dashboard approval for dependency updates against develop, with automatic merging and vulnerability PRs disabled; [activation instructions](../CONTRIBUTING.md#dependency-monitoring) preserve separate GitHub alerts. CI runs pip-audit on resolved Python dependencies. Record resolved build inputs and continue advisory review. Final-image and bundled-action advisory scans remain gaps. |
-| **F-07 · High · P1** | **Base-image advisory findings:** Trivy 0.76.1 reports 71 distinct Debian advisories (164 package findings, including 8 distinct High advisories) in `python:3.12.15-slim-trixie` on linux/amd64 as of 2026-10-22. The scanner lists no fixed Debian version for these findings. This is package-presence evidence, not proof of a remotely exploitable application path. | Follow Debian/upstream fixes and rebuild when available. The backend remains non-root; that does not eliminate affected libraries. A distribution change requires container build/runtime verification. The final application image, including installed curl, has not been built or scanned. High advisory identifiers are listed below. |
+| **F-06 · Low · P2** | **Partial supply-chain reproducibility:** dependency ranges, the numbered base-image tag, and numeric action release tags can resolve to different inputs on later builds. Numeric action tags are repository policy. This is not evidence of a vulnerable dependency. [Requirements](../requirements.txt), [Dockerfile](../Dockerfile), [CI](../.github/workflows/test.yml). | Immutable deployment digests preserve the already-checked build. [Renovate](../.github/renovate.json) requires dashboard approval for dependency updates against develop, with automatic merging and vulnerability PRs disabled; [activation instructions](../CONTRIBUTING.md#dependency-monitoring) preserve separate GitHub alerts. CI runs pip-audit and gates its exact verified image on Trivy High/Critical findings, including unfixed vulnerabilities; [daily scans](../.github/workflows/security.yml) recheck the selected image without deployment permissions. Record resolved build inputs and continue advisory review. Full local container validation and bundled-action advisory scans remain gaps. |
+| **F-07 · High · P1** | **Base-image advisory findings:** Trivy 0.76.1 reports 71 distinct Debian advisories (164 package findings, including 8 distinct High advisories) in `python:3.12.15-slim-trixie` on linux/amd64 as of 2026-10-22. The scanner lists no fixed Debian version for these findings. This is package-presence evidence, not proof of a remotely exploitable application path. | Follow Debian/upstream fixes and rebuild when available. The backend remains non-root; that does not eliminate affected libraries. A distribution change requires container build/runtime verification. The final application image, including installed curl, has not been built or scanned locally. The configured gate blocks these High findings; no exclusions or unfixed-vulnerability bypass are permitted. High advisory identifiers are listed below. |
+
+## Automated advisory monitoring
+
+The [scan workflow](../.github/workflows/scan-container-vulnerabilities.yml) uses the
+verified immutable Trivy Action v0.36.0 release and Trivy v0.76.1. The scanner
+collects all severity levels; the report gate blocks High/Critical findings.
+An unsuccessful scanner invocation, wrong image identity, missing OS/Python
+inventory or malformed report also fails. Python auditing remains strict and
+blocks every advisory. Image audit reports must cover the exact requested Python
+inventory; omitted, extra, duplicate or mismatched entries fail. [Regression coverage](../tests/test_security_scanning.py)
+exercises these failures, exact image selection and sanitized reporting.
+
+CI scans the immutable local ID produced by the existing build/verification
+helper before retaining the deployment archive. The daily workflow uses only
+read permission, checks out the triggering main commit, and cannot promote, publish or deploy. It
+prefers a configured immutable registry reference; otherwise its fresh main
+build is not evidence about the deployed image. Only allowlisted vulnerability
+fields reach logs, summaries and artifacts; raw image configuration is excluded.
+See [operation and notifications](../CONTRIBUTING.md#vulnerability-scans).
 
 ## Verification record and gaps
 
 Verification on 2026-10-22 used a clean Python 3.12.12 environment and isolated
-SQLite databases. The full suite and targeted reruns verified all 418 Python
-cases; all 194 Node tests passed. Coverage includes session registration and
+SQLite databases. The full suite passed all 468 Python cases.
+The unchanged client retains its
+previous 194 passing Node checks. Coverage includes session registration and
 revocation, invite admission, bcrypt byte limits, JWT validation, exact delivery,
 durable storage before ACK, viewing, retries, origin isolation and native crypto.
 Database tests reject incompatible schemas without rewriting them and preserve
@@ -143,8 +163,17 @@ The base-image scan has the unresolved findings in F-07. Its eight distinct High
 advisories are CVE-2025-69720 (ncurses), CVE-2026-16742 (systemd/libudev),
 CVE-2026-54369 (libacl), CVE-2026-76642, CVE-2026-78408, CVE-2026-78409 and
 CVE-2026-78410 (util-linux), and CVE-2026-9538 (Perl/Archive::Tar).
+A fresh base-image rescan confirmed the same 164 OS-package findings and
+44 High package findings without listed fixes. Trivy's High/Critical conversion
+returned exit 1 for all 44 blocking findings. Replaying that captured report
+through the report gate retained all 170 OS/Python findings, excluded image
+configuration and returned exit 1. Six additional lower-severity
+findings concern the base's pip 25.0.1; the Dockerfile already upgrades pip to
+at least 26.2.2. The real Python audit engine passed the exact clean inventory
+and blocked a known-vulnerable version pin without installing it. These results
+do not replace a complete built-image scan or a GitHub-hosted workflow run.
 Renovate configuration passed validation against its current official schema;
-the three dependency/workflow regression tests passed. A read-only GitHub check
+the security-gate, workflow and deployment regression tests passed. A read-only GitHub check
 on 2026-10-22 confirmed the Dependabot alert API was accessible with no open
 alerts returned, while automatic Dependabot security updates were disabled.
 GitHub settings were not changed. These checks do not establish the absence of

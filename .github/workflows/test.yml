@@ -28,7 +28,16 @@ jobs:
       - run: python -m pip install --upgrade 'pip>=26.2.2,<27'
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pip check
-      - run: python -m pip_audit --strict
+      - name: Audit the installed Python dependencies
+        run: python -m scripts.security_scan audit
+      - name: Retain the Python advisory report
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: security-python-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/security-reports/pip-audit.json
+          retention-days: 14
+          if-no-files-found: error
       - run: python -m ruff check .
       - run: python -m compileall -q app scripts tests
       - run: node --check app/static/client.js
@@ -44,16 +53,57 @@ jobs:
 
   container:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
       - name: Build and verify the candidate image
+        id: image
         env:
           TESTED_SHA: ${{ github.sha }}
           RETAIN_IMAGE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' }}
         run: python -m scripts.deploy package --directory "$RUNNER_TEMP/checked-image" --sha "$TESTED_SHA" --retain "$RETAIN_IMAGE"
+      - name: Prepare private scan output
+        env:
+          SECURITY_IMAGE_ID: ${{ steps.image.outputs.image_id }}
+        run: python -m scripts.security_scan init --image "$SECURITY_IMAGE_ID"
+      - name: Scan OS and application packages at every severity
+        id: trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_IMAGE_SRC: docker
+          TRIVY_IGNOREFILE: /dev/null
+          TRIVY_IGNORE_UNFIXED: "false"
+        with:
+          version: v0.76.1
+          scan-type: image
+          image-ref: ${{ steps.image.outputs.image_id }}
+          scanners: vuln
+          vuln-type: os,library
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: "false"
+          # Collect all severities; the report step enforces High/Critical blocking.
+          exit-code: "0"
+          format: json
+          output: ${{ runner.temp }}/security-raw/trivy.json
+          timeout: 15m
+          cache: "false"
+      - name: Publish findings and enforce the vulnerability gate
+        if: always()
+        env:
+          SECURITY_IMAGE_ID: ${{ steps.image.outputs.image_id }}
+          TRIVY_OUTCOME: ${{ steps.trivy.outcome }}
+        run: python -m scripts.security_scan report --image "$SECURITY_IMAGE_ID"
+      - name: Retain sanitized security reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: security-container-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/security-reports/
+          retention-days: 14
+          if-no-files-found: error
       - name: Retain the exact CI image for manual deployment
         if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
         uses: actions/upload-artifact@v7.0.2

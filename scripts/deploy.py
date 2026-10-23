@@ -278,8 +278,12 @@ def package_image(directory, sha, retain=True):
                 "check",
             ]
         )
+    validate_metadata(argparse.Namespace(sha=sha, image_id=image_id, version=version))
+    if output := os.environ.get("GITHUB_OUTPUT"):
+        with Path(output).open("a") as stream:
+            stream.write(f"image_id={image_id}\n")
     if not retain:
-        return
+        return image_id
     with stage("package"):
         archive = directory / "image.tar"
         run(["docker", "save", "--output", str(archive), image_id], timeout=600)
@@ -296,6 +300,7 @@ def package_image(directory, sha, retain=True):
             )
         )
         artifact_args(directory, sha)
+    return image_id
 
 
 def publish_image(args):

@@ -774,6 +774,7 @@ def test_deployment_workflow_is_manual_and_independent_of_ci_and_release():
         step
         for step in ci["jobs"]["container"]["steps"]
         if step.get("uses", "").startswith("actions/upload-artifact@")
+        and step.get("with", {}).get("name", "").startswith("checked-image-")
     )
     assert upload["with"]["name"] == "checked-image-${{ github.run_attempt }}"
     assert "overwrite" not in upload["with"]
@@ -782,7 +783,7 @@ def test_deployment_workflow_is_manual_and_independent_of_ci_and_release():
             for step in checked_job.get("steps", []):
                 if "uses" in step:
                     assert step["uses"].split("@")[1] in {
-                        "v3.0.0", "v3.0.1", "v7.0.1", "v7.0.2", "v7.1.0", "v8.0.2",
+                        "v0.36.0", "v3.0.0", "v3.0.1", "v7.0.1", "v7.0.2", "v7.1.0", "v8.0.2",
                     }
     for name in job["env"]:
         if name.startswith("GCP_"):
