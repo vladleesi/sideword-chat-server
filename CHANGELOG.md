@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.2 — 2026-10-22
+
+- Replace the Debian container base with Python 3.12 on Alpine, use compatible binary dependency wheels, and preserve the non-root runtime, persistent paths, health checks and strict vulnerability gates.
+
 ## 0.13.1 — 2026-10-22
 
 - Remove curl, pip and its bundled libraries from the runtime image, apply available Debian updates during builds, and use a local Python health check while preserving dependency validation and strict vulnerability gates.

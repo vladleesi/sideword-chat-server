@@ -1,6 +1,6 @@
 # Security review
 
-**Reviewed:** 2026-10-22 · **Backend:** 0.13.1
+**Reviewed:** 2026-10-22 · **Backend:** 0.13.2
 
 Maintainer source/test review of the ciphertext relay, bundled test client and
 CI/deployment controls. This is not an independent audit, penetration test,
@@ -68,14 +68,6 @@ Priorities describe residual risk, not demonstrated remote exploitability.
 | F-03 · Medium · P1 | Invite URLs/bodies, database/config exports and logging layers can expose admission credentials. Redact the full request path, protect copies, share passwords separately and revoke leaks. Body activation/no-referrer do not erase URL history or logs. |
 | F-04 · Low · P2 | Deployment backups/rollback image tags have no host-side pruning. Define retention that preserves active/recovery material, test restore and monitor disk. [Registry cleanup](../scripts/artifact-cleanup.json) does not prune host copies. |
 | F-06 · Low · P2 | Dependency ranges and numbered base/action tags can resolve differently later. Immutable deployment digests preserve checked builds; retain resolved inputs and monitoring. Numeric Action tags remain repository policy. |
-| F-07 · High · P1 | The last hosted image scan found 290 findings, including 52 High. Remove runtime installer/curl exposure and verify the rebuilt image. The base previously had 44 High findings across eight unfixed advisories; promotion must remain blocked pending upstream fixes or a verified base/runtime replacement. |
-
-F-07's unresolved base advisory IDs: CVE-2025-69720 (ncurses), CVE-2026-16742
-(systemd/libudev), CVE-2026-54369 (libacl), CVE-2026-76642/CVE-2026-78408/
-CVE-2026-78409/CVE-2026-78410 (util-linux), CVE-2026-9538 (Perl).
-Debian still lists [systemd](https://security-tracker.debian.org/tracker/CVE-2026-16742)
-and [Perl](https://security-tracker.debian.org/tracker/CVE-2026-9538) as vulnerable
-in trixie. Package presence is not proof that an affected application path is reachable.
 
 ## Automated advisory monitoring
 
@@ -85,36 +77,49 @@ promotion gates. CodeQL and daily scans are asynchronous; successful CodeQL uplo
 do not enforce an alert threshold. Read-only verification confirmed Secret Scanning
 and Push Protection enabled after the maintainer's settings change. CodeQL default
 setup was unconfigured; the coding agent changed no settings.
-A minimal advanced CodeQL workflow is prepared for Python/JavaScript; do not
+A minimal advanced CodeQL workflow analyzes Python/JavaScript; do not
 also enable default setup. Main's active ruleset requires smoke/container checks.
 
 Pip-audit scans installed distributions, not their vendored libraries. Pip 26.2.2
 bundles vulnerable msgpack 1.1.2, setuptools 70.3.0 and urllib3 2.7.0 (six findings,
 four High); standalone package upgrades do not replace those copies. The revised
-Dockerfile checks dependencies before removing pip/ensurepip, avoids curl and
-applies Debian updates. The image includes the documented admin password-reset
+Dockerfile checks binary-wheel dependencies before removing pip/ensurepip, avoids
+curl and applies Alpine updates. The image includes the documented admin password-reset
 command. Final-image checks verify its presence, runtime imports and tool removal;
-image inventory uses stdlib metadata. This does not fix the remaining base findings.
+image inventory uses stdlib metadata. Alpine uses musl rather than glibc; the
+verification below covers the replacement runtime.
 
 ## Verification record and gaps
 
-Final validation used Python 3.12.12 and isolated databases: all 481 Python cases
-and 195 Node cases passed across full runs and targeted reruns. Ruff, compilation,
-actionlint and documentation links passed; Trivy's Dockerfile configuration scan
-reported zero findings. Existing pip check/resolution evidence remains valid:
-Python requirements did not change. Real pip-audit previously accepted an exact
-distribution inventory and blocked a vulnerable pin; Trivy/report replay blocked
-High findings and sanitized reports. An isolated real pip uninstall removed its
-vulnerable vendored files.
+Python 3.12.15/Alpine 3.24.3 images were built and tested for Linux amd64
+(emulated) and arm64 (native). Trivy 0.76.1 scanned both exact image IDs, including
+OS and Python packages and unfixed advisories: zero findings at all severities.
+Strict pip-audit of the amd64 image's 33 installed distributions also passed.
+Both builds passed dependency checks and the existing image guards. Live checks
+on both architectures verified health, UID 1000, a read-only root filesystem,
+admin password reset and persistence after container replacement.
 
-Hosted CI for `238f0a7` built/verified the image, passed smoke, then blocked 52 High
-findings and skipped promotion/release. The revised image has **not** been built
-or scanned locally: Docker is unavailable. The prior zero-advisory distribution
-audit did not establish a clean image, because it omitted pip's vendored libraries.
+The Alpine amd64 test image preserved every production dependency version. All
+481 Python cases passed across a full run and a targeted rerun after fixing an
+atomic port-file publication race in the transport fixture. Existing evidence
+for the unchanged JavaScript (195 cases) and workflows remains valid. Ruff,
+compilation and documentation checks passed; Trivy's Dockerfile configuration
+scan reported zero findings.
+
+The previous Debian base finding is resolved in these local images: systemd,
+Perl and libacl are absent; libuuid 2.42.3-r1 includes the
+[Alpine util-linux fixes](https://secdb.alpinelinux.org/v3.24/main.json), and
+ncurses 6.6 is newer than the
+[affected ncurses releases](https://security-tracker.debian.org/tracker/CVE-2025-69720).
+No advisory exclusions were added. Hosted CI for `2644957` correctly blocked
+promotion/release on the old Debian findings while smoke and CodeQL passed.
+The replacement has not yet run in hosted CI or been deployed. Scan results
+reflect the advisory database at verification time; distribution-only audits
+do not cover vendored libraries.
 
 Coverage includes revoked sockets on server pushes, token-role separation,
 mixed-owner ACK batches, crypto failure without deletion, and the documented
-container recovery command. No GitHub-hosted CodeQL run is established here.
+container recovery command.
 
 Still unverified: browser/device storage behavior, native interoperability,
 production proxy/IAM/secrets/logs/resource isolation, restore of an actual operator

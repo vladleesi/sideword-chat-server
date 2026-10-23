@@ -69,7 +69,8 @@ and [GitHub security settings](https://docs.github.com/en/repositories/managing-
 | [CodeQL](.github/workflows/codeql.yml) | Python and JavaScript/TypeScript default queries; develop pushes, main-bound PRs, weekly Monday 07:47 UTC, manual runs | No; asynchronous alerts, no verified CodeQL enforcement |
 | [Daily security](.github/workflows/security.yml) | Main's dependencies and selected image; daily 06:23 UTC or manual main run | No; independent monitoring, never promotion/deployment |
 
-The Docker build applies Debian updates and runs `pip check` before removing
+The Docker build uses Python 3.12 on Alpine/musl, installs binary wheels only,
+applies Alpine updates and runs `pip check` before removing
 pip/ensurepip and their vendored libraries. CI verifies final runtime imports,
 version and tool removal. Compose inherits the Python health probe. Pip-audit
 alone does not detect libraries vendored inside another package.

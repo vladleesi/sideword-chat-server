@@ -41,7 +41,10 @@ asyncio.run(seed())
 with socket.socket() as listener:
     listener.bind(('127.0.0.1', 0))
     listener.listen(128)
-    Path(sys.argv[1]).write_text(str(listener.getsockname()[1]))
+    port_path = Path(sys.argv[1])
+    pending_path = port_path.with_suffix('.pending')
+    pending_path.write_text(str(listener.getsockname()[1]))
+    pending_path.replace(port_path)
     config = uvicorn.Config(PublicListener(create_app()), access_log=False,
                             log_level='critical', ws_max_size=4096,
                             forwarded_allow_ips='127.0.0.1')

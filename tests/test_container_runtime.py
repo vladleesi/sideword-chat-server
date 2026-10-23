@@ -71,7 +71,12 @@ def test_container_checks_dependencies_before_removing_unneeded_tools():
     dockerfile = (ROOT / "Dockerfile").read_text()
     assert dockerfile.index("pip check") < dockerfile.index("pip uninstall --yes pip")
     assert "sysconfig.get_path('stdlib')) / 'ensurepip'" in dockerfile
-    assert "apt-get upgrade -y" in dockerfile
+    assert dockerfile.startswith("FROM python:3.12.15-alpine3.24\n")
+    assert "apk upgrade --no-cache" in dockerfile
+    assert "pip install --only-binary=:all: -r requirements.txt" in dockerfile
+    assert "addgroup -S -g 1000 sideword" in dockerfile
+    assert "adduser -S -D -H -u 1000 -G sideword" in dockerfile
+    assert "USER sideword" in dockerfile
     assert "curl" not in dockerfile
     assert 'CMD ["python", "-m", "scripts.healthcheck"]' in dockerfile
     assert "scripts/healthcheck.py ./scripts/healthcheck.py" in dockerfile
