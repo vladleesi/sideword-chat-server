@@ -46,7 +46,7 @@ jobs:
             echo "deploy=false" >> "$GITHUB_OUTPUT"
             echo "::notice::The selected commit is no longer current; skipping deployment."
           fi
-      - name: Verify both CI checks on the exact commit
+      - name: Verify CI gates and promotion on the exact commit
         id: ci
         if: steps.current.outputs.deploy == 'true'
         env:

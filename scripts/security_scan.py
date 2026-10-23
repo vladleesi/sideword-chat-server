@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 from scripts import deploy
@@ -147,17 +148,24 @@ def publish(scanner, findings, failed, reports, *, selected_image=""):
               for severity in SEVERITIES}
     lines.append(" · ".join(f"{severity}: {count}" for severity, count in counts.items()))
     if findings:
+        if scanner.startswith("codeql-"):
+            headers = "| Location | Severity | Rule |"
+            columns = ("location", "severity", "rule_id")
+            ordering = ("location", "rule_id")
+        else:
+            headers = "| Package | Installed | Severity | Vulnerability | Fixed |"
+            columns = (
+                "package", "installed_version", "severity", "vulnerability_id", "fixed_version",
+            )
+            ordering = ("package", "vulnerability_id")
         lines.extend([
-            "", "| Package | Installed | Severity | Vulnerability | Fixed |",
-            "| --- | --- | --- | --- | --- |",
+            "", headers, "| " + " | ".join("---" for _ in columns) + " |",
         ])
         ordered = sorted(findings, key=lambda item: (
-            SEVERITIES.index(item["severity"]), item["package"], item["vulnerability_id"],
+            SEVERITIES.index(item["severity"]), *(item[key] for key in ordering),
         ))
         for item in ordered[:50]:
-            lines.append("| " + " | ".join(cell(item[key]) for key in (
-                "package", "installed_version", "severity", "vulnerability_id", "fixed_version",
-            )) + " |")
+            lines.append("| " + " | ".join(cell(item[key]) for key in columns) + " |")
         if len(findings) > 50:
             lines.append("Showing the first 50 findings; the JSON artifact contains all findings.")
     summary("\n".join(lines) + "\n")
@@ -173,6 +181,90 @@ def report(selected_image):
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         failed = True
     return publish("trivy", findings, failed, reports, selected_image=selected_image)
+
+
+def codeql_findings(payload):
+    if (
+        payload.get("version") != "2.1.0"
+        or not isinstance(payload.get("runs"), list) or not payload["runs"]
+    ):
+        raise ValueError("Missing CodeQL SARIF runs.")
+    findings = []
+    for run in payload["runs"]:
+        driver = run["tool"]["driver"]
+        if driver["name"] != "CodeQL" or not isinstance(run.get("results"), list):
+            raise ValueError("Incomplete CodeQL analysis.")
+        for invocation in run.get("invocations", []):
+            if invocation.get("executionSuccessful") is not True:
+                raise ValueError("CodeQL execution failed.")
+        rules = {}
+        for component in [driver, *run["tool"].get("extensions", [])]:
+            for rule in component.get("rules", []):
+                identity = text(rule["id"])
+                if identity in rules:
+                    raise ValueError("Ambiguous CodeQL rule metadata.")
+                rules[identity] = rule
+        if not rules:
+            raise ValueError("Missing CodeQL query inventory.")
+        for result in run["results"]:
+            identity = text(result["ruleId"])
+            rule = rules[identity]
+            properties = rule.get("properties", {})
+            score = properties.get("security-severity")
+            if score is not None:
+                if not isinstance(score, str) or not re.fullmatch(
+                    r"(?:[0-9](?:\.[0-9]+)?|10(?:\.0+)?)", score,
+                ):
+                    raise ValueError("Invalid CodeQL security severity.")
+                rating = Decimal(score)
+                if rating >= 9:
+                    severity = "CRITICAL"
+                elif rating >= 7:
+                    severity = "HIGH"
+                elif rating >= 4:
+                    severity = "MEDIUM"
+                else:
+                    severity = "LOW"
+            else:
+                if "security" in properties.get("tags", []):
+                    raise ValueError("Missing CodeQL security severity.")
+                level = result.get(
+                    "level", rule.get("defaultConfiguration", {}).get("level", "warning"),
+                )
+                severity = {
+                    "error": "HIGH", "warning": "MEDIUM", "note": "LOW", "none": "LOW",
+                }[level]
+            locations = result.get("locations", [])
+            location = ""
+            if locations:
+                physical = locations[0]["physicalLocation"]
+                uri = text(physical["artifactLocation"]["uri"])
+                # Publish only repository-relative paths, never source snippets or absolute URIs.
+                if uri.startswith("/") or ":" in uri or ".." in uri.split("/"):
+                    raise ValueError("CodeQL location is not repository-relative.")
+                line = physical.get("region", {}).get("startLine", 1)
+                if type(line) is not int or line < 1:
+                    raise ValueError("Invalid CodeQL source line.")
+                location = f"{uri}:{line}"
+            findings.append({"rule_id": identity, "severity": severity, "location": location})
+    return findings
+
+
+def codeql():
+    _, reports = directories()
+    language = os.environ.get("CODEQL_LANGUAGE")
+    if language not in {"python", "javascript-typescript"}:
+        raise ValueError("Unsupported CodeQL language.")
+    findings = []
+    failed = os.environ.get("CODEQL_OUTCOME") != "success"
+    try:
+        files = list((Path(os.environ["RUNNER_TEMP"]) / "codeql-results").glob("*.sarif"))
+        if len(files) != 1:
+            raise ValueError("Missing or ambiguous CodeQL report.")
+        findings = codeql_findings(json.loads(files[0].read_text()))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        failed = True
+    return publish(f"codeql-{language}", findings, failed, reports)
 
 
 def audit(selected_image):
@@ -230,7 +322,7 @@ def audit(selected_image):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("prepare", "init", "report", "audit"))
+    parser.add_argument("operation", choices=("prepare", "init", "report", "audit", "codeql"))
     parser.add_argument("--image", default="")
     args = parser.parse_args()
     try:
@@ -242,6 +334,8 @@ def main():
             (raw / "trivy.json").unlink(missing_ok=True)
         elif args.operation == "report":
             return report(args.image)
+        elif args.operation == "codeql":
+            return codeql()
         else:
             return audit(args.image)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, deploy.DeploymentError):

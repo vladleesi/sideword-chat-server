@@ -379,6 +379,124 @@ def workflow(name):
     return yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
 
 
+def codeql_payload(score="6.1", *, extension=False):
+    rule = {"id": "py/example", "properties": {
+        "security-severity": score, "tags": ["security"],
+    }}
+    tool = {"driver": {"name": "CodeQL", "rules": [rule]}}
+    if extension:
+        tool["extensions"] = [{"name": "codeql/python-queries", "rules": [rule]}]
+        del tool["driver"]["rules"]
+    return {"version": "2.1.0", "runs": [{
+        "tool": tool,
+        "invocations": [{"executionSuccessful": True}],
+        "results": [{
+            "ruleId": "py/example", "level": "error",
+            "message": {"text": "synthetic-private"},
+            "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": "app/example.py"},
+                "region": {"startLine": 7, "snippet": {"text": "synthetic-private"}},
+            }}],
+        }],
+    }]}
+
+
+def save_codeql(scan, monkeypatch, payload):
+    monkeypatch.setenv("CODEQL_LANGUAGE", "python")
+    monkeypatch.setenv("CODEQL_OUTCOME", "success")
+    directory = scan / "codeql-results"
+    directory.mkdir(exist_ok=True)
+    (directory / "python.sarif").write_text(json.dumps(payload))
+
+
+@pytest.mark.parametrize("extension", [False, True])
+@pytest.mark.parametrize("score,severity,code", [
+    ("0", "LOW", 0), ("3.9", "LOW", 0), ("4.0", "MEDIUM", 0),
+    ("6.9", "MEDIUM", 0), ("7.0", "HIGH", 1), ("8.9", "HIGH", 1),
+    ("9.0", "CRITICAL", 1), ("10", "CRITICAL", 1),
+])
+def test_codeql_gate_uses_security_score_not_generic_error_level(
+    scan, monkeypatch, extension, score, severity, code,
+):
+    payload = codeql_payload(score, extension=extension)
+    # Existing/dismissed findings must not bypass the current source scan.
+    payload["runs"][0]["results"][0].update({
+        "baselineState": "unchanged", "suppressions": [{"kind": "external"}],
+    })
+    save_codeql(scan, monkeypatch, payload)
+    assert security_scan.codeql() == code
+    report = json.loads((scan / "security-reports/codeql-python.json").read_text())
+    assert report["status"] == ("blocked" if code else "passed")
+    assert report["vulnerabilities"] == [{
+        "rule_id": "py/example", "severity": severity, "location": "app/example.py:7",
+    }]
+    assert "synthetic-private" not in json.dumps(report)
+    assert "synthetic-private" not in (scan / "summary.md").read_text()
+
+
+def test_codeql_empty_results_pass_only_with_successful_analysis(scan, monkeypatch):
+    payload = codeql_payload()
+    payload["runs"][0]["results"] = []
+    save_codeql(scan, monkeypatch, payload)
+    assert security_scan.codeql() == 0
+
+
+@pytest.mark.parametrize("failure", [
+    "missing", "truncated", "multiple-files", "wrong-version", "no-runs", "wrong-tool",
+    "missing-results", "no-rules", "unknown-rule", "ambiguous-rules", "missing-score",
+    "bad-score", "out-of-range", "failed-invocation", "absolute-location",
+    "scanner-failure", "scanner-skipped", "scanner-cancelled", "missing-outcome",
+])
+def test_codeql_errors_and_incomplete_reports_cannot_pass(scan, monkeypatch, failure):
+    payload = codeql_payload()
+    run = payload["runs"][0]
+    rule = run["tool"]["driver"]["rules"][0]
+    if failure == "wrong-version":
+        payload["version"] = "2.0.0"
+    elif failure == "no-runs":
+        payload["runs"] = []
+    elif failure == "wrong-tool":
+        run["tool"]["driver"]["name"] = "Other"
+    elif failure == "missing-results":
+        del run["results"]
+    elif failure == "no-rules":
+        run["tool"]["driver"]["rules"] = []
+    elif failure == "unknown-rule":
+        run["results"][0]["ruleId"] = "py/unknown"
+    elif failure == "ambiguous-rules":
+        run["tool"]["driver"]["rules"].append(rule)
+    elif failure == "missing-score":
+        del rule["properties"]["security-severity"]
+    elif failure in {"bad-score", "out-of-range"}:
+        rule["properties"]["security-severity"] = "NaN" if failure == "bad-score" else "11"
+    elif failure == "failed-invocation":
+        run["invocations"][0]["executionSuccessful"] = False
+    elif failure == "absolute-location":
+        run["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] = "file:///private/example.py"
+    save_codeql(scan, monkeypatch, payload)
+    destination = scan / "codeql-results/python.sarif"
+    if failure == "missing":
+        destination.unlink()
+    elif failure == "truncated":
+        destination.write_text('{"version":')
+    elif failure == "multiple-files":
+        destination.with_name("stale.sarif").write_text(destination.read_text())
+    elif failure.startswith("scanner-"):
+        monkeypatch.setenv("CODEQL_OUTCOME", failure.removeprefix("scanner-"))
+    elif failure == "missing-outcome":
+        monkeypatch.delenv("CODEQL_OUTCOME")
+    assert security_scan.codeql() == 1
+    report = json.loads((scan / "security-reports/codeql-python.json").read_text())
+    assert report["status"] == "error"
+
+
+def test_codeql_non_security_error_also_blocks(scan, monkeypatch):
+    payload = codeql_payload()
+    payload["runs"][0]["tool"]["driver"]["rules"][0]["properties"] = {}
+    save_codeql(scan, monkeypatch, payload)
+    assert security_scan.codeql() == 1
+
+
 def test_failed_image_scan_blocks_retention_promotion_and_release():
     ci = workflow("test.yml")
     steps = ci["jobs"]["container"]["steps"]
@@ -391,15 +509,14 @@ def test_failed_image_scan_blocks_retention_promotion_and_release():
     assert build < scan < gate < upload
     assert steps[scan]["with"]["image-ref"] == "${{ steps.image.outputs.image_id }}"
     assert "always" not in steps[upload].get("if", "")
-    assert ci["jobs"]["promote"]["needs"] == ["smoke", "container"]
-    assert ci["jobs"]["release"]["needs"] == ["smoke", "container", "promote"]
+    assert ci["jobs"]["promote"]["needs"] == ["smoke", "container", "codeql"]
+    assert ci["jobs"]["release"]["needs"] == ["smoke", "container", "codeql", "promote"]
     assert not any("continue-on-error" in step for step in steps)
 
 
 def test_codeql_analyzes_both_languages_without_builds_or_duplicate_gates():
     config = workflow("codeql.yml")
-    assert config["on"]["push"]["branches"] == ["develop"]
-    assert config["on"]["pull_request"]["branches"] == ["main"]
+    assert set(config["on"]) == {"workflow_call", "schedule", "workflow_dispatch"}
     assert config["on"]["schedule"] == [{"cron": "47 7 * * 1"}]
     assert config["permissions"] == {"contents": "read"}
     assert list(config["jobs"]) == ["analyze"]
@@ -408,14 +525,30 @@ def test_codeql_analyzes_both_languages_without_builds_or_duplicate_gates():
     assert job["strategy"]["matrix"]["language"] == ["python", "javascript-typescript"]
     assert job["strategy"]["fail-fast"] == "false"
     steps = job["steps"]
-    assert [step["uses"] for step in steps] == [
+    assert [step["uses"] for step in steps if "uses" in step] == [
         "actions/checkout@v7.0.1", "github/codeql-action/init@v4.39.1",
-        "github/codeql-action/analyze@v4.39.1",
+        "github/codeql-action/analyze@v4.39.1", "actions/upload-artifact@v7.0.2",
     ]
     assert steps[0]["with"]["persist-credentials"] == "false"
     assert steps[1]["with"] == {"languages": "${{ matrix.language }}", "build-mode": "none"}
     assert steps[2]["with"]["category"] == "/language:${{ matrix.language }}"
-    assert "codeql" not in workflow("test.yml")["jobs"]["promote"]["needs"]
+    assert steps[2]["with"]["output"] == "${{ runner.temp }}/codeql-results"
+    gate = steps[3]
+    assert gate["if"] == "always()"
+    assert gate["env"] == {"CODEQL_OUTCOME": "${{ steps.analysis.outcome }}",
+                           "CODEQL_LANGUAGE": "${{ matrix.language }}"}
+    assert gate["run"] == "python -m scripts.security_scan codeql"
+    assert steps[4]["if"] == "always()"
+    assert steps[4]["with"]["path"] == "${{ runner.temp }}/security-reports/codeql-*.json"
+    assert steps[4]["with"]["if-no-files-found"] == "error"
+    ci = workflow("test.yml")
+    assert ci["jobs"]["codeql"] == {
+        "uses": "./.github/workflows/codeql.yml",
+        "permissions": {"contents": "read", "security-events": "write"},
+    }
+    assert "codeql" in ci["jobs"]["promote"]["needs"]
+    assert "codeql" in ci["jobs"]["release"]["needs"]
+    assert not any("continue-on-error" in step for step in steps)
 
 
 def test_workflows_share_severity_policy_and_retain_failure_reports():

@@ -75,6 +75,8 @@ def host(monkeypatch, candidate, tmp_path):
         "database": database,
         "image_id": IMAGE,
         "references": [REFERENCE],
+        "service": {"image": "sideword:private"},
+        "schema": {"messages": ["body"]},
     }
     previous = {
         "Image": PREVIOUS,
@@ -87,7 +89,7 @@ def host(monkeypatch, candidate, tmp_path):
     def fake_run(command, **kwargs):
         commands.append(command)
         if "config" in command:
-            return json.dumps({"services": {"sideword": {"image": "sideword:private"}}})
+            return json.dumps({"services": {"sideword": state["service"]}})
         if "ps" in command:
             return "container\n"
         if command[:3] == ["docker", "image", "inspect"]:
@@ -109,7 +111,7 @@ def host(monkeypatch, candidate, tmp_path):
                 [{"Image": state["image_id"], "State": {"Health": {"Status": "healthy"}}}]
             )
         if command[:2] == ["docker", "run"]:
-            return state["version"]
+            return json.dumps({"version": state["version"], "tables": state["schema"]})
         if "up" in command:
             state["active"] = True
         if "stop" in command:
@@ -335,6 +337,65 @@ def test_containerd_manifest_id_is_used_for_probe_activation_and_health(candidat
     assert manifest_id in probe and IMAGE not in probe
     assert ["docker", "image", "tag", manifest_id, "sideword:private"] in commands
     assert state["active"]
+
+
+@pytest.mark.parametrize("healthcheck", [
+    {"test": ["CMD", "curl", "-f", "http://127.0.0.1:8000/health"]},
+    {"test": ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]},
+    {"disable": True}, {"test": ["NONE"]},
+])
+def test_obsolete_or_disabled_health_probe_never_stops_backend(candidate, host, healthcheck):
+    commands, state, _ = host
+    state["service"]["healthcheck"] = healthcheck
+    with pytest.raises(deploy.DeploymentError, match="health check"):
+        deploy.deploy_host(candidate)
+    assert not any("stop" in command or "up" in command for command in commands)
+    assert not any(command[:2] == ["docker", "run"] for command in commands)
+
+
+def test_incompatible_schema_never_stops_backend_or_changes_database(candidate, host):
+    commands, state, _ = host
+    original = state["database"].read_bytes()
+    state["schema"]["messages"].append("new_column")
+    with pytest.raises(deploy.DeploymentError, match="fresh persistent database"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert not any("stop" in command or "up" in command for command in commands)
+    assert not list((candidate.compose.parent / "deployment-backups").glob("*.sqlite3"))
+
+
+def test_configured_fresh_database_preserves_old_database(candidate, host):
+    commands, state, _ = host
+    original = state["database"].read_bytes()
+    state["schema"]["messages"].append("new_column")
+    state["service"]["environment"] = {"SIDEWORD_DB_PATH": "/data/fresh.sqlite3"}
+    deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert not (state["database"].parent / "fresh.sqlite3").exists()
+    assert any(command[-4:] == ["ps", "-a", "-q", "sideword"] for command in commands)
+    assert state["active"]
+
+
+def test_existing_configured_target_database_is_checked_before_stop(candidate, host):
+    commands, state, _ = host
+    state["service"]["environment"] = {"SIDEWORD_DB_PATH": "/data/target.sqlite3"}
+    target = state["database"].parent / "target.sqlite3"
+    with sqlite3.connect(target) as connection:
+        connection.execute("CREATE TABLE messages (different TEXT)")
+    original = target.read_bytes()
+    with pytest.raises(deploy.DeploymentError, match="incompatible"):
+        deploy.deploy_host(candidate)
+    assert target.read_bytes() == original
+    assert not any("stop" in command or "up" in command for command in commands)
+
+
+@pytest.mark.parametrize("schema", [None, {}, {"messages": []}, {"invalid;": ["body"]}])
+def test_invalid_image_schema_cannot_authorize_activation(candidate, host, schema):
+    commands, state, _ = host
+    state["schema"] = schema
+    with pytest.raises(deploy.DeploymentError, match="schema"):
+        deploy.deploy_host(candidate)
+    assert not any("stop" in command or "up" in command for command in commands)
 
 
 @pytest.mark.parametrize("field,value", [("image_id", PREVIOUS), ("references", [])])
@@ -587,13 +648,7 @@ def test_unknown_docker_operation_does_not_disclose_arguments(monkeypatch):
 
 @pytest.mark.parametrize(
     "remote_message",
-    [
-        "The pulled image does not match the checked commit.",
-        "The registry digest does not identify the CI image.",
-        "Updated backend verification failed; "
-        "keep the backup and previous image for recovery.",
-        "synthetic-private",
-    ],
+    [*sorted(deploy.HOST_FAILURE_MESSAGES), "synthetic-private"],
 )
 def test_remote_failure_forwards_only_approved_progress_and_errors(
     monkeypatch, capsys, remote_message
@@ -651,7 +706,7 @@ def checked_ci(monkeypatch):
     }
     jobs = [
         {"name": name, "status": "completed", "conclusion": "success"}
-        for name in ("smoke", "container")
+        for name in ("smoke", "container", "Promote develop to main")
     ]
     commands = []
 
@@ -665,14 +720,16 @@ def checked_ci(monkeypatch):
     return checked_run, jobs, commands
 
 
-def test_manual_deployment_requires_both_checks_on_the_exact_develop_commit(checked_ci, capsys):
+def test_manual_deployment_requires_checks_and_promotion_on_the_exact_develop_commit(
+    checked_ci, capsys,
+):
     _, _, commands = checked_ci
     deploy.verify_ci(SHA)
     assert commands[0][4] == "repos/example/project/actions/workflows/test.yml/runs"
     assert f"head_sha={SHA}" in commands[0]
     assert "branch=develop" in commands[0] and "event=push" in commands[0]
     assert commands[1][-1] == "repos/example/project/actions/runs/123/attempts/2/jobs?per_page=100"
-    assert capsys.readouterr().out == "Checked commit passed both CI jobs.\n"
+    assert capsys.readouterr().out == "Checked commit passed CI gates and promotion.\n"
 
 
 @pytest.mark.parametrize(
@@ -694,7 +751,7 @@ def test_manual_deployment_requires_both_checks_on_the_exact_develop_commit(chec
 def test_unrelated_or_untrusted_ci_cannot_authorize_deployment(checked_ci, field, value):
     checked_run, _, commands = checked_ci
     checked_run[field] = value
-    with pytest.raises(deploy.DeploymentError, match="Both CI jobs"):
+    with pytest.raises(deploy.DeploymentError, match="CI gates and promotion"):
         deploy.verify_ci(SHA)
     assert len(commands) == 1
 
@@ -709,17 +766,18 @@ def test_unrelated_or_untrusted_ci_cannot_authorize_deployment(checked_ci, field
         ("name", "unrelated-job"),
     ],
 )
-def test_incomplete_failed_or_missing_container_check_blocks_deployment(checked_ci, field, value):
+@pytest.mark.parametrize("job_index", [0, 1, 2])
+def test_incomplete_failed_or_missing_gate_blocks_deployment(checked_ci, field, value, job_index):
     _, jobs, _ = checked_ci
-    jobs[1][field] = value
-    with pytest.raises(deploy.DeploymentError, match="Both CI jobs"):
+    jobs[job_index][field] = value
+    with pytest.raises(deploy.DeploymentError, match="CI gates and promotion"):
         deploy.verify_ci(SHA)
 
 
 def test_missing_ci_runs_cannot_authorize_deployment(monkeypatch):
     monkeypatch.setenv("GITHUB_REPOSITORY", "example/project")
     monkeypatch.setattr(deploy, "run", lambda *args, **kwargs: '{"workflow_runs": []}')
-    with pytest.raises(deploy.DeploymentError, match="Both CI jobs"):
+    with pytest.raises(deploy.DeploymentError, match="CI gates and promotion"):
         deploy.verify_ci(SHA)
 
 

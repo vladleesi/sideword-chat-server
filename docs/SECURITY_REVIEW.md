@@ -1,130 +1,96 @@
 # Security review
 
-**Reviewed:** 2026-10-22 · **Backend:** 0.13.2
+**Reviewed:** 2026-10-23 · **Backend:** 0.13.2
 
-Maintainer source/test review of the ciphertext relay, bundled test client and
-CI/deployment controls. This is not an independent audit, penetration test,
-cryptographic proof or verification of private production configuration.
+Maintainer source/test review, not an independent security or cryptographic audit.
+Report vulnerabilities through [SECURITY.md](../SECURITY.md).
 
 ## Controls and supporting evidence
 
-| Area | Implemented protection | Evidence |
+| Area | Protection | Evidence |
 | --- | --- | --- |
-| Admission | Body-based activation, HTTPS outside loopback, scrypt passwords, persistent guess limits and serialized capacity allocation | [Invite tests](../tests/test_invite_protection.py) |
-| Client sessions | Registered JWT sessions, hashed rotating refresh credentials, replay revocation and fixed absolute deadlines; HTTP/WS revalidation | [Session tests](../tests/test_security_stages.py), [issuance boundaries](../tests/test_client_session_boundaries.py) |
-| Administration | Bcrypt with 72-byte UTF-8 limit, CSRF/origin checks, secure cookies, throttles and reset/logout revocation | [Dependency tests](../tests/test_dependency_security.py), [login races](../tests/test_admin_login_races.py) |
-| Authorization | Membership-scoped chat access, per-socket session validation, closure enforcement and private shared listener | [Closure](../tests/test_conversation_closure.py), [listener](../tests/test_shared_listener.py), [alias isolation](../tests/test_cross_origin_delivery.py) |
-| Encryption/storage | P-256/HKDF/AES-GCM, non-exportable browser keys, first-use pins, encrypted history/outbox and persistence before ACK | [Protocol](PROTOCOL.md), [crypto](../tests/client_crypto.test.cjs), [delivery](../tests/client_delivery.test.cjs), [identity](../tests/client_identity.test.cjs) |
-| Delivery/deletion | Exact owner-bound references, atomic receipts, stable retry ledger and UTC ordering | [Exact delivery](../tests/test_exact_delivery.py), [status](../tests/test_message_status.py) |
-| Responses/capacity | CSP, text-only user rendering, no-store/no-referrer, redacted validation, bounded requests/queues/connections | [Guards](../app/guards.py), [security tests](../tests/test_security_stages.py), [static responses](../tests/test_static_delivery.py) |
-| Build/deployment | Exact-commit smoke/container gates, verified image IDs/digests, non-root runtime, OIDC, deployment locks/backups and restricted failure output | [CI](../.github/workflows/test.yml), [deployment tests](../tests/test_deploy.py) |
-
-These controls have configuration and trust limits below. Tests use synthetic
-identities and isolated databases, not private deployments.
+| Admission | Body activation, HTTPS, scrypt passwords, persistent guess limits and serialized capacity | [Invite tests](../tests/test_invite_protection.py) |
+| Sessions | Registered JWTs, hashed rotating refresh credentials, replay revocation, absolute deadlines and HTTP/WS revalidation | [Session tests](../tests/test_security_stages.py), [boundaries](../tests/test_client_session_boundaries.py) |
+| Administration | Bcrypt/72-byte limit, CSRF/origin checks, secure cookies, throttles and reset/logout revocation | [Dependency tests](../tests/test_dependency_security.py), [login races](../tests/test_admin_login_races.py) |
+| Authorization | Membership checks, per-socket validation, closure enforcement and restricted public listener | [Closure](../tests/test_conversation_closure.py), [listener](../tests/test_shared_listener.py), [aliases](../tests/test_cross_origin_delivery.py) |
+| Encryption/storage | P-256/HKDF/AES-GCM, non-exportable keys, first-use pins, encrypted history/outbox and persistence before ACK | [Protocol](PROTOCOL.md), [crypto](../tests/client_crypto.test.cjs), [delivery](../tests/client_delivery.test.cjs) |
+| Delivery/deletion | Owner-bound exact references, atomic receipts, retry ledger and UTC ordering | [Exact delivery](../tests/test_exact_delivery.py), [status](../tests/test_message_status.py) |
+| Responses/capacity | CSP, text-only rendering, no-store/no-referrer, redacted validation and bounded requests/queues | [Guards](../app/guards.py), [security tests](../tests/test_security_stages.py) |
+| Build/deployment | Exact-commit gates, immutable images, non-root runtime, schema/health preflight, OIDC, locks and backups | [CI](../.github/workflows/test.yml), [scan tests](../tests/test_security_scanning.py), [deployment tests](../tests/test_deploy.py) |
 
 ## Threat model and limits
 
-- The relay sees identities, memberships, timing, sizes and confirmations. It
-  cannot verify third-party encryption or a participant's real-world identity.
-- V1 has no recipient forward secrecy/post-compromise recovery. A stolen identity
-  key exposes recorded inbound messages; there is no ratchet. First-use pins
-  cannot authenticate initial keys, new IDs or group membership.
-- Non-exportable keys do not prevent malicious same-origin code using them or
-  reading plaintext. TLS protects transit; the origin, device and password
-  admission endpoint/TLS terminator remain trusted.
-- Bearer tokens authorize routing/deletion without proving message-key possession.
-  Theft can disrupt delivery without decrypting content. Resume credentials
-  survive session revocation; invite revocation and account deactivation have
-  [different effects](SESSION_LIFECYCLE.md).
-- Presence, timestamps and receipts are relay/recipient assertions, not proof of
-  identity, human attention or successful encryption. Revocation cannot retract
-  already-sent data; independently routed workers do not share live state.
-- Process-local request/WS limits are not distributed denial-of-service protection.
-  Proxy TLS/trust, route blocking, IAM, logs, secrets, storage and resource limits
-  require per-installation verification; see [deployment controls](UPGRADING.md#public-deployment-controls).
+- The relay sees identities, memberships, timing, sizes and confirmations. It cannot
+  verify third-party encryption or real-world identity.
+- V1 has no forward secrecy, post-compromise recovery or ratchet. A stolen identity
+  key exposes recorded inbound messages. First-use pins cannot authenticate initial
+  keys or group membership.
+- Non-exportable keys do not protect against malicious same-origin code or a
+  compromised device. TLS terminators, served code and admission endpoints are trusted.
+- Bearer tokens permit routing/deletion without proving message-key possession.
+  Theft can disrupt delivery without decrypting messages. Resume credentials
+  survive session revocation; see [access lifecycle](SESSION_LIFECYCLE.md).
+- Presence/receipts are assertions, not proof of attention or encryption. Revocation
+  cannot retract sent data. Independent workers do not share connections; process
+  limits do not provide distributed denial-of-service protection.
+- TLS/proxy trust, IAM, logs, secrets and resource isolation require operator
+  verification. Follow [deployment controls](UPGRADING.md#public-deployment-controls).
 
 ## Delivery, local storage and retention
 
-The relay deletes queued ciphertext on durable ACK or TTL (default 30 days),
-never on viewing alone. Receipts have their own queued lifetime; bounded send and
-confirmation metadata lasts until the later retry/message-retention deadline.
-User/invite/membership metadata has a separate lifetime. Cleanup runs at startup
-and hourly. See [API retention](API.md#message-status-recovery).
+Queued ciphertext is deleted on durable ACK or TTL, never viewing alone. Receipt,
+retry and membership metadata have separate lifetimes; cleanup runs at startup and
+hourly. See [retention](API.md#message-status-recovery).
 
-SQLite deletion does not erase WAL/free pages/backups. Database/config exports
-are unencrypted; exports contain invite secrets/verifiers. Browser history/outboxes
-are encrypted, but device credentials are not covered by history encryption.
-Lost origin-local keys cannot be recovered from server backups. Use the
-[backup/restore procedure](UPGRADING.md); restore may revive revoked credentials.
+SQLite deletion does not erase WAL/free pages/backups. Exports are unencrypted and
+contain admission secrets/verifiers. Browser history/outboxes are encrypted, but
+device credentials are separate. Lost origin-local keys are unrecoverable from
+server backups. [Restoring backups](UPGRADING.md#restore-safely) can revive credentials.
 
 ## Prioritized findings and improvements
 
-Priorities describe residual risk, not demonstrated remote exploitability.
-**P1:** resolve before security-sensitive use. **P2:** planned hardening.
+P1: resolve before security-sensitive use. P2: planned hardening; priorities do not
+establish remote exploitability.
 
-| ID / priority | Remaining risk and action |
+| Finding | Remaining action |
 | --- | --- |
-| F-01 · Medium · P1 | V1 lacks forward secrecy/recovery and authenticated group epochs. Obtain independent protocol review; stronger claims require a reviewed ratchet/group design with interoperability and crash/recovery evidence. Old messages gain no retroactive protection. |
-| F-03 · Medium · P1 | Invite URLs/bodies, database/config exports and logging layers can expose admission credentials. Redact the full request path, protect copies, share passwords separately and revoke leaks. Body activation/no-referrer do not erase URL history or logs. |
-| F-04 · Low · P2 | Deployment backups/rollback image tags have no host-side pruning. Define retention that preserves active/recovery material, test restore and monitor disk. [Registry cleanup](../scripts/artifact-cleanup.json) does not prune host copies. |
-| F-06 · Low · P2 | Dependency ranges and numbered base/action tags can resolve differently later. Immutable deployment digests preserve checked builds; retain resolved inputs and monitoring. Numeric Action tags remain repository policy. |
+| F-01 · Medium · P1 | Obtain independent protocol review. Stronger secrecy/group claims require a reviewed ratchet/group design and interoperability/recovery evidence; old messages gain no retroactive protection. |
+| F-03 · Medium · P1 | Redact admission credentials at every logging layer, protect exports/copies, share passwords separately and revoke leaks. Body activation/no-referrer do not erase URL history or logs. |
+| F-04 · Low · P2 | Define host backup/rollback-image retention, test restores and monitor disk. [Registry cleanup](../scripts/artifact-cleanup.json) does not prune host copies. |
+| F-06 · Low · P2 | Dependency ranges and numbered tags may resolve differently. Preserve checked image digests and monitoring; Action tags remain numeric by policy. |
 
 ## Automated advisory monitoring
 
-[CONTRIBUTING](../CONTRIBUTING.md#security-checks) owns scanner policy, schedules,
-reports, notifications and activation. Only `smoke`/`container` are verified
-promotion gates. CodeQL and daily scans are asynchronous; successful CodeQL uploads
-do not enforce an alert threshold. Read-only verification confirmed Secret Scanning
-and Push Protection enabled after the maintainer's settings change. CodeQL default
-setup was unconfigured; the coding agent changed no settings.
-A minimal advanced CodeQL workflow analyzes Python/JavaScript; do not
-also enable default setup. Main's active ruleset requires smoke/container checks.
-
-Pip-audit scans installed distributions, not their vendored libraries. Pip 26.2.2
-bundles vulnerable msgpack 1.1.2, setuptools 70.3.0 and urllib3 2.7.0 (six findings,
-four High); standalone package upgrades do not replace those copies. The revised
-Dockerfile checks binary-wheel dependencies before removing pip/ensurepip, avoids
-curl and applies Alpine updates. The image includes the documented admin password-reset
-command. Final-image checks verify its presence, runtime imports and tool removal;
-image inventory uses stdlib metadata. Alpine uses musl rather than glibc; the
-verification below covers the replacement runtime.
+[CONTRIBUTING](../CONTRIBUTING.md#security-checks) owns scanner policies, schedules,
+reports and GitHub settings. Secret Scanning and Push Protection were verified
+enabled. CodeQL default setup was unconfigured; keep it disabled to avoid duplicates.
+The last verified ruleset requires smoke/container. CodeQL enforcement is configured
+in CI; its first hosted promotion-gate run remains pending.
 
 ## Verification record and gaps
 
-Python 3.12.15/Alpine 3.24.3 images were built and tested for Linux amd64
-(emulated) and arm64 (native). Trivy 0.76.1 scanned both exact image IDs, including
-OS and Python packages and unfixed advisories: zero findings at all severities.
-Strict pip-audit of the amd64 image's 33 installed distributions also passed.
-Both builds passed dependency checks and the existing image guards. Live checks
-on both architectures verified health, UID 1000, a read-only root filesystem,
-admin password reset and persistence after container replacement.
+- All 542 isolated Python cases passed; existing 195 JavaScript cases remain valid
+  for unchanged code. Ruff, compilation, workflow lint and documentation links passed.
+- Python 3.12.15/Alpine 3.24.3 images passed Trivy 0.76.1 on amd64 (emulated) and
+  arm64 (native): zero findings, including unfixed advisories. Exact amd64 runtime
+  inventory (33 distributions) passed pip-audit. Results reflect that advisory database.
+- Alpine amd64 regression tests preserved production dependency versions. Both
+  architectures passed imports, UID 1000/read-only-root, health, admin reset and
+  persistence checks. Dockerfile configuration scanning found no issues.
+- CodeQL replay allowed the actual Medium finding and blocked synthetic High,
+  failed-analysis and missing-report cases. Tests cover severity boundaries,
+  query-pack metadata and existing findings. Deployment tests reject failed gates,
+  obsolete/disabled probes and incompatible databases before stopping the backend.
+- The metadata probe passed against the downloaded image without network or
+  production data. Hosted CI passed for 0.13.2. Approved VM recovery verified that
+  same image healthy on both local listeners, with public HTTP/WS administration
+  blocked. The old database and configuration/database backups remain preserved.
 
-The Alpine amd64 test image preserved every production dependency version. All
-481 Python cases passed across a full run and a targeted rerun after fixing an
-atomic port-file publication race in the transport fixture. Existing evidence
-for the unchanged JavaScript (195 cases) and workflows remains valid. Ruff,
-compilation and documentation checks passed; Trivy's Dockerfile configuration
-scan reported zero findings.
+One hosted Medium `py/url-redirection` alert remains in admin bulk deletion.
+Source review confirms only `users`, `links` and `chats` reach the redirect;
+other resources return 404. The alert has not been suppressed.
 
-The previous Debian base finding is resolved in these local images: systemd,
-Perl and libacl are absent; libuuid 2.42.3-r1 includes the
-[Alpine util-linux fixes](https://secdb.alpinelinux.org/v3.24/main.json), and
-ncurses 6.6 is newer than the
-[affected ncurses releases](https://security-tracker.debian.org/tracker/CVE-2025-69720).
-No advisory exclusions were added. Hosted CI for `2644957` correctly blocked
-promotion/release on the old Debian findings while smoke and CodeQL passed.
-The replacement has not yet run in hosted CI or been deployed. Scan results
-reflect the advisory database at verification time; distribution-only audits
-do not cover vendored libraries.
-
-Coverage includes revoked sockets on server pushes, token-role separation,
-mixed-owner ACK batches, crypto failure without deletion, and the documented
-container recovery command.
-
-Still unverified: browser/device storage behavior, native interoperability,
-production proxy/IAM/secrets/logs/resource isolation, restore of an actual operator
-backup, bundled-action advisories and an independent cryptographic/security
-assessment. Node/OpenSSL and loopback HTTP/WS tests do not establish these properties.
-
-Report vulnerabilities through [SECURITY.md](../SECURITY.md). Keep current
-findings/evidence here and release history in [CHANGELOG.md](../CHANGELOG.md).
+Unverified: browser/device storage, native-client interoperability, full production
+proxy/IAM/log/secret/resource controls, operator-backup restore, bundled Action
+advisories and independent cryptographic review. Local tests do not prove these.
+Release history belongs in [CHANGELOG.md](../CHANGELOG.md).

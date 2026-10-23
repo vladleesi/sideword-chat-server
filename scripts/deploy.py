@@ -23,6 +23,15 @@ IMAGE_PATH = (
 HOST_PROGRESS_PATTERN = (
     r"Stage (pull|backup|health): (started\.|finished after [0-9]+\.[0-9]s\.)"
 )
+HOST_FAILURE_MESSAGES = {
+    "The pulled image does not match the checked commit.",
+    "The registry digest does not identify the CI image.",
+    "Updated backend verification failed; keep the backup and previous image for recovery.",
+    "Remove the private Compose curl health check; inherit the checked image's Python probe.",
+    "The private Compose health check must not be disabled.",
+    "The existing database schema is incompatible with the checked image. "
+    "Configure a fresh persistent database and preserve the existing database separately.",
+}
 
 
 class DeploymentError(Exception):
@@ -64,12 +73,7 @@ def run(command, *, input=None, timeout=300, env=None):
             for line in result.stdout.decode(errors="replace").splitlines():
                 if re.fullmatch(HOST_PROGRESS_PATTERN, line):
                     print(line, flush=True)
-                elif line in {
-                    "The pulled image does not match the checked commit.",
-                    "The registry digest does not identify the CI image.",
-                    "Updated backend verification failed; "
-                    "keep the backup and previous image for recovery.",
-                }:
+                elif line in HOST_FAILURE_MESSAGES:
                     failure = line
         if (
             operation == "docker push"
@@ -208,14 +212,16 @@ def verify_ci(sha):
             for job in jobs.get("jobs", [])
             if job.get("status") == "completed" and job.get("conclusion") == "success"
         }
-        if {"smoke", "container"} <= passed:
-            print("Checked commit passed both CI jobs.")
+        if {"smoke", "container", "Promote develop to main"} <= passed:
+            print("Checked commit passed CI gates and promotion.")
             output = os.environ.get("GITHUB_OUTPUT")
             if output:
                 with open(output, "a") as stream:
                     stream.write(f"run_id={run_id}\nrun_attempt={attempt}\n")
             return run_id
-    raise DeploymentError("Both CI jobs must pass on this exact develop commit before deployment.")
+    raise DeploymentError(
+        "CI gates and promotion must pass on this exact develop commit before deployment."
+    )
 
 
 def validate_reference(args):
@@ -480,7 +486,7 @@ def host_configuration(args):
     args.compose = Path(configuration["compose"])
 
 
-def database_path(container):
+def database_path(container, *, allow_missing=False):
     environment = dict(
         value.split("=", 1) for value in container["Config"].get("Env", []) if "=" in value
     )
@@ -495,10 +501,37 @@ def database_path(container):
         if ".." in relative.parts or mount.get("Type") not in {"bind", "volume"}:
             break
         path = Path(mount["Source"]) / relative
-        if path.is_symlink() or not path.is_file():
+        if path.is_symlink() or (not path.is_file() and not (allow_missing and not path.exists())):
             break
         return path
     raise DeploymentError("The existing database must be a file in a persistent data mount.")
+
+
+def verify_database_schema(database, expected):
+    if not isinstance(expected, dict) or not expected:
+        raise DeploymentError("The checked image did not provide its database schema.")
+    for name, columns in expected.items():
+        if (
+            not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+            or not isinstance(columns, list) or not columns
+            or not all(isinstance(column, str) for column in columns)
+        ):
+            raise DeploymentError("The checked image provided an invalid database schema.")
+    if not database.exists():
+        return
+    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
+        tables = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        for name, columns in expected.items():
+            if name in tables:
+                actual = {row[1] for row in connection.execute(f'PRAGMA table_info("{name}")')}
+                if actual != set(columns):
+                    raise DeploymentError(
+                        "The existing database schema is incompatible with the checked image. "
+                        "Configure a fresh persistent database and preserve the existing "
+                        "database separately."
+                    )
 
 
 def backup_database(source, destination):
@@ -568,10 +601,19 @@ def deploy_host(args):
             raise DeploymentError("Another backend deployment is already running.") from error
         compose = ["docker", "compose", "-f", str(args.compose)]
         configuration = json.loads(run([*compose, "config", "--format", "json"]))
-        image_tag = configuration.get("services", {}).get("sideword", {}).get("image")
+        service = configuration.get("services", {}).get("sideword", {})
+        image_tag = service.get("image")
         if not image_tag or image_tag.startswith("-") or "@" in image_tag:
             raise DeploymentError("The sideword service requires a dedicated mutable image tag.")
-        container_id = run([*compose, "ps", "-q", "sideword"]).strip()
+        healthcheck = service.get("healthcheck", {})
+        if healthcheck.get("disable") or healthcheck.get("test") == ["NONE"]:
+            raise DeploymentError("The private Compose health check must not be disabled.")
+        if any(re.search(r"\bcurl\b", str(part)) for part in healthcheck.get("test", [])):
+            raise DeploymentError(
+                "Remove the private Compose curl health check; "
+                "inherit the checked image's Python probe."
+            )
+        container_id = run([*compose, "ps", "-a", "-q", "sideword"]).strip()
         if not container_id or "\n" in container_id:
             raise DeploymentError("Exactly one existing sideword container is required.")
         previous = json.loads(run(["docker", "inspect", container_id]))[0]
@@ -600,7 +642,7 @@ def deploy_host(args):
             != args.sha
         ):
             raise DeploymentError("The pulled image does not match the checked commit.")
-        version = run(
+        probe = json.loads(run(
             [
                 "docker",
                 "run",
@@ -618,13 +660,30 @@ def deploy_host(args):
                 "128m",
                 "--entrypoint",
                 "python",
+                "--env",
+                "SIDEWORD_SECRET_KEY",
                 host_image_id,
                 "-c",
-                "from app.version import __version__; print(__version__)",
-            ]
-        ).strip()
-        if version != args.version:
+                "import json; from app.version import __version__; "
+                "from app.db import Base; from app import models; "
+                "print(json.dumps({'version': __version__, 'tables': "
+                "{table.name: list(table.columns.keys()) "
+                "for table in Base.metadata.sorted_tables}}))",
+            ],
+            env={**os.environ, "SIDEWORD_SECRET_KEY": os.urandom(32).hex()},
+        ))
+        if probe.get("version") != args.version:
             raise DeploymentError("The checked image reports an unexpected backend version.")
+        environment = dict(
+            value.split("=", 1) for value in image["Config"].get("Env", []) if "=" in value
+        )
+        environment.update(service.get("environment", {}))
+        candidate_database = database_path({
+            "Config": {"Env": [f"{key}={value}" for key, value in environment.items()
+                               if value is not None]},
+            "Mounts": previous["Mounts"],
+        }, allow_missing=True)
+        verify_database_schema(candidate_database, probe.get("tables"))
         run(["docker", "image", "tag", previous["Image"], rollback_tag])
         try:
             run([*compose, "stop", "--timeout", "30", "sideword"])

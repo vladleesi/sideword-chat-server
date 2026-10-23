@@ -1,10 +1,7 @@
 name: CodeQL
 
 on:
-  push:
-    branches: [develop]
-  pull_request:
-    branches: [main]
+  workflow_call:
   schedule:
     - cron: "47 7 * * 1"
   workflow_dispatch:
@@ -37,5 +34,21 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: none
       - uses: github/codeql-action/analyze@v4.39.1
+        id: analysis
         with:
           category: /language:${{ matrix.language }}
+          output: ${{ runner.temp }}/codeql-results
+      - name: Enforce the CodeQL security gate
+        if: always()
+        env:
+          CODEQL_OUTCOME: ${{ steps.analysis.outcome }}
+          CODEQL_LANGUAGE: ${{ matrix.language }}
+        run: python -m scripts.security_scan codeql
+      - name: Retain sanitized CodeQL findings
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: security-codeql-${{ matrix.language }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/security-reports/codeql-*.json
+          retention-days: 14
+          if-no-files-found: error
