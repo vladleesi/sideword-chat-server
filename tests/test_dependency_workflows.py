@@ -38,14 +38,13 @@ def test_workflows_use_numeric_action_releases_on_hosted_runners():
                     assert re.fullmatch(r"[\w-]+/[\w-]+(?:/[\w-]+)*@v\d+\.\d+\.\d+", step["uses"])
 
 
-def test_dependency_monitoring_requires_approval_without_automatic_security_prs():
+def test_dependency_monitoring_uses_shared_preset_with_develop_target():
     config = json.loads((ROOT / ".github/renovate.json").read_text())
-    assert config["extends"] == ["config:recommended"]
+    assert config["extends"] == ["github>vladleesi/renovate-config"]
     assert config["baseBranchPatterns"] == ["develop"]
-    assert config["dependencyDashboard"] is True
-    assert config["dependencyDashboardApproval"] is True
-    assert config["automerge"] is False
-    assert config["vulnerabilityAlerts"]["enabled"] is False
-    update_filters = {"enabledManagers", "ignoreDeps", "packageRules", "major", "minor", "patch"}
+    update_filters = {
+        "enabledManagers", "ignoreDeps", "packageRules", "major", "minor", "patch",
+        "vulnerabilityAlerts",
+    }
     assert not update_filters & config.keys()
     assert not (ROOT / ".github/dependabot.yml").exists()

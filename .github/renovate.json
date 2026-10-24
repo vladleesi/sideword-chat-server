@@ -1,11 +1,5 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
-  "dependencyDashboard": true,
-  "dependencyDashboardApproval": true,
-  "baseBranchPatterns": ["develop"],
-  "automerge": false,
-  "vulnerabilityAlerts": {
-    "enabled": false
-  }
+  "extends": ["github>vladleesi/renovate-config"],
+  "baseBranchPatterns": ["develop"]
 }
