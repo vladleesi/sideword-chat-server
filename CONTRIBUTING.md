@@ -18,7 +18,7 @@ Never commit credentials, invite tokens, databases or exports.
 
 ## Checks
 
-Use isolated databases and the [required checks](AGENTS.md#checks).
+Use isolated databases and the [required checks](AGENTS.md#project-checks).
 [CI](.github/workflows/test.yml) defines the full check list. For dependency/image
 changes also run:
 
@@ -29,7 +29,8 @@ docker build -t sideword-chat-server:test .
 ```
 
 Add regression tests and update affected docs. Follow the version and commit
-rules in [AGENTS.md](AGENTS.md#ci-versions-and-git).
+rules in [AGENTS.md](AGENTS.md#versions-and-releases) and
+[Git guidance](AGENTS.md#git-and-authorization).
 
 ## Dependency monitoring
 
