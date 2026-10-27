@@ -42,11 +42,14 @@ SOFTWARE.
 
 ## Agent guidelines
 
-The repository instruction file `AGENTS.md` retains selected rules verbatim from
-[vladleesi/agent-guidelines v1.1.0](https://github.com/vladleesi/agent-guidelines/tree/v1.1.0),
-source commit `42ee336ce74823b38e7a9134e1441844357c800d`.
-Selected modules: general, agent-workflow, testing, security, delivery, backend,
-python and frontend. The full upstream notice follows.
+The repository instructions in `AGENTS.md` and `docs/agent-guidance/*.md` retain
+selected rules verbatim from
+[vladleesi/agent-guidelines v1.2.0](https://github.com/vladleesi/agent-guidelines/tree/v1.2.0),
+source commit `b63cff2a9a11c72a1ceb48223f844ccd637f0f37`.
+Selected modules: general, agent-workflow, testing, security, git, ci, release,
+deployment, backend, python and frontend. This is a one-time, self-contained import;
+fetching, comparing with, or updating the collection requires explicit request.
+The full upstream notice follows.
 
 MIT License
 
