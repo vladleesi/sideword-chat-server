@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0 — 2026-10-28
+
+- Store display names per chat membership while retaining the shared device identity; reconnects preserve room names and configuration bundle v2 carries them through export/import. The membership schema changes require fresh server state; no automatic migration is provided.
+- Match the test client's red palette to the Pages site and stabilize opening by preparing the initial chat snapshot before revealing the workspace, reserving connection-label width and avoiding late font swaps.
+- Keep the full loader for normal openings and use a subtle progress line on browser reloads, delayed by one second with accessible progress semantics and reduced-motion support.
+
 ## 0.13.2 — 2026-10-22
 
 - Replace the Debian container base with Python 3.12 on Alpine, use compatible binary dependency wheels, and preserve the non-root runtime, persistent paths, health checks and strict vulnerability gates.

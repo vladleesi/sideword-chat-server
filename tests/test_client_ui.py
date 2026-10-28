@@ -91,6 +91,12 @@ def test_client_retains_controls_accessibility_and_separate_mobile_views():
     assert "hidden" in tree.by_id("setup-panel")["attrs"]
     assert "hidden" not in tree.by_id("loading-panel")["attrs"]
     assert tree.by_id("loading-panel")["attrs"]["role"] == "status"
+    progress = [node for node in tree.nodes if node["tag"] == "progress"]
+    assert len(progress) == 1
+    assert tree.by_id("loading-panel") in progress[0]["parents"]
+    assert progress[0]["attrs"]["aria-label"] == "Restoring conversations"
+    assert "value" not in progress[0]["attrs"]
+    assert "aria-valuenow" not in progress[0]["attrs"]
     assert "First-use key pinning is not identity verification." in html
     assert html.index('/static/appearance.js') < html.index('/static/client.css')
     assert all(node["attrs"].get("src", "").startswith("/static/")
@@ -217,7 +223,7 @@ def test_message_details_structure_and_theme_confirmation_styles():
     assert any(parent["tag"] == "details" for parent in technical["parents"])
     css = (ROOT / "app/static/client.css").read_text()
     assert ".message-status.status-read { color: var(--signature); }" in css
-    assert "--signature: #E5482D" in css
+    assert "--signature: var(--accent)" in css
     assert ".message-details::backdrop" in css
     assert "max-height: 80dvh" in css
     assert "font-family: var(--sans)" in css

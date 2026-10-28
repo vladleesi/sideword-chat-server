@@ -44,7 +44,7 @@ async def _run(output: Path) -> int:
 
     chat_index_by_id = {c.id: i for i, c in enumerate(chats)}
     bundle = {
-        "version": 1,
+        "version": 2,
         "generated_at": _dt_iso(datetime.now(timezone.utc)),
         "users": [
             {
@@ -65,6 +65,7 @@ async def _run(output: Path) -> int:
                 "members": [
                     {
                         "public_id": m.user.public_id,
+                        "display_name": m.display_name,
                         "joined_at": _dt_iso(m.joined_at),
                         "resume_hash": m.resume_hash,
                     }

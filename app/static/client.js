@@ -1433,7 +1433,8 @@ function selectChat(chatId, openAtLatest = false) {
     : "Enter to send · Shift+Enter for a new line";
   renderChats();
   renderMessages(openAtLatest);
-  if (canSend && changedChat && !elements.detailsDialog.open && !elements.deviceDialog.open
+  if (canSend && changedChat && !elements.clientPanel.hidden
+      && !elements.detailsDialog.open && !elements.deviceDialog.open
       && (!mobileWorkspace() || elements.clientPanel.dataset.mobileView === "conversation")) {
     elements.messageInput.focus({ preventScroll: true });
   }
@@ -1661,13 +1662,14 @@ async function processIncoming(data) {
   await flushAcknowledgements();
 }
 
-async function synchronize() {
+async function synchronize({ initial = false } = {}) {
   if (!pageActive || globalThis.navigator?.onLine === false
       || invitePending || !identity?.token || synchronizing) return;
   synchronizing = true;
   try {
     await loadChats();
     await loadStoredHistory(); // Immutable encrypted events merge safely across tabs.
+    if (initial) updateIdentityUi();
     try { await flushOutbox(); } catch (error) { showToast(errorMessage(error), true); }
     await renderOutbox();
     const data = await api("/api/v1/poll");
@@ -2189,11 +2191,13 @@ async function start() {
   if (!invitePending) restoreChatView();
   await ensureStorageKey();
   if (!invitePending) await loadStoredHistory();
-  updateIdentityUi();
   if (!invitePending && identity?.token) {
-    await refresh();
-    connectSocket();
+    await refresh({ initial: true });
   }
+  // Apply the first chat snapshot before revealing the workspace. Failed refreshes
+  // still reveal saved local history.
+  if (!elements.loadingPanel.hidden) updateIdentityUi();
+  if (!invitePending && identity?.token) connectSocket();
   window.setInterval(synchronize, POLL_INTERVAL_MS);
   window.setInterval(updateSessionCountdown, 1000);
 }

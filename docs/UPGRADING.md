@@ -23,6 +23,13 @@ browser state can permanently lose access without freeing participant slots.
 Each pre-release requires fresh server/browser state and matching code/assets.
 Data conversion is unsupported; preserve old state separately.
 
+Backend 0.14.0 adds membership display names to `chat_members`. Earlier database
+schemas are rejected; preserve the old database and select fresh server state
+before starting this release. Configuration bundles are now version 2 and require
+each member's `display_name` (nullable, at most 64 characters). Version 1 bundles
+are rejected without changing existing state. No automatic migration or bundle
+conversion is provided.
+
 1. Read the changelog, stop writers and back up.
 2. Select a fresh database path or Docker volume; retain old server/browser data.
 3. Install matching code/dependencies/assets using [setup](../README.md#setup).

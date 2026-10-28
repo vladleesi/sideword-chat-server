@@ -1,6 +1,6 @@
 # Security review
 
-**Reviewed:** 2026-10-23 · **Backend:** 0.13.2
+**Reviewed:** 2026-10-28 · **Backend:** 0.14.0
 
 Maintainer source/test review, not an independent security or cryptographic audit.
 Report vulnerabilities through [SECURITY.md](../SECURITY.md).
@@ -10,6 +10,7 @@ Report vulnerabilities through [SECURITY.md](../SECURITY.md).
 | Area | Protection | Evidence |
 | --- | --- | --- |
 | Admission | Body activation, HTTPS, scrypt passwords, persistent guess limits and serialized capacity | [Invite tests](../tests/test_invite_protection.py) |
+| Room names | Membership-scoped, unverified labels; reconnects retain names and import validates before replacement | [Name tests](../tests/test_chat_names.py), [lifecycle](SESSION_LIFECYCLE.md) |
 | Sessions | Registered JWTs, hashed rotating refresh credentials, replay revocation, absolute deadlines and HTTP/WS revalidation | [Session tests](../tests/test_security_stages.py), [boundaries](../tests/test_client_session_boundaries.py) |
 | Administration | Bcrypt/72-byte limit, CSRF/origin checks, secure cookies, throttles and reset/logout revocation | [Dependency tests](../tests/test_dependency_security.py), [login races](../tests/test_admin_login_races.py) |
 | Authorization | Membership checks, per-socket validation, closure enforcement and restricted public listener | [Closure](../tests/test_conversation_closure.py), [listener](../tests/test_shared_listener.py), [aliases](../tests/test_cross_origin_delivery.py) |
@@ -27,6 +28,8 @@ Report vulnerabilities through [SECURITY.md](../SECURITY.md).
   keys or group membership.
 - Non-exportable keys do not protect against malicious same-origin code or a
   compromised device. TLS terminators, served code and admission endpoints are trusted.
+- Per-chat names do not provide unlinkability: public IDs and encryption keys are
+  shared by an identity across its chats. Names grant no permissions or key trust.
 - Bearer tokens permit routing/deletion without proving message-key possession.
   Theft can disrupt delivery without decrypting messages. Resume credentials
   survive session revocation; see [access lifecycle](SESSION_LIFECYCLE.md).
@@ -69,8 +72,12 @@ in CI; its first hosted promotion-gate run remains pending.
 
 ## Verification record and gaps
 
-- All 542 isolated Python cases passed; existing 195 JavaScript cases remain valid
-  for unchanged code. Ruff, compilation, workflow lint and documentation links passed.
+- Isolated name regressions cover personal/group room labels on one identity,
+  optional names, consumed-invite reconnects, bundle round trips and rejection of
+  invalid names/old bundles before replace-mode mutation. DOM-adapter regressions
+  cover workspace reveal and reload feedback; browser validation is not claimed.
+- The following image/deployment observations were recorded for 0.13.2 and do not
+  establish deployment or image-scan results for 0.14.0.
 - Python 3.12.15/Alpine 3.24.3 images passed Trivy 0.76.1 on amd64 (emulated) and
   arm64 (native): zero findings, including unfixed advisories. Exact amd64 runtime
   inventory (33 distributions) passed pip-audit. Results reflect that advisory database.

@@ -2,6 +2,12 @@
 
 // Runs in the head, before styles are painted. Only appearance is stored here.
 (() => {
+  // Choose reload feedback before the loading panel can paint. This hint is not stored.
+  try {
+    if (window.performance?.getEntriesByType?.("navigation")?.[0]?.type === "reload") {
+      document.documentElement.dataset.clientNavigation = "reload";
+    }
+  } catch { /* Keep the normal opening presentation if navigation timing is unavailable. */ }
   const storageKey = "sideword-client-theme";
   const system = window.matchMedia?.("(prefers-color-scheme: dark)");
   let preference = "system";

@@ -3,6 +3,11 @@
 Invites authorize admission; sessions authenticate an identity; memberships
 allow conversation access. One identity can belong to several chats.
 
+Names belong to memberships: the name supplied when first joining a room is used
+only in that room. Joining another room can use a different name; retries and
+reconnects retain the room's original name. These are unverified labels, not
+separate identities: the same public ID and key remain visible across those rooms.
+
 | Operation | Effect |
 | --- | --- |
 | Open an invite | Shows admission UI without taking a slot; a different invite pauses that tab until activation. |

@@ -4,6 +4,56 @@ const fs = require('node:fs');
 
 const { client } = require('./client_dom.cjs');
 
+for (const mobile of [false, true]) {
+  test(`${mobile ? 'mobile' : 'desktop'} startup reveals the populated workspace without focusing the composer`, async () => {
+    const app = client({ mobile, viewportAware: true });
+    app.document.activeElement = null;
+    app.run(`
+      globalThis.initialChat = chats[0];
+      chats = []; selectedChatId = null; renderedChatId = undefined;
+      elements.clientPanel.hidden = true;
+      elements.setupPanel.hidden = true;
+      elements.loadingPanel.hidden = false;
+      elements.conversationTitle.textContent = 'No conversation selected';
+      identity.publicKey = 'own-key'; identity.storageKey = {};
+      elements.inviteToken.value = '';
+      window.isSecureContext = true; window.crypto = crypto; window.indexedDB = {};
+      readIdentity = async () => identity;
+      loadStoredHistory = async () => {};
+      writeIdentity = async () => {};
+      observePeerKey = async peer => peer;
+      renderOutbox = recoverMessageStatuses = async () => {};
+      globalThis.profileRequested = new Promise(resolve => { globalThis.profileStarted = resolve; });
+      globalThis.profileReady = new Promise(resolve => { globalThis.releaseProfile = resolve; });
+      globalThis.outboxRequested = new Promise(resolve => { globalThis.outboxStarted = resolve; });
+      globalThis.outboxReady = new Promise(resolve => { globalThis.releaseOutbox = resolve; });
+      flushOutbox = async () => { outboxStarted(); await outboxReady; };
+      api = async path => {
+        if (path !== '/api/v1/me') return {};
+        profileStarted();
+        await profileReady;
+        return { receipt_retention_seconds: 86400, user: { public_id: 'me', public_key: 'own-key' },
+          chats: [initialChat] };
+      };
+      connectSocket = () => {};
+    `);
+    const opening = app.run('start()');
+    await app.run('profileRequested');
+    assert.equal(app.nodes.get('#loading-panel').hidden, false);
+    assert.equal(app.nodes.get('#client-panel').hidden, true);
+    app.run('releaseProfile();');
+    await app.run('outboxRequested');
+    assert.equal(app.nodes.get('#loading-panel').hidden, true);
+    assert.equal(app.nodes.get('#client-panel').hidden, false);
+    assert.equal(app.nodes.get('#conversation-title').textContent, '<script>chat</script>');
+    assert.equal(app.nodes.get('#message-input').disabled, false);
+    assert.notEqual(app.document.activeElement, app.nodes.get('#message-input'));
+    assert.equal(app.run('identity.token'), 'not-for-display');
+    app.run('releaseOutbox();');
+    await opening;
+  });
+}
+
 test('closed conversations retain readable encrypted history and disable messaging until reopened', async () => {
   const app = client({ observeVisibility: true });
   await app.run(`(async () => {

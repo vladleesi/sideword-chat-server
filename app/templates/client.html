@@ -5,10 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
   <meta name="color-scheme" content="light dark">
   <title>Sideword test client</title>
-  <script src="/static/appearance.js?v=1"></script>
-  <link rel="stylesheet" href="/static/client.css?v=16">
+  <link rel="preload" href="/static/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/IBMPlexSans-Medium.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <script src="/static/appearance.js?v=2"></script>
+  <link rel="stylesheet" href="/static/client.css?v=18">
   <script src="/static/client-protocol.js?v=3" defer></script>
-  <script src="/static/client.js?v=34" defer></script>
+  <script src="/static/client.js?v=35" defer></script>
 </head>
 <body class="messenger">
   <a class="skip-link" href="#workspace">Skip to workspace</a>
@@ -29,10 +33,14 @@
   </header>
 
   <main id="workspace" class="client-shell" tabindex="-1">
-    <section id="loading-panel" class="setup-panel" aria-labelledby="loading-heading" role="status" aria-live="polite">
+    <section id="loading-panel" class="setup-panel startup-loader" aria-labelledby="loading-heading" role="status" aria-live="polite">
       <p class="eyebrow">This device</p>
       <h1 id="loading-heading">Opening Sideword</h1>
       <p class="muted">Loading saved keys and local history…</p>
+      <div class="reload-progress">
+        <progress class="sr-only" aria-label="Restoring conversations"></progress>
+        <span aria-hidden="true"></span>
+      </div>
     </section>
     <section id="setup-panel" class="setup-panel" aria-labelledby="setup-heading" hidden>
       <p class="eyebrow">Join a conversation</p>
@@ -42,9 +50,9 @@
         <label for="invite-token">Invite token</label>
         <input id="invite-token" name="invite" value="{{ invite_token }}" maxlength="128"
                autocomplete="off" spellcheck="false" required>
-        <label for="display-name">Display name</label>
+        <label for="display-name">Name in this chat</label>
         <input id="display-name" name="display_name" maxlength="64"
-               autocomplete="nickname" placeholder="Your name" required aria-describedby="display-name-error">
+               autocomplete="nickname" placeholder="Your name for this chat" required aria-describedby="display-name-error">
         <small id="display-name-error" role="alert" hidden></small>
         <label for="join-password">Room phrase or password (if protected)</label>
         <input id="join-password" type="password" name="room_password" maxlength="128"

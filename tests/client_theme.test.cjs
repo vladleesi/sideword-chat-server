@@ -5,7 +5,8 @@ const vm = require('node:vm');
 const source = fs.readFileSync('app/static/appearance.js', 'utf8');
 const storageKey = 'sideword-client-theme';
 
-function page({ dark = false, saved, blocked = false, loading = true, mediaAvailable = true } = {}) {
+function page({ dark = false, saved, blocked = false, loading = true, mediaAvailable = true,
+  navigationType, navigationAvailable = true, navigationThrows = false } = {}) {
   const storage = new Map(saved === undefined ? [] : [[storageKey, saved]]);
   const documentEvents = new Map(), windowEvents = new Map(), mediaEvents = new Map();
   const root = { dataset: {} };
@@ -25,6 +26,11 @@ function page({ dark = false, saved, blocked = false, loading = true, mediaAvail
     },
   };
   if (mediaAvailable) window.matchMedia = () => media;
+  if (navigationAvailable) window.performance = { getEntriesByType(type) {
+    assert.equal(type, 'navigation');
+    if (navigationThrows) throw new Error('navigation timing denied');
+    return navigationType ? [{ type: navigationType }] : [];
+  } };
   vm.runInNewContext(source, { document, window });
   return { root, controls, storage,
     ready() { document.readyState = 'complete'; documentEvents.get('DOMContentLoaded')?.(); },
@@ -47,6 +53,30 @@ test('system preference is applied before DOM ready without writing local data',
     assert.equal(app.controls.find(control => control.checked).value, 'system');
     app.systemChange(!dark);
     assert.equal(app.root.dataset.theme, dark ? 'light' : 'dark');
+  }
+});
+
+test('browser reload selects subtle startup feedback before DOM ready without persisting a visit flag', () => {
+  const app = page({ navigationType: 'reload', dark: true });
+  assert.equal(app.root.dataset.clientNavigation, 'reload');
+  assert.equal(app.root.dataset.theme, 'dark');
+  assert.equal(app.storage.size, 0);
+  app.ready();
+  assert.equal(app.root.dataset.clientNavigation, 'reload');
+});
+
+test('normal navigation and unavailable timing keep the full opening loader without breaking appearance', () => {
+  for (const options of [
+    { navigationType: 'navigate' }, { navigationType: 'back_forward' }, {},
+    { navigationAvailable: false }, { navigationThrows: true },
+  ]) {
+    const app = page({ ...options, saved: 'light', dark: true });
+    assert.equal(app.root.dataset.clientNavigation, undefined);
+    assert.equal(app.root.dataset.theme, 'light');
+    app.ready();
+    app.choose('dark');
+    assert.equal(app.root.dataset.theme, 'dark');
+    assert.deepEqual([...app.storage], [[storageKey, 'dark']]);
   }
 });
 

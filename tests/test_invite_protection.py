@@ -464,7 +464,7 @@ def test_export_import_preserves_protection_and_resume(client):
     chat = bundle["chats"][exported["chat_index"]]
     exported["chat_index"] = 0
     exported["token"] = secrets.token_urlsafe(32)
-    small = {"version": 1, "users": [u for u in bundle["users"]
+    small = {"version": 2, "users": [u for u in bundle["users"]
              if u["public_id"] == first["user"]["public_id"]],
              "chats": [chat], "links": [exported]}
     response = client.post("/admin/api/import", files={

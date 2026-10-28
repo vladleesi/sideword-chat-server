@@ -11,7 +11,7 @@ from ..deps import resolve_client_user
 from ..invite_security import require_secure_transport, resume_digest
 from ..models import User
 from ..schemas import LinkActivateRequest, LinkActivateResponse, _decode_b64
-from ..services import activate_link, load_chat_info, user_to_participant
+from ..services import activate_link, load_chat_info
 from .sessions import digest, issue
 
 router = APIRouter(prefix="/api/v1/links", tags=["links"])
@@ -81,6 +81,6 @@ async def activate(
     )
     return LinkActivateResponse(
         **credentials,
-        user=user_to_participant(user),
+        user=next(peer for peer in chat_info.participants if peer.public_id == user.public_id),
         chat=chat_info,
     )

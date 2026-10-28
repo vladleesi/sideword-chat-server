@@ -91,6 +91,7 @@ class ChatMember(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     resume_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     joined_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )

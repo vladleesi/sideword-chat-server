@@ -1,7 +1,7 @@
-@font-face { font-family: "IBM Plex Sans"; src: url("./fonts/IBMPlexSans-Regular.woff2") format("woff2"); font-style: normal; font-weight: 400; font-display: swap; }
-@font-face { font-family: "IBM Plex Sans"; src: url("./fonts/IBMPlexSans-Medium.woff2") format("woff2"); font-style: normal; font-weight: 500; font-display: swap; }
-@font-face { font-family: "IBM Plex Sans"; src: url("./fonts/IBMPlexSans-SemiBold.woff2") format("woff2"); font-style: normal; font-weight: 600; font-display: swap; }
-@font-face { font-family: "IBM Plex Mono"; src: url("./fonts/IBMPlexMono-Regular.woff2") format("woff2"); font-style: normal; font-weight: 400; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url("./fonts/IBMPlexSans-Regular.woff2") format("woff2"); font-style: normal; font-weight: 400; font-display: optional; }
+@font-face { font-family: "IBM Plex Sans"; src: url("./fonts/IBMPlexSans-Medium.woff2") format("woff2"); font-style: normal; font-weight: 500; font-display: optional; }
+@font-face { font-family: "IBM Plex Sans"; src: url("./fonts/IBMPlexSans-SemiBold.woff2") format("woff2"); font-style: normal; font-weight: 600; font-display: optional; }
+@font-face { font-family: "IBM Plex Mono"; src: url("./fonts/IBMPlexMono-Regular.woff2") format("woff2"); font-style: normal; font-weight: 400; font-display: optional; }
 
 :root {
   color-scheme: light;
@@ -12,12 +12,14 @@
   --muted: #565750;
   --border: #CAC9C0;
   --control-border: #77786F;
-  --signature: #E5482D;
-  --accent: #B9341C;
-  --accent-hover: #A32D18;
+  --signature: var(--accent);
+  --accent: #CF3E25;
+  --accent-hover: #BE3922;
   --accent-text: #FFFFFF;
-  --danger: #B9341C;
-  --warning-bg: #F1E1DA;
+  --accent-on-dark: #DE543D;
+  --accent-foreground: var(--accent-hover);
+  --danger: var(--accent-foreground);
+  --warning-bg: var(--bg);
   --success: #347A52;
   --mine: #E4E3DC;
   --theirs: #ECEBE5;
@@ -39,12 +41,8 @@
   --muted: #96978F;
   --border: #34352F;
   --control-border: #77786F;
-  --accent: #FF765C;
-  --accent-hover: #FF8E78;
-  --accent-text: #111210;
-  --danger: #FF8E78;
-  --warning-bg: #2D1D18;
-  --success: #79B58A;
+  --accent-foreground: var(--accent-on-dark);
+  --warning-bg: var(--surface);
   --mine: #24251F;
   --theirs: #191A17;
 }
@@ -55,6 +53,7 @@ button, input, textarea { font: inherit; }
 button, a, summary, input, textarea { -webkit-tap-highlight-color: transparent; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 a { color: var(--text); text-underline-offset: 3px; }
+a:hover { color: var(--accent-foreground); }
 h1, h2, h3, p { margin: 0; }
 h1 { font-size: 1.65rem; font-weight: 600; letter-spacing: -.035em; line-height: 1.2; }
 h2 { font-size: 1rem; font-weight: 500; }
@@ -77,9 +76,17 @@ h3 { font-size: .9rem; font-weight: 600; }
 .client-brand span { color: var(--signature); }
 .test-badge { color: var(--muted); font-family: var(--mono); font-size: .7rem; }
 .connection-label { display: inline-flex; gap: .4rem; align-items: center; color: var(--muted); font-family: var(--mono); font-size: .75rem; white-space: nowrap; }
+#connection-label { min-width: 7ch; }
 .status-dot { width: 7px; height: 7px; background: var(--muted); flex-shrink: 0; }
 .status-dot.online { background: var(--success); }
-.client-shell { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow-y: auto; }
+.client-shell { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow-y: auto; }
+.reload-progress { display: none; height: 2px; overflow: hidden; background: var(--surface); opacity: 0; animation: reload-progress-reveal 0s 1s forwards; }
+.reload-progress > span { display: block; width: 25%; height: 100%; background: var(--accent); transform: translateX(-100%); animation: reload-progress-slide 1.4s linear 1s infinite; }
+:root[data-client-navigation="reload"] .startup-loader { position: absolute; inset: 0 0 auto; width: 100%; margin: 0; padding: 0; background: transparent; pointer-events: none; }
+:root[data-client-navigation="reload"] .startup-loader > :not(.reload-progress) { display: none; }
+:root[data-client-navigation="reload"] .reload-progress { display: block; }
+@keyframes reload-progress-reveal { to { opacity: 1; } }
+@keyframes reload-progress-slide { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
 .client-grid { display: grid; grid-template-columns: 280px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; flex: 1; min-height: 0; overflow: hidden; }
 .chat-sidebar { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--border); background: var(--surface); }
 .panel-heading, .conversation-heading { display: flex; align-items: center; justify-content: space-between; gap: .65rem; min-height: 72px; padding: .65rem 1rem; border-bottom: 1px solid var(--border); flex-shrink: 0; }
@@ -245,4 +252,9 @@ textarea:disabled { color: var(--muted); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; }
+  .reload-progress > span { animation: none; transform: translateX(150%); }
+}
+@media (forced-colors: active) {
+  .reload-progress { background: Canvas; }
+  .reload-progress > span { background: CanvasText; }
 }

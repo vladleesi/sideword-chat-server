@@ -43,7 +43,7 @@ async def me(
         session_expiry = min(session_expiry, link.expires_at.replace(tzinfo=timezone.utc))
     expiry = min(expiry, session_expiry)
     return MeResponse(
-        user=user_to_participant(user),
+        user=user_to_participant(user, display_name=user.display_name),
         chats=info,
         access_expires_at=expiry,
         session_expires_at=session_expiry,

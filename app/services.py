@@ -30,11 +30,11 @@ from .security import (
 _settings = get_settings()
 
 
-def user_to_participant(user: User) -> ParticipantInfo:
+def user_to_participant(user: User, *, display_name: str | None) -> ParticipantInfo:
     return ParticipantInfo(
         public_id=user.public_id,
         public_key=base64.b64encode(user.public_key).decode("ascii"),
-        display_name=user.display_name,
+        display_name=display_name,
         key_fingerprint=public_key_fingerprint(user.public_key),
     )
 
@@ -45,8 +45,8 @@ async def load_chat_info(session: AsyncSession, chat: Chat) -> ChatInfo:
         .where(ChatMember.chat_id == chat.id)
         .options(joinedload(ChatMember.user))
     )
-    members = [m.user for m in result.scalars().all() if m.user is not None]
-    if any(not valid_public_key(u.public_key) for u in members):
+    members = [m for m in result.scalars().all() if m.user is not None]
+    if any(not valid_public_key(m.user.public_key) for m in members):
         raise HTTPException(
             409, "This room has an invalid P-256 participant key. Create a new invite.",
         )
@@ -57,7 +57,7 @@ async def load_chat_info(session: AsyncSession, chat: Chat) -> ChatInfo:
         created_at=chat.created_at,
         closed_at=(chat.closed_at.replace(tzinfo=timezone.utc)
                    if chat.closed_at is not None else None),
-        participants=[user_to_participant(u) for u in members],
+        participants=[user_to_participant(m.user, display_name=m.display_name) for m in members],
     )
 
 
@@ -160,7 +160,8 @@ async def activate_link(
         await session.flush()
         link.chat_id = chat.id
     user = current_user or await _create_user(session, public_key, display_name)
-    session.add(ChatMember(chat_id=chat.id, user_id=user.id, resume_hash=credential_hash))
+    session.add(ChatMember(chat_id=chat.id, user_id=user.id, resume_hash=credential_hash,
+                           display_name=display_name))
     link.uses_count += 1
     if capacity and max(link.uses_count, len(members) + 1) >= capacity:
         link.is_active = False

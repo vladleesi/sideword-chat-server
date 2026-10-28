@@ -208,7 +208,7 @@ def test_closure_requires_admin_and_export_import_preserves_closed_state(client)
     assert chat["closed_at"] is not None
     exported_link["chat_index"] = 0
     exported_link["token"] = secrets.token_urlsafe(32)
-    transfer = {"version": 1, "users": [u for u in bundle["users"]
+    transfer = {"version": 2, "users": [u for u in bundle["users"]
                 if u["public_id"] == alice["user"]["public_id"]],
                 "chats": [chat], "links": [exported_link]}
     def import_transfer():

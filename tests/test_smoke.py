@@ -326,7 +326,7 @@ async def _run() -> None:
             r = await c.get("/admin/api/export")
             assert r.status_code == 200
             exported = r.json()
-            assert exported["version"] == 1
+            assert exported["version"] == 2
             assert len(exported["users"]) >= 5
             assert len(exported["chats"]) >= 2
 

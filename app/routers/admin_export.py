@@ -66,7 +66,7 @@ async def export_bundle(
     chat_index_by_id: dict[int, int] = {c.id: i for i, c in enumerate(chats)}
 
     bundle: dict[str, Any] = {
-        "version": 1,
+        "version": 2,
         "generated_at": _dt_iso(datetime.now(timezone.utc)),
         "users": [
             {
@@ -87,6 +87,7 @@ async def export_bundle(
                 "members": [
                     {
                         "public_id": m.user.public_id,
+                        "display_name": m.display_name,
                         "joined_at": _dt_iso(m.joined_at),
                         "resume_hash": m.resume_hash,
                     }
@@ -155,7 +156,7 @@ async def import_bundle(
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
 
-    if not isinstance(data, dict) or data.get("version") != 1:
+    if not isinstance(data, dict) or data.get("version") != 2:
         raise HTTPException(status_code=400, detail="unsupported bundle version")
 
     if not {"users", "chats", "links"} <= data.keys() or any(
@@ -191,8 +192,13 @@ async def import_bundle(
         ):
             raise HTTPException(400, "Invalid conversation closure timestamp.")
         for raw_member in raw_chat.get("members", []):
-            if not isinstance(raw_member, dict) or "resume_hash" not in raw_member:
+            if not isinstance(raw_member, dict) or not {
+                "resume_hash", "display_name"
+            } <= raw_member.keys():
                 raise HTTPException(400, "Incomplete participant configuration.")
+            name = raw_member["display_name"]
+            if name is not None and (not isinstance(name, str) or len(name) > 64):
+                raise HTTPException(400, "Invalid participant display name.")
             value = raw_member.get("resume_hash")
             if value is not None and (
                 not isinstance(value, str) or len(value) != 64
@@ -262,6 +268,8 @@ async def import_bundle(
                 ChatMember(
                     chat_id=chat.id,
                     user_id=user.id,
+                    display_name=(raw_member["display_name"].strip() or None)
+                    if raw_member["display_name"] is not None else None,
                     joined_at=_parse_dt(raw_member.get("joined_at"))
                     or datetime.now(timezone.utc),
                     resume_hash=raw_member.get("resume_hash"),

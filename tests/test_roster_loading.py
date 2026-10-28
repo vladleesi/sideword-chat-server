@@ -29,7 +29,8 @@ def roster_store(tmp_path):
                           display_name="Same name", is_active=i != 1) for i in range(3)]
             session.add_all([chat, *users])
             await session.flush()
-            session.add_all(ChatMember(chat_id=chat.id, user_id=user.id) for user in users)
+            session.add_all(ChatMember(chat_id=chat.id, user_id=user.id,
+                                       display_name="Room name") for user in users)
             await session.commit()
             return chat.id, users[0].id
 
@@ -78,7 +79,7 @@ def test_roster_uses_one_select_and_preserves_members_and_key_validation(roster_
                 assert [peer.public_id for peer in info.participants] == (
                     [] if state == "empty" else [f"fixture-{i}" for i in range(3)]
                 )
-                assert all(peer.display_name == "Same name" for peer in info.participants)
+                assert all(peer.display_name == "Room name" for peer in info.participants)
                 assert all(peer.public_key and peer.key_fingerprint for peer in info.participants)
             assert len(statements) == 1
 

@@ -39,6 +39,11 @@ class LinkActivateRequest(BaseModel):
     resume_credential: SecretStr | None = None
     session_credential: SecretStr
 
+    @field_validator("display_name")
+    @classmethod
+    def _normalize_display_name(cls, value: str | None) -> str | None:
+        return (value.strip() or None) if value is not None else None
+
     @field_validator("public_key")
     @classmethod
     def _check_public_key(cls, value: str) -> str:
@@ -266,6 +271,7 @@ class ExportedUser(BaseModel):
 
 class ExportedChatMember(BaseModel):
     public_id: str
+    display_name: str | None = Field(..., max_length=64)
     joined_at: datetime
     resume_hash: str | None = None
 
@@ -295,7 +301,7 @@ class ExportedLink(BaseModel):
 
 
 class ExportBundle(BaseModel):
-    version: int = 1
+    version: Literal[2] = 2
     generated_at: datetime
     users: list[ExportedUser]
     chats: list[ExportedChat]

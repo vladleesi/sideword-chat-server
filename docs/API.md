@@ -27,7 +27,11 @@ Content-Type: application/json
 }
 ```
 
-`display_name` is optional; protected rooms also require `password`.
+`display_name` is the optional name for this chat membership, with a maximum of
+64 characters; surrounding whitespace is trimmed and blank names become null.
+Joining another chat can use a different name without changing existing rooms.
+Reconnects and admission retries retain the membership's original name.
+Protected rooms also require `password`.
 `session_credential` is mandatory (missing/null → 422 before admission).
 Persist separate random 32-byte resume/session credentials as unpadded base64url
 before requesting admission; retries must reuse them.
@@ -45,7 +49,7 @@ The response contains:
   "session_id": "<registered session ID>",
   "access_expires_at": "<UTC deadline>",
   "session_expires_at": "<UTC absolute deadline>",
-  "user": {"public_id": "...", "public_key": "...", "key_fingerprint": "..."},
+  "user": {"public_id": "...", "public_key": "...", "display_name": "Alice", "key_fingerprint": "..."},
   "chat": {"id": 1, "chat_type": "personal|group", "participants": [ ... ]}
 }
 ```
@@ -82,6 +86,11 @@ configuration exports retain verifiers and admission retry metadata.
 ## Profile and chats
 
 `GET /api/v1/me` returns identity, memberships and participant public keys;
+each `chat.participants[].display_name` is scoped to that chat. The top-level
+`user.display_name` in `/me` is the account's initial registration label; use the
+chat roster for room names. Activation's `user.display_name` uses the admitted
+membership's name. Public IDs and keys remain shared across the identity's chats.
+
 `GET /api/v1/chats/{chat_id}` returns one authorized roster. Each chat has nullable
 UTC `closed_at`. Nonmembers receive 404.
 

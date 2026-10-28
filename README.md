@@ -7,7 +7,7 @@ Sideword is a self-hosted FastAPI/SQLite backend for invite-only personal and gr
 chats. Clients encrypt messages; the server relays ciphertext and deletes it after
 durable acknowledgement or expiry.
 
-- Expiring invites, optional room passwords and participant limits.
+- Expiring invites, optional room passwords, participant limits and per-chat names.
 - Renewable sessions, WebSocket delivery, HTTP polling and optional presence.
 - Separate delivery/viewing confirmations, retry protection and an admin UI.
 - Python or Docker deployment; no frontend build.
