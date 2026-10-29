@@ -12,9 +12,10 @@
   <link rel="preload" href="/static/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <script src="/static/appearance.js?v=2"></script>
-  <link rel="stylesheet" href="/static/client.css?v=26">
-  <script src="/static/client-protocol.js?v=4" defer></script>
-  <script src="/static/client.js?v=40" defer></script>
+  <link rel="stylesheet" href="/static/client.css?v=32">
+  <script src="/static/client-protocol.js?v=5" defer></script>
+  <script src="/static/client-media.js?v=6" defer></script>
+  <script src="/static/client.js?v=46" defer></script>
 </head>
 <body class="messenger">
   <a class="skip-link" href="#workspace">Skip to workspace</a>
@@ -117,7 +118,7 @@
           <button id="attachment-button" class="button subtle icon-button" type="button" aria-label="Attach a file" aria-describedby="attachment-help composer-error" title="Attach, paste or drop a file (up to 1 MiB)" disabled>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m21 11.5-8.5 8.5a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.7 5.7l-9 9a2 2 0 0 1-2.8-2.8L15 6.3"/></svg>
           </button>
-          <span id="attachment-help" class="sr-only">Choose, paste or drop one file up to 1 MiB. Files are sent without captions.</span>
+          <span id="attachment-help" class="sr-only">Choose, paste or drop one file up to 1 MiB. Add an optional message above the attachment.</span>
           <label class="sr-only" for="message-input">Message</label>
           <textarea id="message-input" maxlength="16000" rows="2" aria-describedby="composer-help composer-error key-change-warning waiting-notice"
                     placeholder="Write a message" disabled></textarea>
@@ -128,10 +129,10 @@
       </section>
       <section id="pending-sends" class="pending-sends" hidden aria-labelledby="pending-sends-title">
         <div class="pending-heading">
-          <h3 id="pending-sends-title">Pending sends</h3>
-          <button id="retry-pending-sends" class="button subtle" type="button">Retry pending sends</button>
+          <h3 id="pending-sends-title">Messages needing attention</h3>
+          <button id="retry-pending-sends" class="button subtle" type="button">Try again</button>
         </div>
-        <ul id="pending-send-list" tabindex="0" aria-label="Saved outgoing retries"></ul>
+        <ul id="pending-send-list" tabindex="0" aria-label="Messages needing attention"></ul>
       </section>
     </div>
     <div class="notifications">

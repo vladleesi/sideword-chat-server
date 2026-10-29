@@ -96,6 +96,7 @@ function client({ mobile = false, clipboardBlocked = false, viewportAware = fals
       addEventListener: (event, handler) => viewportEvents.set(event, handler) },
   };
   let resizeMessages;
+  const observedMessageSizes = new Set();
   const history = { state: navigationState,
     replaceState(state) { this.state = structuredClone(state); },
   };
@@ -108,7 +109,8 @@ function client({ mobile = false, clipboardBlocked = false, viewportAware = fals
     crypto: webcrypto, atob, btoa, document, window, history,
     ResizeObserver: class {
       constructor(handler) { resizeMessages = handler; }
-      observe() {}
+      observe(node) { observedMessageSizes.add(node); }
+      unobserve(node) { observedMessageSizes.delete(node); }
     },
     navigator: { clipboard: { writeText: async value => {
       if (clipboardBlocked) throw new Error('denied');
@@ -120,6 +122,7 @@ function client({ mobile = false, clipboardBlocked = false, viewportAware = fals
     observe() {} unobserve() {} disconnect() {}
   };
   vm.runInContext(fs.readFileSync('app/static/client-protocol.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('app/static/client-media.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('app/static/client.js', 'utf8')
     .replace(/start\(\)\.catch[^\n]+/, ''), context);
   const run = code => vm.runInContext(code, context);
@@ -145,7 +148,7 @@ function client({ mobile = false, clipboardBlocked = false, viewportAware = fals
     elements.clientPanel.dataset.mobileView = 'chats';
     selectChat(7);`);
   return { run, nodes, document, window, timers, copied, selection, confirmations,
-    resizeMessages, viewportEvents, properties, history, documentEvents, windowEvents,
+    resizeMessages, observedMessageSizes, viewportEvents, properties, history, documentEvents, windowEvents,
     intersect: (node, visible = true) => visibilityObserver([{target: node, isIntersecting: visible}]),
     fireViews: async () => {
       for (let index = 0; index < timers.length; index++) {

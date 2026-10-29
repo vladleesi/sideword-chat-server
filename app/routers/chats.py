@@ -36,6 +36,7 @@ from ..schemas import (
     ExactAckRequest,
     ExactMarkReadRequest,
     IncomingMessage,
+    MediaReadRequest,
     MessageReference,
     MessageStatusRequest,
     MessageStatusResponse,
@@ -72,10 +73,10 @@ async def send_message(
     await session.execute(text("BEGIN IMMEDIATE"))
     chat = await ensure_chat_member(session, chat_id, user)
     now = datetime.now(timezone.utc)
-    digest = hashlib.sha256(json.dumps(sorted(
+    digest = hashlib.sha256(json.dumps([payload.channel, sorted(
         (env.recipient_public_id, hashlib.sha256(_decode_b64(env.ciphertext)).hexdigest())
         for env in payload.envelopes
-    ), separators=(",", ":")).encode()).hexdigest()
+    )], separators=(",", ":")).encode()).hexdigest()
     record = await session.scalar(select(SendRecord).where(
         SendRecord.chat_id == chat_id, SendRecord.sender_id == user.id,
         SendRecord.client_message_id == payload.client_message_id,
@@ -177,11 +178,25 @@ async def send_message(
         raise HTTPException(429, "relay capacity reached; retry later",
                             headers={"Retry-After": "60"})
     content_expires_at = now + timedelta(days=_settings.message_ttl_days)
+    if payload.channel == "media":
+        if not payload.client_message_id.endswith(".media"):
+            raise HTTPException(422, "invalid media identity")
+        parent = await session.scalar(select(SendRecord).where(
+            SendRecord.chat_id == chat_id, SendRecord.sender_id == user.id,
+            SendRecord.client_message_id == payload.client_message_id[:-6],
+            SendRecord.channel == "message",
+        ))
+        if (parent is None or parent.content_expires_at.replace(tzinfo=timezone.utc) <= now
+                or set(json.loads(parent.recipients_json)) != seen_recipients):
+            raise HTTPException(409, "media message unavailable")
+        # A delayed upload must never extend the original content retention deadline.
+        content_expires_at = parent.content_expires_at
     record = SendRecord(
         chat_id=chat_id, sender_id=user.id, client_message_id=payload.client_message_id,
         payload_hash=digest, recipients_json=json.dumps([r.public_id for r in recipients_users]),
         created_at=now, expires_at=now + timedelta(days=_settings.send_idempotency_days),
         content_expires_at=content_expires_at,
+        channel=payload.channel,
     )
     session.add(record)
     new_rows = [
@@ -191,6 +206,7 @@ async def send_message(
             sender_id=user.id,
             recipient_id=rec.id,
             ciphertext=ciphertexts[rec.id],
+            channel=payload.channel,
             created_at=now, expires_at=content_expires_at,
         )
         for rec in recipients_users
@@ -208,7 +224,7 @@ async def send_message(
 
     # Push immediately to online recipients.
     for row in new_rows:
-        if ws_manager.is_online(row.recipient_id):
+        if payload.channel == "message" and ws_manager.is_online(row.recipient_id):
             await ws_manager.send_json(
                 row.recipient_id,
                 {
@@ -230,6 +246,31 @@ async def send_message(
         recipients=[r.public_id for r in recipients_users],
         deliveries=delivery_ids(record),
         created_at=now, content_expires_at=record.content_expires_at,
+    )
+
+
+@router.post("/chats/{chat_id}/media/read", response_model=IncomingMessage)
+async def read_media(
+    chat_id: int,
+    payload: MediaReadRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> IncomingMessage:
+    await ensure_chat_member(session, chat_id, user)
+    row = (await session.execute(select(PendingMessage, User)
+        .join(User, User.id == PendingMessage.sender_id)
+        .where(PendingMessage.chat_id == chat_id, PendingMessage.recipient_id == user.id,
+               PendingMessage.channel == "media", User.public_id == payload.sender_public_id,
+               PendingMessage.client_message_id == payload.client_message_id,
+               PendingMessage.expires_at > datetime.now(timezone.utc)).limit(1))).first()
+    if row is None:
+        raise HTTPException(404, "media unavailable")
+    message, sender = row
+    return IncomingMessage(
+        id=message.id, delivery_id=message.delivery_id, chat_id=chat_id,
+        client_message_id=message.client_message_id, sender_public_id=sender.public_id,
+        ciphertext=base64.b64encode(message.ciphertext).decode("ascii"),
+        created_at=message.created_at,
     )
 
 

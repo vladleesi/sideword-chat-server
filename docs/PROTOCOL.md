@@ -2,8 +2,9 @@
 
 Unaudited; no recipient forward secrecy or post-compromise recovery. Backend, HTTP
 API, application payload and cryptographic envelope versions are independent.
-`client-protocol.js` owns pure Web Crypto/payload operations; `client.js` owns peer
-trust, DOM, networking and persistence. See [security limits](SECURITY_REVIEW.md).
+`client-protocol.js` owns Web Crypto/payload operations; `client-media.js` owns local
+preview validation/resources; `client.js` owns trust, DOM, networking and persistence.
+See [security limits](SECURITY_REVIEW.md).
 
 ## Wire representation
 
@@ -35,6 +36,7 @@ Plaintext JSON has exactly one of these field sets:
 
 ```json
 {"v":1,"type":"text","text":"Hello"}
+{"v":1,"type":"attachment-ref","text":"Optional message","name":"example.bin","mime":"application/octet-stream","size":3,"media_id":"<message-id>.media"}
 {"v":1,"type":"attachment","name":"example.bin","mime":"application/octet-stream","size":3,"data":"AP8B"}
 ```
 
@@ -42,12 +44,31 @@ Plaintext JSON has exactly one of these field sets:
 - Attachment: `size` integer 0–1,048,576; `data` canonical padded standard base64,
   decoded length exactly `size`; nonempty `name` at most 255 UTF-16 code units;
   `mime` 0–127 printable ASCII characters, including empty.
+- References carry the same metadata, optional text up to 16,000 UTF-8 bytes and
+  `media_id` equal to the parent message ID plus `.media` (parent: 1–58 ASCII letters,
+  digits, underscores or hyphens). File bytes are accepted only on the media channel.
 - Reject unknown fields/types/versions, malformed encodings, size mismatches and
   payloads over 1,400,000 UTF-8 bytes. No legacy/raw-text fallback.
 
 Names, declared types and file bytes are encrypted. One file per message; select,
-paste or drop, review, then Send. No captions, previews, playback, compression or
+paste or drop, optionally add text, review, then Send. No playback, compression or
 chunking. Read no bytes before size validation/peer checks; never fetch pasted URLs.
+
+### Independent media delivery
+
+Send text/references normally; upload file envelopes separately with `channel: "media"`
+and authenticated ID `<message-id>.media`. The relay requires the accepted parent and
+matching recipients, inherits its expiry, and excludes media from WS/poll backlogs.
+See the authenticated [media endpoint](API.md#encrypted-media).
+
+Persist and ACK references without waiting for files. Separately authenticate media,
+check routing/name/type/size against the reference, persist encrypted locally, then ACK.
+Failed storage/verification remains retryable; recover lost ACKs from history. Viewing
+or delivery of a card does not confirm file completion/opening.
+
+Use an atomic encrypted outbox handoff and immutable media envelopes. The client allows
+one background media request, six automatic attempts with backoff, bounded response
+parsing, 16 MiB admission for file retries and 32 MiB total prepared retries.
 
 ### Encoding and resource budget
 
@@ -80,10 +101,26 @@ bidi formatting and leading/trailing dots/spaces, capped at 180 UTF-16 units wit
 `download` fallback. Keep original metadata encrypted in history.
 
 Explicit clicks create generic `application/octet-stream` Blobs and object URLs with
-the `download` attribute. Never embed file contents or auto-open/download. Revoke URLs
+the `download` attribute. Never auto-open/download or embed unsupported contents. Revoke URLs
 after a 60-second handoff or cleanup; at most eight live URLs. Browser/OS can refuse or
 rename downloads. No server malware inspection; saved downloads are ordinary local
 files that cannot be remotely revoked. Viewing confirms the card, not file opening.
+
+### Local image previews
+
+Preview still JPEG/PNG/WebP locally after signature/header, PNG CRC and encoded-dimension
+checks; recheck decoded dimensions. Reject conflicting MIME, animation and unknown chunks.
+Limits: 1 MiB, 4096 pixels per side, 4 megapixels and three active/loading previews.
+Strip optional PNG metadata without decompression from preview copies; colors may differ.
+Native decoder safety remains a [verification limit](SECURITY_REVIEW.md#verification-record-and-gaps).
+
+Use typed local Blobs; preserve originals, encryption and ACK independence. Reuse nearby
+previews; revoke distant/removed/chat-switched/session-invalidated/hidden-page URLs.
+Canceled decodes retain slots until settled; stuck decoders may require reload. CSP
+permits Blob URLs only for images; no external requests. Unsupported files stay downloadable.
+
+Cards omit filenames, put media below optional text and reserve image frames before
+decoding. Restore at latest messages; stop following when the user scrolls away.
 
 ## Identity checks and local state
 

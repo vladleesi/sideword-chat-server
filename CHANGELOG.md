@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.0 — 2026-10-29
+
+- Deliver encrypted text and attachment references without waiting for media transfer; use a separate bounded media queue with independent durable ACKs, immutable retries and the original expiry deadline.
+- Add optional text above compact filename-free attachment cards and automatic visible JPEG/PNG/WebP previews with loading placeholders; retain the 1 MiB limit, original downloads, validation/resource caps and image-only Blob CSP; show recovery controls only for sends needing attention.
+- Keep restored chats at the latest messages while media loads; reserve stable preview frames and preserve older reading positions after user scrolling.
+- Match success indicators across the client, administration and Pages site with accessible forest/sage greens for light and dark themes.
+- Simplify the Pages architecture section into one annotated delivery flow without repeated steps or dividers.
+
 ## 0.16.0 — 2026-10-28
 
 - Automatically reset server-side SQLite state on increasing pre-1.0 version deployments, even with compatible schemas; preserve same-version data, reject downgrades, and retain schema checks for stable releases.

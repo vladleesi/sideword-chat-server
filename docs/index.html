@@ -33,7 +33,7 @@
   <link rel="preload" href="./fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="./fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <script src="./theme.js?v=2"></script>
-  <link rel="stylesheet" href="./site.css?v=21">
+  <link rel="stylesheet" href="./site.css?v=26">
   <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -145,7 +145,7 @@
         </article>
         <article>
           <p class="number">03 / TRANSPORT</p>
-          <div><h3>Opaque payloads</h3><p>Clients encrypt and verify peers. The test client supports text and files up to 1 MiB, including encrypted filenames and types. Select, paste or drop a file, then send. HTTPS protects sessions.</p></div>
+          <div><h3>Opaque payloads</h3><p>Clients encrypt and verify peers. Text/cards arrive independently of encrypted media transfers, with files up to 1 MiB. Filenames and types stay encrypted. Automatic JPEG/PNG/WebP previews stay local; see <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/PROTOCOL.md#independent-media-delivery">media limits</a>. HTTPS protects sessions.</p></div>
         </article>
         <article>
           <p class="number">04 / ADMISSION</p>
@@ -168,21 +168,18 @@
         <a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/tree/main/app">Inspect the implementation <span aria-hidden="true">&#8599;</span></a>
       </div>
       <figure class="relay-diagram" aria-labelledby="relay-caption">
-        <div class="relay-flow" role="img" aria-label="The sending client encrypts a payload. Sideword queues and relays ciphertext. The receiving client decrypts and persists it, then acknowledges delivery.">
-          <div class="relay-node"><span>01 / SENDER</span><strong>CLIENT</strong><small>Encrypt locally</small></div>
+        <div class="relay-flow" role="list" aria-label="Encrypted delivery flow">
+          <div class="relay-node" role="listitem"><span>01 / SENDER</span><strong>CLIENT</strong><p>Verifies peers and encrypts a separate envelope for each recipient before upload.</p></div>
           <div class="relay-line" aria-hidden="true"><span>CIPHERTEXT</span></div>
-          <div class="relay-node"><span>02 / SIDEWORD</span><strong>RELAY</strong><small>Queue and deliver</small></div>
+          <div class="relay-node" role="listitem"><span>02 / SIDEWORD</span><strong>RELAY</strong><p>Checks sessions and membership, deduplicates retries, and delivers ciphertext.</p></div>
           <div class="relay-line" aria-hidden="true"><span>CIPHERTEXT</span></div>
-          <div class="relay-node"><span>03 / RECIPIENT</span><strong>CLIENT</strong><small>Persist, then ACK</small></div>
+          <div class="relay-node" role="listitem"><span>03 / RECIPIENT</span><strong>CLIENT</strong><p>Decrypts and saves each delivery before its exact ACK deletes ciphertext. Expiry clears undelivered copies.</p></div>
         </div>
-        <figcaption id="relay-caption">Content and file metadata stay encrypted. The server sees routing, timing and ciphertext sizes.</figcaption>
+        <figcaption id="relay-caption">
+          <p>Content and file metadata stay encrypted. The server sees routing, timing and ciphertext sizes.</p>
+          <p class="architecture-note">Password admission trusts the server/TLS terminator. Client encryption and peer verification remain essential; the test protocol has no recipient forward secrecy or post-compromise recovery. <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/SECURITY_REVIEW.md">Security review <span aria-hidden="true">&#8599;</span></a></p>
+        </figcaption>
       </figure>
-      <ol class="steps">
-        <li><p class="number">01 / ENCRYPT</p><h3>Before upload.</h3><p>Your client verifies peers and encrypts an envelope for each recipient.</p></li>
-        <li><p class="number">02 / RELAY</p><h3>Authenticate and deliver.</h3><p>Sideword checks sessions/membership, deduplicates retries, and delivers ciphertext.</p></li>
-        <li><p class="number">03 / ACKNOWLEDGE</p><h3>After local persistence.</h3><p>Decrypt and save locally before exact ACK deletes ciphertext. TTL clears undelivered messages.</p></li>
-      </ol>
-      <p class="architecture-note">Password admission trusts the server/TLS terminator. Client encryption and peer verification remain essential; the test protocol has no recipient forward secrecy or post-compromise recovery. <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/SECURITY_REVIEW.md">Security review <span aria-hidden="true">&#8599;</span></a></p>
     </section>
 
     <section class="developer wrap" id="api" aria-labelledby="api-title">

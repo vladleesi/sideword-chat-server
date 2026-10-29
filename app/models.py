@@ -148,7 +148,8 @@ class PendingMessage(Base):
 
     __tablename__ = "pending_messages"
     __table_args__ = (
-        Index("ix_pending_recipient_chat", "recipient_id", "chat_id"),
+        Index("ix_pending_recipient_chat", "recipient_id", "channel", "chat_id",
+              "client_message_id"),
         Index("ix_pending_messages_delivery_id", "delivery_id", unique=True),
     )
 
@@ -167,6 +168,7 @@ class PendingMessage(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    channel: Mapped[str] = mapped_column(String(16), default="message", server_default="message")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
@@ -232,6 +234,7 @@ class SendRecord(Base):
     sender_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     client_message_id: Mapped[str] = mapped_column(String(64))
     payload_hash: Mapped[str] = mapped_column(String(64))
+    channel: Mapped[str] = mapped_column(String(16), default="message", server_default="message")
     recipients_json: Mapped[str] = mapped_column(Text)
     receipt_state_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

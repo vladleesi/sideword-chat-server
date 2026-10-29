@@ -46,7 +46,8 @@ const SidewordProtocol = (() => {
   function validatePayload(payload) {
     if (!payload || Array.isArray(payload) || payload.v !== 1) throw payloadError();
     const fields = payload.type === "text" ? ["v", "type", "text"]
-      : payload.type === "attachment" ? ["v", "type", "name", "mime", "size", "data"] : [];
+      : payload.type === "attachment" ? ["v", "type", "name", "mime", "size", "data"]
+      : payload.type === "attachment-ref" ? ["v", "type", "text", "name", "mime", "size", "media_id"] : [];
     if (Object.keys(payload).length !== fields.length
         || !fields.every(field => Object.hasOwn(payload, field))) throw payloadError();
     if (payload.type === "text") {
@@ -58,7 +59,11 @@ const SidewordProtocol = (() => {
       if (typeof payload.name !== "string" || !payload.name.length || payload.name.length > 255
           || typeof payload.mime !== "string" || payload.mime.length > 127
           || /[^\x20-\x7e]/.test(payload.mime)) throw payloadError();
-      attachmentBytes(payload);
+      if (payload.type === "attachment") attachmentBytes(payload);
+      else if (!Number.isInteger(payload.size) || payload.size < 0 || payload.size > MAX_FILE_BYTES
+          || typeof payload.text !== "string" || encoder.encode(payload.text).length > MAX_TEXT_BYTES
+          || typeof payload.media_id !== "string"
+          || !/^[A-Za-z0-9_-]{1,58}\.media$/.test(payload.media_id)) throw payloadError();
     }
     return payload;
   }
@@ -79,6 +84,10 @@ const SidewordProtocol = (() => {
     if (bytes.byteLength > MAX_FILE_BYTES) throw new ProtocolError("Files must be 1 MiB or smaller.");
     return validatePayload({ v: 1, type: "attachment", name, mime,
       size: bytes.byteLength, data: bytesToBase64(bytes) });
+  }
+
+  function fileReference(name, mime, size, mediaId, text = "") {
+    return validatePayload({ v: 1, type: "attachment-ref", name, mime, size, media_id: mediaId, text });
   }
 
   function safeDownloadName(name) {
@@ -225,6 +234,6 @@ const SidewordProtocol = (() => {
 
   return Object.freeze({ bytesToBase64, base64ToBytes, encryptForRecipient,
     decryptMessage, publicKeyFingerprint, ProtocolError, encodePayload, decodePayload,
-    textPayload, filePayload, validatePayload, attachmentBytes, safeDownloadName,
+    textPayload, filePayload, fileReference, validatePayload, attachmentBytes, safeDownloadName,
     attachmentSendBytes, MAX_FILE_BYTES, MAX_SEND_BYTES, MAX_WIRE_CHARS });
 })();

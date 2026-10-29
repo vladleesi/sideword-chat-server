@@ -20,6 +20,10 @@ cannot guarantee physical erasure from SSDs, old backups, snapshots or host memo
 
 ## Upgrade
 
+0.17.0 adds a detached media queue channel. Use matching server/client assets and a fresh
+pre-release database; no schema or inline-attachment wire migration is provided. Text/card
+ACKs and media ACKs are independent; see [media delivery](PROTOCOL.md#independent-media-delivery).
+
 Actions deployments reset **all server-side state** when upgrading between different
 `0.x.y` versions, even with compatible schemas: users, chats, invitations, sessions,
 pending messages, delivery metadata and administrative records. No data is migrated.

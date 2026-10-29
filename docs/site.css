@@ -54,7 +54,7 @@
   --accent-contrast: #FFFFFF;
   --accent-on-dark: #DE543D;
   --accent-foreground: var(--accent-hover);
-  --success: #347A52;
+  --success: #246B48;
   --code-background: #111210;
   --code-text: #EDECE5;
   --code-secondary: #A8AAA0;
@@ -136,20 +136,16 @@ h3 { font-size: 22px; line-height: 1.2; letter-spacing: -.015em; }
 .section-heading { display: flex; justify-content: space-between; align-items: end; gap: 40px; }
 .section-heading > .text-link { flex-shrink: 0; }
 
-.relay-diagram { margin-top: 64px; padding-block: 40px 24px; border-block: 1px solid var(--border); }
-.relay-flow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(80px, .65fr) minmax(0, 1fr) minmax(80px, .65fr) minmax(0, 1fr); align-items: center; gap: 24px; }
+.relay-diagram { margin-top: 40px; padding-top: 32px; border-top: 1px solid var(--border); }
+.relay-flow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(80px, .65fr) minmax(0, 1fr) minmax(80px, .65fr) minmax(0, 1fr); align-items: start; gap: 24px; }
 .relay-node { display: flex; flex-direction: column; gap: 8px; }
 .relay-node span { color: var(--text-secondary); font-size: 12px; line-height: 1.4; }
 .relay-node strong { font-size: 24px; line-height: 1.2; font-weight: 500; }
-.relay-node small { font-family: var(--sans); font-size: 14px; line-height: 1.5; color: var(--text-secondary); }
-.relay-line { position: relative; border-bottom: 1px solid var(--accent); padding-bottom: 8px; color: var(--text-secondary); font-size: 10px; line-height: 1.4; letter-spacing: .02em; }
+.relay-node p { margin-top: 8px; max-width: 30ch; font-family: var(--sans); font-size: 16px; line-height: 1.55; color: var(--text-secondary); }
+.relay-line { align-self: start; margin-top: 16px; position: relative; border-bottom: 1px solid var(--accent); padding-bottom: 8px; color: var(--text-secondary); font-size: 10px; line-height: 1.4; letter-spacing: .02em; }
 .relay-line::after { position: absolute; content: ""; right: 0; bottom: -4px; width: 7px; height: 7px; border-top: 1px solid var(--accent); border-right: 1px solid var(--accent); transform: rotate(45deg); }
-figcaption { margin-top: 24px; font-size: 14px; line-height: 1.5; color: var(--text-secondary); }
-.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 40px; padding: 0; margin: 40px 0 0; list-style: none; }
-.steps li { border-top: 1px solid var(--border); padding-top: 16px; }
-.steps h3 { margin-block: 24px 16px; }
-.steps li > p:last-child { color: var(--text-secondary); }
-.architecture-note { max-width: 960px; margin-top: 40px; color: var(--text-secondary); font-size: 14px; line-height: 1.5; }
+.relay-diagram figcaption { margin-top: 32px; font-size: 14px; line-height: 1.5; color: var(--text-secondary); }
+.architecture-note { max-width: 960px; margin-top: 12px; color: var(--text-secondary); font-size: 14px; line-height: 1.5; }
 .feature-list article p:not(.number) a, .architecture-note a, .reference-note div > p a { color: var(--text-primary); text-decoration: underline; text-underline-offset: 3px; }
 .feature-list article p:not(.number) a:hover, .architecture-note a:hover, .reference-note div > p a:hover { color: var(--accent-foreground); }
 
@@ -189,6 +185,7 @@ pre:focus-visible { outline-offset: -4px; }
   --text-secondary: #96978F;
   --border: #34352F;
   --accent-foreground: var(--accent-on-dark);
+  --success: #77C69A;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -200,6 +197,7 @@ pre:focus-visible { outline-offset: -4px; }
     --text-secondary: #96978F;
     --border: #34352F;
     --accent-foreground: var(--accent-on-dark);
+    --success: #77C69A;
   }
 }
 
@@ -209,7 +207,6 @@ pre:focus-visible { outline-offset: -4px; }
   .server-contract dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 40px; }
   .section-intro > p:last-child { max-width: 480px; }
   .relay-flow { gap: 16px; }
-  .steps { gap: 24px; }
 }
 
 @media (max-width: 640px) {
@@ -226,13 +223,12 @@ pre:focus-visible { outline-offset: -4px; }
   .section-heading { flex-direction: column; align-items: start; gap: 24px; }
   .feature-list article, .reference-note { grid-template-columns: 1fr; gap: 16px; }
   .feature-list .number, .reference-note .number { padding-top: 0; }
-  .relay-diagram { margin-top: 40px; }
+  .relay-diagram { margin-top: 32px; padding-top: 24px; }
+  .relay-diagram figcaption { margin-top: 24px; }
   .relay-flow { grid-template-columns: 1fr; gap: 24px; }
-  .relay-line { width: 1px; height: 40px; margin-left: 8px; border-left: 1px solid var(--accent); border-bottom: 0; padding: 0; }
+  .relay-line { width: 1px; height: 40px; margin-top: 0; margin-left: 8px; border-left: 1px solid var(--accent); border-bottom: 0; padding: 0; }
   .relay-line span { display: block; padding-left: 16px; padding-top: 8px; }
   .relay-line::after { right: -3px; bottom: 0; transform: rotate(135deg); }
-  .steps { grid-template-columns: 1fr; gap: 24px; }
-  .steps h3 { margin-top: 16px; }
   pre, .code-heading { padding: 16px; }
   pre { font-size: 12px; }
   .footer { padding-bottom: 24px; }

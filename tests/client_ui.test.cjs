@@ -313,6 +313,36 @@ test('polling while mobile conversation is hidden preserves older reading positi
   assert.equal(list.scrollTop, 20);
 });
 
+test('restored latest position survives delayed message growth until the user scrolls away', async () => {
+  const app=client(), list=app.nodes.get('#message-list');
+  let extra=0, position=0;
+  Object.defineProperties(list,{
+    scrollHeight:{get:()=>list.children.length*100+extra},
+    scrollTop:{get:()=>position,set:value=>{position=Math.max(0,Math.min(value,list.scrollHeight-list.clientHeight));}},
+  });
+  await app.run(`(async()=>{
+    for(let i=0;i<6;i++) await appendMessage(7,{id:'restored-'+i,kind:'theirs',text:'History'},false);
+    selectChat(7,true);
+  })()`);
+  assert.equal(app.history.scrollRestoration,'manual');
+  assert.equal(list.scrollTop,list.scrollHeight-list.clientHeight);
+  for(const node of list.children) assert.ok(app.observedMessageSizes.has(node.messageBubble));
+  extra=240;
+  app.run('renderMessages()'); // Background rendering must not mistake growth for a user scroll.
+  assert.equal(list.scrollTop,list.scrollHeight-list.clientHeight);
+  extra=420;
+  app.resizeMessages();
+  assert.equal(list.scrollTop,list.scrollHeight-list.clientHeight);
+  list.scrollTop=100;
+  list.emit('scroll');
+  extra=800;
+  app.run('renderMessages()');app.resizeMessages();
+  assert.equal(list.scrollTop,100);
+  assert.equal(list.attributes.get('data-follow-latest'),'false');
+  await app.run('messagesByChat.set(7,[]); renderMessages()');
+  assert.equal(app.observedMessageSizes.size,1); // Only the viewport remains observed.
+});
+
 test('roster refresh retains keyboard focus on the selected chat button', () => {
   const app = client({ mobile: true });
   app.nodes.get('#chat-list').children[0].children[0].focus();
@@ -710,15 +740,16 @@ test('pending retries retain encrypted records, expiry labels and unchanged disc
     identity.storageKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
     globalThis.records = [];
     putDatabaseValue = async (key, value) => records.push({key, value});
-    readHistoryRecords = async () => records;
+    readHistoryRecords = async prefix => records.filter(record => record.key.startsWith(prefix));
     await persistOutbox({chatId: 7, messageId: 'saved', payload: { v: 1, type: 'text', text: 'pending text' }, expiresAt: Date.now() + 60000});
     await persistOutbox({chatId: 7, messageId: 'expired', payload: { v: 1, type: 'text', text: 'expired text' }, expiresAt: 0});
+    outgoingAttempts.set(metadataKey(7,'saved'),'failed');
     await renderOutbox();
   })()`);
   const list = app.nodes.get('#pending-send-list');
   assert.equal(app.nodes.get('#pending-sends').hidden, false);
-  assert.match(list.children[0].textContent, /Pending: pending text/);
-  assert.match(list.children[1].textContent, /Retry expired: expired text/);
+  assert.match(list.children[0].textContent, /Could not send: pending text/);
+  assert.match(list.children[1].textContent, /Send expired: expired text/);
   assert.equal(app.run('JSON.stringify(records).includes("pending text")'), false);
   await list.children[0].children[0].emit('click');
   assert.equal(app.confirmations[0], 'Discard this saved retry? The message may already have reached the server. This cannot undo delivery.');

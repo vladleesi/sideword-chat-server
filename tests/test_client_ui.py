@@ -129,6 +129,21 @@ def test_client_fonts_are_local_and_allowed_by_its_csp():
                           "font-src 'self'", "base-uri 'none'", "frame-ancestors 'none'"):
             assert directive in policy
         assert "unsafe-inline" not in policy
+        directives = {
+            parts[0]: parts[1:]
+            for directive in policy.split(";") if (parts := directive.split())
+        }
+        assert directives["img-src"] == ["'self'", "data:", "blob:"]
+        assert directives["connect-src"] == ["'self'"]
+        assert directives["object-src"] == ["'none'"]
+        assert all("blob:" not in values for name, values in directives.items()
+                   if name != "img-src")
+        assert "unsafe-eval" not in policy
+        assert not any("http:" in value or "https:" in value
+                       for values in directives.values() for value in values)
+        assert client.get("/static/client-media.js").status_code == 200
+        assert (response.text.index("/static/client-media.js")
+                < response.text.index("/static/client.js"))
         for name in ("IBMPlexSans-Regular.woff2", "IBMPlexSans-Medium.woff2",
                      "IBMPlexSans-SemiBold.woff2", "IBMPlexMono-Regular.woff2", "OFL.txt"):
             asset = client.get(f"/static/fonts/{name}")

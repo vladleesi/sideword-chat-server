@@ -100,7 +100,10 @@ async function storage(app) {
     identity = devices[1]; identity.token = 'synthetic'; identity.retryWindowSeconds = 3600;
     messageProfileReady = true;
     renderMessages = () => {}; refreshVisibleReads = () => {};
-    putDatabaseValue = async (key, value) => records.set(key, value);
+    putDatabaseValue = async (key, value, removeKey) => {
+      if (!removeKey || !records.has(key)) records.set(key,value);
+      if (removeKey) records.delete(removeKey);
+    };
     readHistoryRecords = async prefix => [...records].filter(([key]) => key.startsWith(prefix || 'history:'))
       .map(([key,value]) => ({key,value}));
     deviceLock = async (_, action) => action();
@@ -110,11 +113,11 @@ async function storage(app) {
   })()`);
 }
 
-test('serialized WS/poll duplicates persist encrypted file content before one deletion ACK; reload retains bytes', async () => {
+test('serialized WS/poll metadata duplicates persist before one deletion ACK; reload retains the reference', async () => {
   const { app } = protocol();
   await devices(app);
   await app.run(`(async () => { globalThis.wire = await encryptForRecipient(SidewordProtocol.encodePayload(
-    SidewordProtocol.filePayload('private-name.bin', '', new Uint8Array([0,255,1]))),
+    SidewordProtocol.fileReference('private-name.bin', '', 3, 'one-file.media')),
     7, 'one-file', chats[0].participants[1]); })()`);
   await storage(app);
   app.run(`globalThis.message = {delivery_id:'a'.repeat(32),chat_id:7,client_message_id:'one-file',
@@ -127,14 +130,14 @@ test('serialized WS/poll duplicates persist encrypted file content before one de
   assert.equal(app.run('[...records.values()].every(v => Object.prototype.toString.call(v.ciphertext) === "[object ArrayBuffer]")'), true);
   app.run('messagesByChat.clear(); seenMessageIds.clear(); loadedHistoryKeys.clear();');
   await app.run('loadStoredHistory()');
-  assert.equal(app.run('messagesByChat.get(7).find(e => e.attachment).attachment.data'), 'AP8B');
+  assert.equal(app.run('messagesByChat.get(7).find(e => e.attachment).attachment.media_id'), 'one-file.media');
 });
 
 test('quota failure and invalid payload never ACK; valid storage retry remains possible', async () => {
   const { app } = protocol();
   await devices(app); await storage(app);
   app.run(`globalThis.message = {delivery_id:'a'.repeat(32),chat_id:7,client_message_id:'one',sender_public_id:devices[0].publicId};
-    decryptMessage = async () => SidewordProtocol.encodePayload(SidewordProtocol.filePayload('empty.bin','',new Uint8Array()));
+    decryptMessage = async () => SidewordProtocol.encodePayload(SidewordProtocol.fileReference('empty.bin','',0,'one.media'));
     globalThis.save = putDatabaseValue;
     putDatabaseValue = async () => { throw new DOMException('synthetic quota', 'QuotaExceededError'); };`);
   await app.run('processIncoming({messages:[message]})');
@@ -156,7 +159,8 @@ test('encrypted immutable attachment outbox retries after reload and response lo
   await devices(app); await storage(app);
   await app.run(`(async () => {
     await persistOutbox({chatId:7,messageId:'retry-file',createdAt:Date.now(),expiresAt:Date.now()+60000,
-      payload:SidewordProtocol.filePayload('retry.bin','',new Uint8Array([7,8,9])),
+      payload:SidewordProtocol.fileReference('retry.bin','',3,'retry-file.media'),
+      media:SidewordProtocol.filePayload('retry.bin','',new Uint8Array([7,8,9])),
       envelopes:[{recipient_public_id:'peer',ciphertext:'immutable-envelope'}]});
     globalThis.accept = api;
     api = async (path,options) => { await accept(path,options); throw new Error('response lost'); };
@@ -199,10 +203,10 @@ test('safe card and explicit generic Blob download never embed content; URLs are
   const download = card.children.find(node => node.tagName === 'button');
   const error = card.children.find(node => node.className === 'field-error');
   assert.equal(info.children[0].children.length, 0);
-  assert.equal(info.children[0].textContent, 'evil<script>.html');
-  assert.equal(info.children[1].textContent, '2 B');
+  assert.equal(info.children[0].textContent, 'File · 2 B');
+  assert.equal(info.children[1].textContent, 'Saved on this device');
   assert.equal(download.textContent, 'Download');
-  assert.equal(download.attributes.get('aria-label'), 'Download evil<script>.html');
+  assert.equal(download.attributes.get('aria-label'), 'Download attachment');
   app.run(`globalThis.blobs = []; globalThis.revoked = []; globalThis.clicks = [];
     globalThis.Blob = class { constructor(bytes,options) { this.bytes=bytes; this.type=options.type; } };
     globalThis.URL = {createObjectURL(blob) { blobs.push(blob); return 'blob:synthetic'; }, revokeObjectURL(url) { revoked.push(url); }};`);
@@ -254,7 +258,8 @@ test('send persists the encrypted file before upload; quota failure retains sele
       assert.equal(app.run('messagesByChat.get(7).find(e => e.attachment).attachment.data'), '');
       assert.equal(app.run('selectedFile'), null);
     }
-    assert.equal(app.nodes.get('#message-input').value, 'keep this text draft');
+    assert.equal(app.nodes.get('#message-input').value, quota ? 'keep this text draft' : '');
+    if (!quota) assert.equal(app.run('messagesByChat.get(7).find(e => e.attachment).text'), 'keep this text draft');
   }
 });
 
@@ -281,7 +286,7 @@ test('file selection makes sending explicit, preserves drafts and restores keybo
   input.emit('change');
   assert.equal(app.nodes.get('#attachment-label').textContent, 'notes.txt');
   assert.equal(app.nodes.get('#attachment-size').textContent, '1.0 KiB · File attachment');
-  assert.equal(app.nodes.get('#message-input').hidden, true);
+  assert.equal(app.nodes.get('#message-input').hidden, false);
   assert.equal(app.nodes.get('#send-button').textContent, 'Send file');
   assert.equal(app.document.activeElement, app.nodes.get('#send-button'));
   assert.equal(app.nodes.get('#attachment-button').attributes.get('aria-label'), 'Replace attached file');

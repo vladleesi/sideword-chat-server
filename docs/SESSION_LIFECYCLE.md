@@ -35,8 +35,9 @@ IndexedDB history/outboxes are encrypted; invite-vault data uses per-tab session
 New participants receive no old messages addressed to others. Resetting/clearing browser
 state can permanently lose keys/history and does not free a participant slot.
 
-Authenticate, decrypt and persist before ACK. Failed validation/storage remains retryable;
-downloading is optional and viewing confirms only the attachment card. Downloads are
+Authenticate, decrypt and persist before ACK. References and media have independent ACKs;
+file verification/storage never delays the text/card. Failed transfers remain retryable.
+Viewing confirms the card, not file completion; see [media delivery](PROTOCOL.md#independent-media-delivery). Downloads are
 ordinary local files that server deletion/revocation cannot erase.
 
 HTTP and WS check live authorization; WS also revalidates while idle/before pushes.

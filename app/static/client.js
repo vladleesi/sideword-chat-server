@@ -1,5 +1,8 @@
 "use strict";
 
+// The client restores its selected conversation and initial position itself.
+if (typeof history !== "undefined") history.scrollRestoration = "manual";
+
 // New test protocol: keep prior device/history records untouched in their old DB.
 const DB_NAME = "sideword-test-client-p256-payload-v1";
 const STORE_NAME = "device";
@@ -58,6 +61,15 @@ let queuedSocketBytes = 0;
 let queuedSocketEvents = 0;
 const failedMessageRetries = new Map();
 const downloadUrls = new Map();
+const mediaPreviews = globalThis.SidewordMedia?.createManager(scheduleVisiblePreviews);
+const shownPreviews = new Set();
+const receivedMedia = new Map();
+const mediaFailures = new Map();
+const mediaUploadStates = new Map();
+let mediaTimer = null;
+let previewTimer = null;
+let transferringMedia = false;
+let transferController = null;
 let identity = null;
 let chats = [];
 let selectedChatId = null;
@@ -104,16 +116,20 @@ elements.messageList.addEventListener("scroll", () => {
   if (!conversationVisible()) return;
   const list = elements.messageList;
   followResizedMessages = list.scrollHeight - list.clientHeight - list.scrollTop <= 32;
+  list.setAttribute("data-follow-latest", String(followResizedMessages));
   refreshVisibleReads();
+  scheduleVisiblePreviews();
 });
+let messageResizeObserver = null;
 if (typeof ResizeObserver === "function") {
-  const observer = new ResizeObserver(() => {
+  messageResizeObserver = new ResizeObserver(() => {
     if (conversationVisible() && followResizedMessages) {
       elements.messageList.scrollTop = elements.messageList.scrollHeight;
     }
     refreshVisibleReads();
+    scheduleVisiblePreviews();
   });
-  observer.observe(elements.messageList);
+  messageResizeObserver.observe(elements.messageList);
 }
 
 // Dynamic viewport units alone do not account for every mobile keyboard.
@@ -443,6 +459,7 @@ async function writeIdentity(value, updateSession = false) {
 }
 
 async function clearIdentity() {
+  stopMediaTransfers();
   const database = await openDatabase();
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, "readwrite");
@@ -497,11 +514,20 @@ function historyKey(chatId, entryId) {
   return `${HISTORY_PREFIX}${identity.publicId}:${chatId}:${entryId}`;
 }
 
-async function putDatabaseValue(key, value) {
+async function putDatabaseValue(key, value, removeKey = null, allowed = null) {
   const database = await openDatabase();
+  if (allowed && !allowed()) { database.close(); return false; }
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).put(value, key);
+    const store = transaction.objectStore(STORE_NAME);
+    if (removeKey) {
+      // Atomic handoff: no observable child exists while its parent can recreate it.
+      const request = store.get(key);
+      request.onsuccess = () => {
+        if (request.result === undefined) store.put(value, key);
+        store.delete(removeKey);
+      };
+    } else store.put(value, key);
     transaction.oncomplete = () => {
       database.close();
       resolve();
@@ -573,7 +599,7 @@ async function readHistoryRecords(recordPrefix = null) {
   });
 }
 
-async function persistHistoryEntry(chatId, entry) {
+async function persistHistoryEntry(chatId, entry, allowed = null) {
   if (!identity?.storageKey || !identity.publicId || !entry.id) {
     throw new ClientError("Local history storage is unavailable: this device's history key or identity is missing. Message retained for retry.");
   }
@@ -584,12 +610,12 @@ async function persistHistoryEntry(chatId, entry) {
     identity.storageKey,
     encoder.encode(JSON.stringify(entry)),
   );
-  await putDatabaseValue(key, { iv, ciphertext });
+  return putDatabaseValue(key, { iv, ciphertext }, null, allowed);
 }
 
 async function loadStoredHistory() {
   if (!identity?.storageKey || !identity.publicId) return;
-  if (!messagesByChat.size) loadedHistoryKeys.clear();
+  if (!messagesByChat.size) { loadedHistoryKeys.clear(); receivedMedia.clear(); }
   const records = await readHistoryRecords();
   for (const record of records) {
     if (loadedHistoryKeys.has(record.key)) continue;
@@ -700,8 +726,11 @@ function requestError(status, detail, context = "Chat request failed") {
   return new ClientError(`${context} (HTTP ${status}). ${explanation}`);
 }
 
-async function fetchClient(path, options) {
+async function fetchClient(path, options = {}) {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) abort();
   const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     let response;
@@ -714,7 +743,23 @@ async function fetchClient(path, options) {
     if (response.status === 401) return { ok: false, status: 401 };
     let body;
     try {
-      body = await response.json();
+      if (response.ok && path.endsWith("/media/read")) {
+        const reader = response.body.getReader();
+        const bytes = new Uint8Array(SidewordProtocol.MAX_WIRE_CHARS + 2048);
+        let size = 0;
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (size + value.byteLength > bytes.length) {
+              await reader.cancel(); throw new Error("Media response too large");
+            }
+            bytes.set(value, size);
+            size += value.byteLength;
+          }
+        } finally { reader.releaseLock(); }
+        body = JSON.parse(decoder.decode(bytes.subarray(0, size)));
+      } else body = await response.json();
     } catch {
       if (response.ok) {
         throw new ClientError("The chat service returned a response this client could not read; the server may already have processed the request.");
@@ -722,6 +767,7 @@ async function fetchClient(path, options) {
     }
     return { ok: response.ok, status: response.status, body };
   } finally {
+    options.signal?.removeEventListener("abort", abort);
     window.clearTimeout(timeout);
     controller.abort();
   }
@@ -730,6 +776,8 @@ async function fetchClient(path, options) {
 class SessionExpiredError extends ClientError {}
 
 async function invalidateSession(reason = "Session expired") {
+  mediaPreviews?.clear();
+  stopMediaTransfers();
   if (!identity) return;
   clearPresence();
   messageProfileReady = false;
@@ -880,10 +928,18 @@ function outgoingMessageId(entry) {
 }
 
 function hiddenMessageEntry(entry) {
-  return ["receipt", "acceptance", "viewed", "read_ack", "delivery_ack", "delivery_ref", "send_failed", "delivery_state"].includes(entry.kind);
+  return ["receipt", "acceptance", "viewed", "read_ack", "delivery_ack", "delivery_ref", "send_failed", "delivery_state", "media_ready"].includes(entry.kind);
 }
 
 function indexMessageMetadata(chatId, entry) {
+  if (entry.kind === "media_ready") {
+    receivedMedia.set(entry.target, entry);
+    const original = messagesByChat.get(chatId)?.find(message => message.id === entry.target);
+    if (original) original.attachment = entry.attachment;
+    queueDelivery(entry.delivery);
+    return;
+  }
+  if (entry.id && receivedMedia.has(entry.id)) entry.attachment = receivedMedia.get(entry.id).attachment;
   if (entry.kind === "receipt" && entry.readerPublicId && entry.clientMessageId) {
     const metadata = metadataFor(chatId, entry.clientMessageId);
     metadata.receipts.set(entry.id, entry);
@@ -1040,6 +1096,7 @@ const messageVisibilityObserver = typeof IntersectionObserver === "function"
       else visibleMessageNodes.delete(entry.target);
     }
     refreshVisibleReads();
+    scheduleVisiblePreviews();
   }, { root: elements.messageList, threshold: [0, 0.5, 1] }) : null;
 
 function refreshVisibleReads() {
@@ -1288,15 +1345,18 @@ function showMessageDetails(chatId, entry, trigger) {
 }
 
 function renderMessages(openAtLatest = false) {
-  if (!conversationVisible()) return;
+  if (!conversationVisible()) { mediaPreviews?.clear(); return; }
   const list = elements.messageList;
   const changedChat = renderedChatId !== selectedChatId;
-  const followLatest = openAtLatest || changedChat || list.scrollHeight - list.clientHeight - list.scrollTop <= 32;
+  const followLatest = openAtLatest || changedChat || followResizedMessages;
   followResizedMessages = followLatest;
+  list.setAttribute("data-follow-latest", String(followLatest));
   if (changedChat) {
+    mediaPreviews?.clear();
     messageVisibilityObserver?.disconnect();
     visibleMessageNodes.clear();
     refreshVisibleReads();
+    for (const node of renderedMessages.values()) messageResizeObserver?.unobserve(node.messageBubble);
     list.replaceChildren();
     renderedMessages.clear();
     renderedChatId = selectedChatId;
@@ -1307,7 +1367,9 @@ function renderMessages(openAtLatest = false) {
         || compareHistoryEntries(left, right);
     });
   if (!entries.length) {
+    mediaPreviews?.clear();
     if (list.firstChild && !renderedMessages.size) return;
+    for (const node of renderedMessages.values()) messageResizeObserver?.unobserve(node.messageBubble);
     list.replaceChildren();
     renderedMessages.clear();
     const empty = document.createElement("p");
@@ -1320,6 +1382,8 @@ function renderMessages(openAtLatest = false) {
   const keys = new Set(entries.map(entry => entry.id || entry));
   for (const [key, node] of renderedMessages) {
     if (!keys.has(key)) {
+      node.releaseMedia?.();
+      messageResizeObserver?.unobserve(node.messageBubble);
       node.remove();
       messageVisibilityObserver?.unobserve(node);
       visibleMessageNodes.delete(node);
@@ -1331,12 +1395,13 @@ function renderMessages(openAtLatest = false) {
   let position = 0;
   for (const entry of entries) {
     const key = entry.id || entry;
-    const messageTextContent = entry.attachment
-      ? SidewordProtocol.safeDownloadName(entry.attachment.name) : entry.text;
+    const messageTextContent = entry.text || "";
     const previous = entries[position - 1];
     const existing = renderedMessages.get(key);
     if (existing) {
       if (existing.messageContent.textContent !== messageTextContent) existing.messageContent.textContent = messageTextContent;
+      existing.messageEntry = entry;
+      if (entry.attachment) updateAttachmentCard(existing);
       updateMessageHeader(existing, selectedChatId, entry, previous, timestampFormatters);
       if (list.children[position] !== existing) list.insertBefore(existing, list.children[position] || null);
       position++;
@@ -1371,37 +1436,47 @@ function renderMessages(openAtLatest = false) {
     bubble.append(text);
     if (entry.attachment) {
       bubble.className += " attachment-card";
+      text.hidden = !messageTextContent;
       const download = document.createElement("button");
       download.type = "button";
-      text.className = "message-content attachment-name";
-      text.title = messageTextContent;
       const info = document.createElement("div");
       info.className = "attachment-info";
       const size = document.createElement("small");
       size.className = "attachment-size";
-      size.textContent = fileSize(entry.attachment.size);
-      info.append(text, size);
+      size.textContent = `${["image/jpeg", "image/png", "image/webp"].includes(entry.attachment.mime) ? "Image" : "File"} · ${fileSize(entry.attachment.size)}`;
+      const state = document.createElement("small");
+      state.className = "attachment-state";
+      state.setAttribute("role", "status");
+      info.append(size, state);
       download.className = "button subtle attachment-download";
       const downloadLabel = document.createElement("span");
       downloadLabel.className = "sr-only";
       downloadLabel.textContent = "Download";
       download.append(downloadIcon(), downloadLabel);
       download.title = "Download file";
-      download.setAttribute("aria-label", `Download ${messageTextContent}`);
+      download.setAttribute("aria-label", "Download attachment");
       const error = document.createElement("span");
       error.className = "field-error";
       error.setAttribute("role", "alert");
       download.addEventListener("click", event => {
         event.stopPropagation();
-        downloadAttachment(entry.attachment, error);
+        const attachment = message.messageEntry.attachment;
+        if (attachment.type === "attachment") downloadAttachment(attachment, error);
+        else { mediaFailures.delete(entry.id); entry.mediaTransfer = null; scheduleMediaTransfers(); updateAttachmentCard(message); }
       });
       const tile = document.createElement("span");
       tile.className = "file-tile";
       tile.setAttribute("aria-hidden", "true");
       tile.append(fileIcon());
       bubble.append(tile, info, download, error);
+      const preview = document.createElement("div");
+      preview.className = "media-preview";
+      bubble.append(preview);
+      message.attachmentUi = { state, download, preview };
+      updateAttachmentCard(message);
     }
     message.append(bubble);
+    messageResizeObserver?.observe(bubble);
     updateMessageHeader(message, chatId, entry, previous, timestampFormatters);
     if (entry.kind === "mine") {
       message.tabIndex = 0;
@@ -1417,12 +1492,79 @@ function renderMessages(openAtLatest = false) {
     }
     list.insertBefore(message, list.children[position] || null);
     renderedMessages.set(key, message);
-    if (entry.kind === "theirs") messageVisibilityObserver?.observe(message);
+    if (entry.kind === "theirs" || entry.attachment) messageVisibilityObserver?.observe(message);
     position++;
   }
   if (followLatest) list.scrollTop = list.scrollHeight;
   refreshMessageDetails();
   refreshVisibleReads();
+  scheduleVisiblePreviews();
+}
+
+function scheduleVisiblePreviews() {
+  if (!mediaPreviews || previewTimer !== null) return;
+  previewTimer = window.setTimeout(() => {
+    previewTimer = null;
+    if (!pageActive || document.visibilityState !== "visible" || !conversationVisible()) {
+      mediaPreviews?.clear(); shownPreviews.clear(); return;
+    }
+    const list = elements.messageList.getBoundingClientRect();
+    const candidates = new Set(messageVisibilityObserver ? visibleMessageNodes : renderedMessages.values());
+    for (const node of shownPreviews) candidates.add(node);
+    const near = new Set(), visible = new Set();
+    const top = Math.max(0, list.top), bottom = Math.min(window.innerHeight, list.bottom);
+    for (const node of candidates) {
+      if (!node.previewAttached || node.isConnected === false || !node.releaseMedia.available()
+          || renderedMessages.get(node.messageEntry.id || node.messageEntry) !== node) continue;
+      const box = node.getBoundingClientRect();
+      if (box.right <= list.left || box.left >= list.right) continue;
+      if (box.bottom > top - 256 && box.top < bottom + 256) near.add(node);
+      if (box.bottom > top && box.top < bottom) visible.add(node);
+    }
+    // Keep visible previews stable; use remaining slots for already decoded nearby images.
+    const selected = new Set();
+    for (const group of [[...shownPreviews].filter(node => visible.has(node)), visible,
+      [...shownPreviews].filter(node => near.has(node))]) {
+      for (const node of group) {
+        if (selected.size < SidewordMedia.MAX_ACTIVE) selected.add(node);
+      }
+    }
+    for (const node of shownPreviews) if (!selected.has(node)) node.releaseMedia?.();
+    shownPreviews.clear();
+    for (const node of selected) { shownPreviews.add(node); void node.releaseMedia.load(); }
+  }, 0);
+}
+
+function updateAttachmentCard(node) {
+  const entry = node.messageEntry, ui = node.attachmentUi;
+  if (!ui) return;
+  const ready = entry.attachment.type === "attachment";
+  const failure = mediaFailures.get(entry.id) || entry.mediaTransfer;
+  const upload = entry.kind === "mine" && mediaUploadStates.get(metadataKey(selectedChatId, entry.clientMessageId));
+  const label = ready ? upload || "Saved on this device" : failure?.attempts >= 6 ? "Unavailable · Retry download"
+    : failure?.active ? "Downloading…" : "Waiting for media…";
+  if (ui.state.textContent !== label) ui.state.textContent = label;
+  ui.download.disabled = !ready && Boolean(failure?.active);
+  ui.download.title = ready ? "Download file" : "Retry media download";
+  ui.download.setAttribute("aria-label", ready ? "Download attachment" : "Retry media download");
+  const image = ["image/jpeg", "image/png", "image/webp"].includes(entry.attachment.mime);
+  if (!ready && image) {
+    ui.preview.className = "media-preview media-frame";
+    if (!ui.placeholder) {
+      ui.placeholder = document.createElement("span");
+      ui.placeholder.setAttribute("role", "status");
+      ui.preview.append(ui.placeholder);
+    }
+    ui.placeholder.className = failure?.attempts >= 6 ? "media-status" : "media-status media-loading";
+    ui.placeholder.textContent = failure?.attempts >= 6 ? "Image unavailable" : "Loading image…";
+  }
+  if (ready && mediaPreviews && !node.previewAttached
+      && (image || ["", "application/octet-stream"].includes(entry.attachment.mime))) {
+    node.previewAttached = true;
+    ui.preview.replaceChildren();
+    node.releaseMedia = mediaPreviews.attach(ui.preview,
+      () => SidewordProtocol.attachmentBytes(node.messageEntry.attachment), entry.attachment.mime);
+  }
 }
 
 function chatName(chat) {
@@ -1495,17 +1637,16 @@ function selectChat(chatId, openAtLatest = false) {
   elements.sendButton.disabled = !canSend || sendingMessage;
   elements.attachmentButton.disabled = !canSend || sendingMessage;
   elements.attachmentInput.disabled = !canSend || sendingMessage;
-  elements.messageInput.hidden = Boolean(selectedFile);
+  elements.messageInput.hidden = false;
   elements.messageForm.classList.toggle("has-attachment", Boolean(selectedFile));
   elements.sendButton.textContent = sendingMessage ? "Sending…" : selectedFile ? "Send file" : "Send";
   elements.attachmentButton.setAttribute("aria-label", selectedFile ? "Replace attached file" : "Attach a file");
-  if (selectedFile) elements.messageInput.disabled = true;
   document.querySelector("#composer-help").textContent = chat?.closed_at
     ? "Conversation closed. Saved history is kept; messaging is paused."
     : changedKey ? "Messaging is blocked because a participant's encryption key changed."
     : waitingForPeer ? "Sending is unavailable until another participant joins."
     : !chat ? "Select a conversation to send a message."
-    : selectedFile ? "Ready to send · Your text draft is kept separately"
+    : selectedFile ? "Ready to send · Optional message above the attachment"
     : "Enter to send · Shift+Enter for a new line";
   renderChats();
   renderMessages(openAtLatest);
@@ -1668,6 +1809,10 @@ async function processMessages(messages) {
     processingMessageIds.add(key);
     try {
       const payload = SidewordProtocol.decodePayload(await decryptMessage(message));
+      if (payload.type === "attachment") throw new SidewordProtocol.ProtocolError("File bytes require the media channel.");
+      if (payload.type === "attachment-ref" && payload.media_id !== `${message.client_message_id}.media`) {
+        throw new SidewordProtocol.ProtocolError("Invalid attachment reference.");
+      }
       const entry = {
         id: key,
         kind: "theirs",
@@ -1745,6 +1890,154 @@ async function processIncoming(data) {
   await processReceipts(data.delivery_receipts || [], true);
   await processReceipts(data.read_receipts || []);
   await flushAcknowledgements();
+  scheduleMediaTransfers();
+}
+
+function stopMediaTransfers() {
+  window.clearTimeout(mediaTimer);
+  mediaTimer = null;
+  transferController?.abort();
+  mediaFailures.clear();
+}
+
+function scheduleMediaTransfers(delay = 0) {
+  if (mediaTimer !== null || transferringMedia || !pageActive || !identity?.token || invitePending
+      || globalThis.navigator?.onLine === false) return;
+  mediaTimer = window.setTimeout(() => {
+    mediaTimer = null;
+    void transferMedia();
+  }, delay);
+}
+
+function mediaAttempt(key, state = null) {
+  const previous = mediaFailures.get(key) || state;
+  if (previous?.attempts >= 6 || previous?.nextAt > Date.now()) return null;
+  if (!previous && mediaFailures.size >= 1024) mediaFailures.delete(mediaFailures.keys().next().value);
+  const attempt = { attempts: previous?.attempts || 0, active: true };
+  mediaFailures.set(key, attempt);
+  return attempt;
+}
+
+function mediaFailed(key, attempt) {
+  attempt.active = false;
+  attempt.attempts++;
+  attempt.nextAt = Date.now() + Math.min(30000, 1000 * 2 ** attempt.attempts);
+  mediaFailures.set(key, attempt);
+}
+
+async function transferMedia() {
+  if (transferringMedia || !identity?.token || !pageActive || invitePending) return;
+  transferringMedia = true;
+  const owner = identity.publicId, publicKey = identity.publicKey, storageKey = identity.storageKey;
+  const controller = new AbortController();
+  transferController = controller;
+  const current = () => !controller.signal.aborted && identity?.publicId === owner
+    && identity?.publicKey === publicKey && identity?.token && pageActive;
+  const options = { signal: controller.signal, priority: "low" };
+  let retry = false;
+  try {
+    // One media request at a time; this lock is independent of text-message sending.
+    await deviceLock(`media:${owner}`, async () => {
+      const records = await readHistoryRecords(`mediaoutbox:${owner}:`);
+      for (const stored of records) {
+        if (!current()) return;
+        const attempt = mediaAttempt(stored.key);
+        if (!attempt) { retry ||= mediaFailures.get(stored.key)?.attempts < 6; continue; }
+        let uploadKey;
+        try {
+          const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: stored.value.iv,
+            additionalData: encoder.encode(stored.key) }, storageKey, stored.value.ciphertext);
+          const record = JSON.parse(decoder.decode(plaintext));
+          uploadKey = metadataKey(record.chatId, record.messageId.slice(0, -6));
+          mediaUploadStates.set(uploadKey, "Sending media…");
+          renderMessages();
+          const chat = chats.find(chat => chat.id === record.chatId);
+          if (!chat || chat.closed_at || record.expiresAt <= Date.now()) throw new ClientError("Media unavailable");
+          const peers = record.recipients.map(id => chat.participants.find(peer => peer.public_id === id));
+          for (const peer of peers) {
+            if (!peer) throw new ClientError("Media participant unavailable");
+            await assertTrustedPeer(peer);
+          }
+          if (!record.envelopes) {
+            const payload = SidewordProtocol.encodePayload(record.payload);
+            record.envelopes = [];
+            for (const peer of peers) record.envelopes.push({ recipient_public_id: peer.public_id,
+              ciphertext: await encryptForRecipient(payload, record.chatId, record.messageId, peer) });
+            if (!current()) return;
+            // Persist immutable ciphertext before upload; a lost response must retry identical bytes.
+            await deviceLock(`outbox-capacity:${owner}`, async () => {
+              const others = [...await readHistoryRecords(`mediaoutbox:${owner}:`),
+                ...await readHistoryRecords(`outbox:${owner}:`)];
+              const size = encoder.encode(JSON.stringify(record)).length + 16;
+              if (others.filter(item => item.key !== stored.key)
+                  .reduce((sum, item) => sum + item.value.ciphertext.byteLength, size) > 32 * 1024 * 1024) {
+                throw new ClientError("Local media retry capacity reached");
+              }
+              if (current()) await persistOutbox(record, "mediaoutbox");
+            });
+          }
+          if (!current()) return;
+          await api(`/api/v1/chats/${record.chatId}/messages`, { ...options, method: "POST",
+            body: JSON.stringify({ channel: "media", client_message_id: record.messageId, envelopes: record.envelopes }) });
+          if (!current()) return;
+          await removeOutbox(stored.key);
+          mediaUploadStates.delete(uploadKey);
+          mediaFailures.delete(stored.key);
+          retry ||= records.length > 1;
+        } catch { if (current()) {
+          mediaFailed(stored.key, attempt);
+          if (uploadKey && attempt.attempts >= 6) mediaUploadStates.set(uploadKey, "Could not send media");
+          retry ||= attempt.attempts < 6;
+        } }
+        break; // Yield to message delivery between files, including group fanout.
+      }
+      for (const [chatId, entries] of messagesByChat) {
+        if (!current()) return;
+        if (chats.find(chat => chat.id === chatId)?.closed_at) continue;
+        for (const entry of entries) {
+          if (entry.kind !== "theirs" || entry.attachment?.type !== "attachment-ref") continue;
+          const attempt = mediaAttempt(entry.id, entry.mediaTransfer);
+          if (!attempt) { retry ||= (mediaFailures.get(entry.id) || entry.mediaTransfer)?.attempts < 6; continue; }
+          entry.mediaTransfer = attempt;
+          if (selectedChatId === chatId) renderMessages();
+          try {
+            const reference = entry.attachment;
+            const message = await api(`/api/v1/chats/${chatId}/media/read`, { ...options, method: "POST",
+              body: JSON.stringify({ sender_public_id: entry.senderPublicId, client_message_id: reference.media_id }) });
+            if (!current()) return;
+            if (message.chat_id !== chatId || message.sender_public_id !== entry.senderPublicId
+                || message.client_message_id !== reference.media_id) throw new ClientError("Invalid media routing");
+            const payload = SidewordProtocol.decodePayload(await decryptMessage(message));
+            if (payload.type !== "attachment" || payload.name !== reference.name
+                || payload.mime !== reference.mime || payload.size !== reference.size) throw new ClientError("Invalid media metadata");
+            if (!current()) return;
+            // Bytes authenticate and commit separately; metadata ACK has already completed.
+            const saved = { id: `media_ready:${entry.id}`, kind: "media_ready", target: entry.id,
+              attachment: payload, delivery: deliveryReference(message, "sender_public_id"), createdAt: Date.now() };
+            if (await persistHistoryEntry(chatId, saved, current) === false || !current()) return;
+            loadedHistoryKeys.add(historyKey(chatId, saved.id));
+            await appendMessage(chatId, saved, false);
+            mediaFailures.delete(entry.id);
+            await flushDurableDeliveries();
+          } catch { if (current()) { mediaFailed(entry.id, attempt); retry ||= attempt.attempts < 6; } }
+          if (selectedChatId === chatId) renderMessages();
+          retry = true;
+          return;
+        }
+      }
+    });
+  } catch { retry = current(); } // Storage/network errors never escape into message rendering.
+  finally {
+    transferringMedia = false;
+    transferController = null;
+    if (current()) {
+      renderMessages();
+      if ([...mediaFailures.values()].some(failure => failure.attempts >= 6)) {
+        try { await renderOutbox(); } catch { /* Durable retry data remains saved. */ }
+      }
+    }
+    if (retry && current()) scheduleMediaTransfers(2000);
+  }
 }
 
 async function synchronize({ initial = false } = {}) {
@@ -1760,6 +2053,7 @@ async function synchronize({ initial = false } = {}) {
     const data = await api("/api/v1/poll");
     await enqueueIncoming(() => processIncoming(data));
     await enqueueIncoming(recoverMessageStatuses);
+    scheduleMediaTransfers();
   } catch (error) {
     showToast(errorMessage(error), true);
   } finally {
@@ -1824,6 +2118,7 @@ async function handleSocketPayload(payload, ws) {
   } else if (payload.type === "message") {
     await processMessages([payload.message]);
     await flushAcknowledgements();
+    scheduleMediaTransfers();
   } else if (payload.type === "read") {
     await processReceipts([payload.read]);
     await flushAcknowledgements();
@@ -1993,6 +2288,8 @@ elements.activationForm.addEventListener("submit", async (event) => {
       // Persisted history/outbox are scoped by public ID. Keep them for a later
       // reconnect; a new invite must never perform a destructive device reset.
       messagesByChat.clear();
+      receivedMedia.clear();
+      mediaUploadStates.clear();
       seenMessageIds.clear();
       seenReceiptIds.clear();
       pendingReadsByChat.clear();
@@ -2057,7 +2354,8 @@ async function renderOutbox() {
   const panel = document.querySelector("#pending-sends");
   const list = document.querySelector("#pending-send-list");
   if (!panel || !identity?.publicId) return;
-  const records = await readHistoryRecords(`outbox:${identity.publicId}:`);
+  const records = [...await readHistoryRecords(`outbox:${identity.publicId}:`),
+    ...await readHistoryRecords(`mediaoutbox:${identity.publicId}:`)];
   const rows = [];
   for (const stored of records) {
     const row = document.createElement("li");
@@ -2066,17 +2364,21 @@ async function renderOutbox() {
         additionalData: encoder.encode(stored.key) }, identity.storageKey, stored.value.ciphertext);
       const record = JSON.parse(decoder.decode(decoded));
       const state = chats.find(chat => chat.id === record.chatId)?.closed_at
-        ? "Paused (conversation closed)" : record.expiresAt <= Date.now() ? "Retry expired" : "Pending";
+        ? "Conversation closed" : record.expiresAt <= Date.now() ? "Send expired"
+        : outgoingAttempts.get(metadataKey(record.chatId, record.messageId)) === "failed"
+          || mediaFailures.get(stored.key)?.attempts >= 6 ? "Could not send" : null;
+      if (!state) continue; // Normal background delivery needs no recovery panel.
       const payload = SidewordProtocol.validatePayload(record.payload);
-      row.textContent = `${state}: ${payload.type === "text" ? payload.text : SidewordProtocol.safeDownloadName(payload.name)} `;
-    } catch { row.textContent = "Unreadable pending message. "; }
+      row.textContent = `${state}: ${payload.type === "text" ? payload.text : "Attachment"} `;
+    } catch { row.textContent = "Could not read a saved message. "; }
     const discard = document.createElement("button");
     discard.type = "button";
-    discard.textContent = "Discard retry";
+    discard.textContent = "Remove saved send";
     discard.addEventListener("click", async () => {
       if (!window.confirm("Discard this saved retry? The message may already have reached the server. This cannot undo delivery.")) return;
       try {
-        await deviceLock(`outbox:${identity.publicId}`, () => removeOutbox(stored.key));
+        const lock = stored.key.startsWith("mediaoutbox:") ? "media" : "outbox";
+        await deviceLock(`${lock}:${identity.publicId}`, () => removeOutbox(stored.key));
         await renderOutbox();
       } catch (error) { showToast(errorMessage(error), true); }
     });
@@ -2084,22 +2386,25 @@ async function renderOutbox() {
     rows.push(row);
   }
   list.replaceChildren(...rows);
-  panel.hidden = records.length === 0;
+  panel.hidden = rows.length === 0;
 }
 
 document.querySelector("#retry-pending-sends").addEventListener("click", () => {
+  mediaFailures.clear();
+  for (const entries of messagesByChat.values()) for (const entry of entries) entry.mediaTransfer = null;
+  scheduleMediaTransfers();
   void synchronize();
 });
 
-async function persistOutbox(record) {
+async function persistOutbox(record, prefix = "outbox", removeKey = null) {
   if (!identity.storageKey) throw new ClientError("This device is missing the encryption key for its saved outgoing messages.");
-  const key = `outbox:${identity.publicId}:${record.chatId}:${record.messageId}`;
+  const key = `${prefix}:${identity.publicId}:${record.chatId}:${record.messageId}`;
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv, additionalData: encoder.encode(key) },
     identity.storageKey, encoder.encode(JSON.stringify(record)),
   );
-  await putDatabaseValue(key, { iv, ciphertext });
+  await putDatabaseValue(key, { iv, ciphertext }, removeKey);
 }
 
 async function removeOutbox(key) {
@@ -2122,6 +2427,9 @@ async function flushOutbox() {
       const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: stored.value.iv,
         additionalData: encoder.encode(stored.key) }, identity.storageKey, stored.value.ciphertext);
       const record = JSON.parse(decoder.decode(plaintext));
+      if (SidewordProtocol.validatePayload(record.payload).type === "attachment") {
+        throw new ClientError("This outgoing file requires a media reference.");
+      }
       await storeOutgoing(record);
       if (chats.find(chat => chat.id === record.chatId)?.closed_at) continue;
       const attemptKey = metadataKey(record.chatId, record.messageId);
@@ -2139,8 +2447,16 @@ async function flushOutbox() {
             envelopes: record.envelopes }),
         });
         await storeAcceptance(record.chatId, record.messageId, result);
-        await removeOutbox(stored.key); // Acceptance and history commit before retry removal.
+        if (record.media) {
+          await deviceLock(`outbox-capacity:${identity.publicId}`, () => persistOutbox({
+            chatId: record.chatId, messageId: `${record.messageId}.media`,
+            payload: record.media, recipients: record.envelopes.map(envelope => envelope.recipient_public_id),
+            expiresAt: Math.min(record.expiresAt, receiptTime(result.content_expires_at) || record.expiresAt),
+            createdAt: record.createdAt }, "mediaoutbox", stored.key));
+          mediaUploadStates.set(metadataKey(record.chatId, record.messageId), "Sending media…");
+        } else await removeOutbox(stored.key); // Acceptance/history commit before retry removal.
         outgoingAttempts.delete(attemptKey);
+        scheduleMediaTransfers();
       } catch (error) {
         try {
           await appendMessage(record.chatId, { id: `send_failed:${record.messageId}`,
@@ -2162,6 +2478,7 @@ async function storeOutgoing(record) {
     ...payloadEntry(SidewordProtocol.validatePayload(record.payload)), meta: `Sent by ${identity.publicId}`,
     createdAt: record.createdAt };
   entry.meta = messageMeta(record.chatId, entry);
+  if (record.media) entry.attachment = SidewordProtocol.validatePayload(record.media);
   await appendMessage(record.chatId, entry);
 }
 
@@ -2215,7 +2532,8 @@ async function recoverMessageStatuses() {
 }
 
 function payloadEntry(payload) {
-  return payload.type === "attachment" ? { attachment: payload } : { text: payload.text };
+  return payload.type === "attachment" || payload.type === "attachment-ref"
+    ? { attachment: payload, text: payload.text || "" } : { text: payload.text };
 }
 
 function fileIcon() {
@@ -2277,7 +2595,7 @@ function selectAttachment(file) {
   elements.attachmentLabel.title = elements.attachmentLabel.textContent;
   elements.attachmentSize.textContent = `${fileSize(file.size)} · File attachment`;
   elements.attachmentPreview.hidden = false;
-  elements.messageInput.disabled = true; // Attachments have no captions; preserve the text draft.
+  // Keep the text composer available for an optional message above the media.
 }
 
 function stageAttachmentFiles(files) {
@@ -2393,7 +2711,7 @@ elements.messageForm.addEventListener("submit", async (event) => {
         || SidewordProtocol.attachmentSendBytes(file.size, recipients.length) > SidewordProtocol.MAX_SEND_BYTES)) {
       throw new ClientError("This file exceeds the file or group transport limit. Use a smaller file or fewer recipients.");
     }
-    const payload = file ? SidewordProtocol.filePayload(file.name, file.type, new Uint8Array(await file.arrayBuffer()))
+    const payload = file ? SidewordProtocol.fileReference(file.name, file.type, file.size, `${messageId}.media`, text)
       : SidewordProtocol.textPayload(text);
     const plaintext = SidewordProtocol.encodePayload(payload);
     const envelopes = [];
@@ -2412,16 +2730,21 @@ elements.messageForm.addEventListener("submit", async (event) => {
     const record = { chatId: chat.id, messageId, envelopes, payload,
       expiresAt: Date.now() + Math.max(0, identity.retryWindowSeconds - 300) * 1000,
       createdAt: Date.now() };
+    if (file) record.media = SidewordProtocol.filePayload(file.name, file.type, new Uint8Array(await file.arrayBuffer()));
     await deviceLock(`outbox:${identity.publicId}`, async () => {
-      const records = await readHistoryRecords(`outbox:${identity.publicId}:`);
-      const bytes = records.reduce((sum, item) => sum + item.value.ciphertext.byteLength, 0);
-      if (records.length >= 100 || bytes + encoder.encode(JSON.stringify(record)).length + 16 > 32 * 1024 * 1024) {
-        throw new ClientError("The encrypted local outbox is full. Retry or discard pending sends before adding another message.");
-      }
-      await persistOutbox(record);
+      await deviceLock(`outbox-capacity:${identity.publicId}`, async () => {
+        const records = [...await readHistoryRecords(`outbox:${identity.publicId}:`),
+          ...await readHistoryRecords(`mediaoutbox:${identity.publicId}:`)];
+        const bytes = records.reduce((sum, item) => sum + item.value.ciphertext.byteLength, 0);
+        if (records.length >= 100 || bytes + encoder.encode(JSON.stringify(record)).length + 16
+            > (file ? 16 : 32) * 1024 * 1024) {
+          throw new ClientError("The encrypted local outbox is full. Retry or discard pending sends before adding another message.");
+        }
+        await persistOutbox(record);
+      });
       // Ownership transfers to the durable outbox even if subsequent history persistence fails.
       if (file) clearAttachment();
-      else elements.messageInput.value = "";
+      elements.messageInput.value = "";
       await storeOutgoing(record);
     });
     try { await flushOutbox(); }
@@ -2486,6 +2809,7 @@ async function start() {
   // Apply the first chat snapshot before revealing the workspace. Failed refreshes
   // still reveal saved local history.
   if (!elements.loadingPanel.hidden) updateIdentityUi();
+  if (!invitePending && selectedChatId) renderMessages(true);
   if (!invitePending && identity?.token) connectSocket();
   window.setInterval(synchronize, POLL_INTERVAL_MS);
   window.setInterval(updateSessionCountdown, 1000);
@@ -2520,20 +2844,25 @@ window.addEventListener("online", () => {
 });
 window.addEventListener("offline", disconnectSocket);
 window.addEventListener("pagehide", () => {
+  mediaPreviews?.clear();
+  stopMediaTransfers();
   for (const url of downloadUrls.keys()) releaseDownload(url);
   pageActive = false;
   disconnectSocket();
 });
 window.addEventListener("pageshow", (event) => {
   pageActive = true;
+  scheduleVisiblePreviews();
   if (event.persisted) {
     connectSocket();
     void synchronize();
   }
 });
 document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") mediaPreviews?.clear();
   refreshVisibleReads();
   if (document.visibilityState === "visible") {
+    scheduleVisiblePreviews();
     // Timers can be suspended in background tabs. Expired leases remain unknown
     // until a fresh snapshot arrives; request one on the existing socket.
     renderPresence();
@@ -2548,6 +2877,7 @@ window.addEventListener("blur", () => {
   viewTimers.clear();
 });
 window.addEventListener("resize", () => {
+  scheduleVisiblePreviews();
   refreshVisibleReads();
   positionMessageDetails();
 });

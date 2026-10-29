@@ -111,6 +111,14 @@ class SendMessageRequest(BaseModel):
 
     client_message_id: str = Field(..., min_length=1, max_length=64)
     envelopes: list[MessageEnvelope] = Field(..., min_length=1, max_length=100)
+    channel: Literal["message", "media"] = "message"
+
+
+class MediaReadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sender_public_id: str = Field(..., min_length=1, max_length=64)
+    client_message_id: str = Field(..., min_length=1, max_length=64)
 
 
 class TimestampedPayload(BaseModel):

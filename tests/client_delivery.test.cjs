@@ -4,12 +4,12 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 function client(persistHistory = false) {
-  const element = { addEventListener() {} };
+  const element = { events: new Map(), addEventListener(name, handler) { this.events.set(name, handler); } };
   const context = vm.createContext({
     TextEncoder, TextDecoder, DOMException,
     crypto: require('node:crypto').webcrypto, btoa,
     document: { querySelector: () => element, addEventListener() {} },
-    window: { addEventListener() {} },
+    window: { addEventListener() {}, setTimeout() { return 1; }, clearTimeout() {} },
   });
   const source = fs.readFileSync('app/static/client.js', 'utf8');
   vm.runInContext(fs.readFileSync('app/static/client-protocol.js', 'utf8'), context);
@@ -29,6 +29,7 @@ function renderingClient(persistHistory = false) {
     class TestNode {
       constructor() { this.dataset = {}; this.children = []; this.scrollTop = 0; this.clientHeight = 100; }
       addEventListener() {}
+      emit(name) { this.events.get(name)?.({}); }
       setAttribute(name, value) { this[name] = value; }
       get firstChild() { return this.children[0]; }
       get scrollHeight() { return this.children.length * 100; }
@@ -48,6 +49,7 @@ function renderingClient(persistHistory = false) {
     document.createElement = () => new TestNode();
     document.createElementNS = () => new TestNode();
     elements.messageList = new TestNode();
+    elements.messageList.events = document.querySelector("#message-list").events;
     selectedChatId = 7;
     messagesByChat.set(7, [
       { id: 'a', text: 'first', createdAt: 1 },
@@ -355,7 +357,7 @@ test('receipt metadata stays hidden and uses its explicit message and reader ide
 
 test('incoming messages preserve existing nodes, chronological order, and reading position', async () => {
   const run = renderingClient();
-  await run(`elements.messageList.scrollTop = 50;
+  await run(`elements.messageList.scrollTop = 50; elements.messageList.emit("scroll");
     appendMessage(7, { id: 'b', text: '<b>plain text</b>', createdAt: 2 })`);
   assert.equal(run('elements.messageList.scrollTop'), 50);
   assert.equal(run('elements.messageList.children[0] === originalNodes[0]'), true);
@@ -436,7 +438,7 @@ for (const mobile of [false, true]) {
     assert.equal(run('elements.messageList.children.length'), 6);
     assert.equal(run('elements.messageList.scrollTop'), 500);
     assert.equal(run('elements.messageList.children[5].messageContent.textContent'), 'message 5');
-    await run(`elements.messageList.scrollTop = 100;
+    await run(`elements.messageList.scrollTop = 100; elements.messageList.emit("scroll");
       appendMessage(7, { id: 'new-message', text: 'latest', createdAt: 7 }, false)`);
     assert.equal(run('elements.messageList.scrollTop'), 100);
   });

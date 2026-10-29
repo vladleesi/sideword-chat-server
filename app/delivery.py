@@ -107,6 +107,7 @@ async def queued_messages(session: AsyncSession, user_id: int) -> list[IncomingM
     sizes = await session.execute(select(
         PendingMessage.delivery_id, func.length(PendingMessage.ciphertext),
     ).where(PendingMessage.recipient_id == user_id, PendingMessage.expires_at > now,
+            PendingMessage.channel == "message",
             PendingMessage.chat_id.in_(open_chat_ids(user_id)))
       .order_by(PendingMessage.id.asc()).limit(100))
     ids = []
@@ -123,6 +124,7 @@ async def queued_messages(session: AsyncSession, user_id: int) -> list[IncomingM
         .join(User, User.id == PendingMessage.sender_id)
         .where(PendingMessage.delivery_id.in_(ids), PendingMessage.recipient_id == user_id,
                PendingMessage.expires_at > now,
+               PendingMessage.channel == "message",
                PendingMessage.chat_id.in_(open_chat_ids(user_id)))
         .order_by(PendingMessage.id.asc()))
     return [IncomingMessage(

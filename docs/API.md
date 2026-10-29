@@ -57,7 +57,26 @@ invite URLs, credentials and request bodies out of logs.
 
 Cover every member except the sender exactly once. Persist immutable envelopes
 before upload. Each logical message needs a unique ID and an agreed [protocol](PROTOCOL.md).
-File metadata/bytes stay inside ciphertext; there is no attachment URL/endpoint.
+Text and attachment references use the default `channel: "message"`; media bytes use
+`channel: "media"`. Both remain encrypted. See [encrypted media](#encrypted-media).
+
+### Encrypted media
+
+First send the small encrypted reference as a normal message. Upload its separate
+per-recipient media envelopes through the same send endpoint with `channel: "media"`
+and `client_message_id` equal to `<parent-id>.media`. The sender's parent ledger must
+exist, recipients must match, and content expiry is inherited from the parent.
+Media shares relay quotas, idempotency, purge and backup exclusions with other ciphertext.
+
+`POST /api/v1/chats/{chat_id}/media/read` accepts
+`{"sender_public_id":"<sender>","client_message_id":"<parent-id>.media"}` and returns one
+`IncomingMessage`. It requires a live session and membership in an open chat, serves
+only the authenticated recipient's unexpired media, and returns 404 when unavailable.
+Responses are `no-store`, uncompressed; filenames/types never appear in routing.
+
+Media is excluded from WS/poll message delivery. Use separate exact ACKs after durable
+reference storage and verified file storage. Each deletes only that recipient's delivery;
+the message's delivered/viewed status describes its text/reference, not file completion.
 Acceptance includes original `recipients`, a public-ID→`delivery_id` map, `created_at`
 and fixed `content_expires_at` (seven days by default, configurable 1–30).
 
