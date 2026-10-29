@@ -6,16 +6,16 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#F1F0EA">
   <meta name="theme-color" content="#111210" media="(prefers-color-scheme: dark)">
-  <meta name="description" content="Open-source, self-hosted backend for temporary private chat. Build custom clients on HTTP and WebSocket APIs with expiring invites and encrypted payload relay.">
-  <title>Sideword Server | Open-Source, Self-Hosted Chat Backend</title>
+  <meta name="description" content="Open-source FastAPI chat backend with HTTP and WebSocket APIs, expiring invites and encrypted relay. Self-host with Docker or Python and build your own client.">
+  <title>Sideword Server | Self-Hosted Chat API &amp; WebSocket Backend</title>
   <link rel="canonical" href="https://vladleesi.dev/sideword-chat-server/">
   <link rel="sitemap" type="application/xml" href="./sitemap.xml">
   <meta name="robots" content="index, follow, max-image-preview:large">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Sideword Server">
   <meta property="og:locale" content="en_US">
-  <meta property="og:title" content="Sideword Server | Open-Source, Self-Hosted Chat Backend">
-  <meta property="og:description" content="Open-source, self-hosted backend for temporary private chat. Build custom clients on HTTP and WebSocket APIs with expiring invites and encrypted payload relay.">
+  <meta property="og:title" content="Sideword Server | Self-Hosted Chat API &amp; WebSocket Backend">
+  <meta property="og:description" content="Open-source FastAPI chat backend with HTTP and WebSocket APIs, expiring invites and encrypted relay. Self-host with Docker or Python and build your own client.">
   <meta property="og:url" content="https://vladleesi.dev/sideword-chat-server/">
   <meta property="og:image" content="https://vladleesi.dev/sideword-chat-server/social-card.png">
   <meta property="og:image:type" content="image/png">
@@ -23,17 +23,17 @@
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="Sideword Server. Open-source, self-hosted backend for temporary private chat. HTTP API, WebSocket relay, and expiring invites.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Sideword Server | Open-Source, Self-Hosted Chat Backend">
-  <meta name="twitter:description" content="Open-source, self-hosted backend for temporary private chat. Build custom clients on HTTP and WebSocket APIs with expiring invites and encrypted payload relay.">
+  <meta name="twitter:title" content="Sideword Server | Self-Hosted Chat API &amp; WebSocket Backend">
+  <meta name="twitter:description" content="Open-source FastAPI chat backend with HTTP and WebSocket APIs, expiring invites and encrypted relay. Self-host with Docker or Python and build your own client.">
   <meta name="twitter:image" content="https://vladleesi.dev/sideword-chat-server/social-card.png">
   <meta name="twitter:image:alt" content="Sideword Server. Open-source, self-hosted backend for temporary private chat. HTTP API, WebSocket relay, and expiring invites.">
   <link rel="icon" href="./mark.svg?v=3" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./apple-touch-icon.png?v=1">
-  <link rel="preload" href="./fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="./fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="./fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./fonts/IBMPlexSans-Medium-Latin1.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./fonts/IBMPlexSans-SemiBold-Latin1.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./fonts/IBMPlexMono-Medium-Latin1.woff2" as="font" type="font/woff2" crossorigin>
   <script src="./theme.js?v=2"></script>
-  <link rel="stylesheet" href="./site.css?v=26">
+  <link rel="stylesheet" href="./site.css?v=28">
   <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -43,20 +43,20 @@
       "@id": "https://vladleesi.dev/sideword-chat-server/#website",
       "url": "https://vladleesi.dev/sideword-chat-server/",
       "name": "Sideword Server",
-      "description": "Open-source, self-hosted backend for temporary private chat. Build custom clients on HTTP and WebSocket APIs with expiring invites and encrypted payload relay.",
+      "description": "Open-source FastAPI chat backend with HTTP and WebSocket APIs, expiring invites and encrypted relay. Self-host with Docker or Python and build your own client.",
       "inLanguage": "en"
     },
     {
       "@type": "WebPage",
       "@id": "https://vladleesi.dev/sideword-chat-server/#webpage",
       "url": "https://vladleesi.dev/sideword-chat-server/",
-      "name": "Sideword Server | Open-Source, Self-Hosted Chat Backend",
-      "description": "Open-source, self-hosted backend for temporary private chat. Build custom clients on HTTP and WebSocket APIs with expiring invites and encrypted payload relay.",
+      "name": "Sideword Server | Self-Hosted Chat API & WebSocket Backend",
+      "description": "Open-source FastAPI chat backend with HTTP and WebSocket APIs, expiring invites and encrypted relay. Self-host with Docker or Python and build your own client.",
       "inLanguage": "en",
       "isPartOf": {
         "@id": "https://vladleesi.dev/sideword-chat-server/#website"
       },
-      "about": {
+      "mainEntity": {
         "@id": "https://vladleesi.dev/sideword-chat-server/#software"
       },
       "primaryImageOfPage": {
@@ -70,7 +70,7 @@
       "@type": "SoftwareSourceCode",
       "@id": "https://vladleesi.dev/sideword-chat-server/#software",
       "name": "Sideword Server",
-      "description": "Open-source, self-hosted backend for temporary private chat. Build custom clients on HTTP and WebSocket APIs with expiring invites and encrypted payload relay.",
+      "description": "Open-source FastAPI chat backend with HTTP and WebSocket APIs, expiring invites and encrypted relay. Self-host with Docker or Python and build your own client.",
       "url": "https://vladleesi.dev/sideword-chat-server/",
       "codeRepository": "https://github.com/vladleesi/sideword-chat-server",
       "license": "https://opensource.org/license/mit",
@@ -104,7 +104,7 @@
       <div class="hero-copy">
         <p class="eyebrow"><span class="signal" aria-hidden="true"></span> Open source / Self-hosted / MIT</p>
         <h1 id="hero-title">Private chat.<br><span class="hero-accent">Your server.</span></h1>
-        <p class="lead">A self-hosted backend for temporary private chat. Expiring invites, encrypted relay, and an API for your client.</p>
+        <p class="lead">An open-source, self-hosted chat backend built with FastAPI and SQLite. Expiring invites, encrypted relay, and HTTP and WebSocket APIs for your client.</p>
         <div class="actions">
           <a class="button primary" href="#deploy">Self-host <span aria-hidden="true">&#8594;</span></a>
           <a class="text-link" href="https://github.com/vladleesi/sideword-chat-server">View on GitHub <span aria-hidden="true">&#8599;</span></a>
@@ -131,7 +131,7 @@
     <section class="features wrap" id="privacy" aria-labelledby="privacy-title">
       <div class="section-intro">
         <p class="eyebrow">01 / Capabilities</p>
-        <h2 id="privacy-title">Small surface.<br>Clear behavior.</h2>
+        <h2 id="privacy-title">Temporary chat.<br>Clear behavior.</h2>
         <p>Room lifecycle and delivery primitives for your application.</p>
       </div>
       <div class="feature-list">
@@ -164,7 +164,7 @@
 
     <section class="how wrap" id="how-it-works" aria-labelledby="how-title">
       <div class="section-heading">
-        <div><p class="eyebrow">02 / Architecture</p><h2 id="how-title">A relay with<br>clear boundaries.</h2></div>
+        <div><p class="eyebrow">02 / Architecture</p><h2 id="how-title">Encrypted relay.<br>Clear boundaries.</h2></div>
         <a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/tree/main/app">Inspect the implementation <span aria-hidden="true">&#8599;</span></a>
       </div>
       <figure class="relay-diagram" aria-labelledby="relay-caption">
@@ -184,7 +184,7 @@
 
     <section class="developer wrap" id="api" aria-labelledby="api-title">
       <div class="section-heading">
-        <div><p class="eyebrow">03 / API</p><h2 id="api-title">A contract for<br>your client.</h2></div>
+        <div><p class="eyebrow">03 / API</p><h2 id="api-title">HTTP + WebSocket.<br>Your client.</h2></div>
         <a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/API.md">API reference <span aria-hidden="true">&#8599;</span></a>
       </div>
       <div class="developer-grid">
@@ -216,7 +216,7 @@
     <section class="open-source wrap" id="deploy" aria-labelledby="source-title">
       <div class="deploy-copy">
         <p class="eyebrow">04 / Self-host</p>
-        <h2 id="source-title">Run it on<br>your terms.</h2>
+        <h2 id="source-title">Self-host with<br>Docker or Python.</h2>
         <p>MIT-licensed FastAPI and SQLite. Run with Python or Docker Compose; expose HTTPS and keep administration private.</p>
         <div class="actions">
           <a class="button primary" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/UPGRADING.md#public-deployment-controls">Deployment guide <span aria-hidden="true">&#8599;</span></a>
