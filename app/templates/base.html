@@ -4,12 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Sideword{% endblock %}</title>
-  <link rel="stylesheet" href="/static/admin.css?v=17">
+  <link rel="icon" href="/static/mark.svg?v=1" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=1">
+  <link rel="stylesheet" href="/static/admin.css?v=18">
   <script src="/static/admin-actions.js?v=2" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/admin/">Sideword</a>
+    <a class="brand" href="/admin/"><img src="/static/mark.svg?v=1" width="28" height="28" alt="">Sideword</a>
     {% if admin %}
     <nav>
       <a href="/admin/">Overview</a>

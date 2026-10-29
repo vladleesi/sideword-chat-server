@@ -70,6 +70,7 @@
 }
 
 * { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 body { margin: 0; }
 h1, h2, h3, p, figure, dl { margin: 0; }
 h1, h2, h3 { font-weight: 500; }
@@ -87,7 +88,7 @@ a:focus-visible, button:focus-visible, pre:focus-visible { outline: 2px solid va
 .skip-link:focus { transform: translateY(0); }
 
 .header { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 64px; border-bottom: 1px solid var(--border); }
-.brand { display: inline-flex; gap: 8px; align-items: baseline; white-space: nowrap; font-size: 14px; font-weight: 500; letter-spacing: .02em; }
+.brand { display: inline-flex; gap: 8px; align-items: center; white-space: nowrap; font-size: 14px; font-weight: 500; letter-spacing: .02em; }
 .brand span { color: var(--text-secondary); font-weight: 400; }
 .header-controls { display: flex; align-items: center; gap: 24px; min-width: 0; }
 .theme-toggle { flex-shrink: 0; background: transparent; color: var(--text-primary); border: 1px solid var(--border); border-radius: 2px; padding: 8px; min-height: 32px; font-family: var(--mono); font-size: 12px; line-height: 1.4; text-transform: uppercase; cursor: pointer; transition: color 150ms, border-color 150ms; }

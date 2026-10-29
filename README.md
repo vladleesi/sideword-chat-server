@@ -1,7 +1,16 @@
-# Sideword Server
+<p align="center"><img src="docs/mark.svg" alt="Sideword" width="96" height="96"></p>
 
-[![Tests](https://github.com/vladleesi/sideword-chat-server/actions/workflows/test.yml/badge.svg)](https://github.com/vladleesi/sideword-chat-server/actions/workflows/test.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<h1 align="center">Sideword Chat Server</h1>
+
+<p align="center">
+  <a href="https://github.com/vladleesi/sideword-chat-server/releases/latest"><img src="https://img.shields.io/github/v/release/vladleesi/sideword-chat-server?style=flat-square&amp;label=Release" alt="Latest release"></a>
+  <a href="https://github.com/vladleesi/sideword-chat-server/actions/workflows/test.yml?query=branch%3Adevelop"><img src="https://img.shields.io/github/actions/workflow/status/vladleesi/sideword-chat-server/test.yml?branch=develop&amp;event=push&amp;label=Tests&amp;style=flat-square" alt="Tests on develop"></a>
+  <a href="#run-locally"><img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.12+"></a>
+  <a href="https://fastapi.tiangolo.com/"><img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&amp;logo=fastapi&amp;logoColor=white" alt="FastAPI"></a>
+  <a href="https://www.sqlite.org/"><img src="https://img.shields.io/badge/SQLite-003B57?style=flat-square&amp;logo=sqlite&amp;logoColor=white" alt="SQLite"></a>
+  <a href="#docker"><img src="https://img.shields.io/badge/Docker-2496ED?style=flat-square&amp;logo=docker&amp;logoColor=white" alt="Docker"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License: MIT"></a>
+</p>
 
 Self-hosted FastAPI/SQLite backend for invite-only personal and group chats.
 Clients encrypt content; the relay removes ciphertext after durable ACK or expiry.
