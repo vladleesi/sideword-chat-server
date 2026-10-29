@@ -1,6 +1,6 @@
 # Security review
 
-**Reviewed:** 2026-10-28 · **Backend:** 0.15.1. Maintainer source/test review;
+**Reviewed:** 2026-10-28 · **Backend:** 0.16.0. Maintainer source/test review;
 not an independent security or cryptographic audit. [Report vulnerabilities](../SECURITY.md).
 
 ## Controls and supporting evidence
@@ -13,7 +13,7 @@ not an independent security or cryptographic audit. [Report vulnerabilities](../
 | Delivery | Exact owner-bound references, atomic delivery receipts, immutable retries and persistence before ACK; [tests](../tests/client_delivery.test.cjs), [status](../tests/test_message_status.py) |
 | Attachments | Strict payload/size validation, ciphertext-only relay, gesture-only paste/drop and safe explicit downloads; [client](../tests/client_attachments.test.cjs), [relay](../tests/test_attachments.py) |
 | Capacity/browser | Bounded requests/queues, CSP, text-only rendering, no-store, CSRF and redacted errors; [guards](../app/guards.py), [tests](../tests/test_security_stages.py) |
-| Build/deployment | Exact-commit gates, non-root images, schema/health preflight and backups; [CI](../.github/workflows/test.yml), [deployment tests](../tests/test_deploy.py) |
+| Build/deployment | Exact-image gates, non-root images, recoverable pre-1.0 resets and verified cleanup; [CI](../.github/workflows/test.yml), [deployment tests](../tests/test_deploy.py) |
 
 ## Threat model and limits
 
@@ -49,7 +49,7 @@ revocation/deletion cannot erase. Card viewing does not confirm file opening.
 | --- | --- |
 | F-01 · Medium · P1 | Independent protocol review; stronger secrecy needs a reviewed ratchet/group design. |
 | F-03 · Medium · P1 | Verify credential redaction at every logging layer and protect exports; no-referrer does not erase browser history/logs. |
-| F-04 · Low · P2 | Set host backup/rollback-image retention, test restores and monitor disk. Registry cleanup does not prune host copies. |
+| F-04 · Low · P2 | Manage untracked backups/rollback images, test restores and monitor disk; automatic cleanup covers inventoried deployment backups only. |
 | F-06 · Low · P2 | Preserve checked image digests and advisory monitoring; dependency ranges/numeric Action tags can resolve differently. |
 
 ## Verification record and gaps
@@ -57,8 +57,11 @@ revocation/deletion cannot erase. Card viewing does not confirm file opening.
 Synthetic Python/Node regressions cover payload boundaries/tampering, peer mismatch,
 authorization, ciphertext persistence, duplicate WS/poll delivery, reload retries,
 quota failures withholding ACKs, deletion/expiry, safe downloads and transfer gestures.
-Deployment regressions use isolated command fakes for config/manifest/index image IDs,
-provenance indexes, config-digest normalization and rejection of unrelated/ambiguous images.
+Client edge cases cover background ACKs, queued duplicates/retries and focus/storage loss before reads.
+Deployment regressions use fake commands and real SQLite to check digest binding,
+version-aware resets, interrupted recovery/cleanup, writer locks, path/permission tampering
+and redacted failures. Live Docker/VM behavior remains unverified. Failed replacements can
+retain the original queue privately until [recovery completes](UPGRADING.md#upgrade).
 These do not establish browser/OS behavior, native interoperability or deployed memory,
 proxy/IAM/log/backup controls. Independent cryptographic review remains outstanding.
 

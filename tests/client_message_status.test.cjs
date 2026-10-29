@@ -229,6 +229,43 @@ async function incoming(options = {}) {
   return app;
 }
 
+for (const state of ['hidden', 'unfocused']) {
+  test(`a queued dwell callback cannot send reads after becoming ${state}`, async () => {
+    const app = await incoming();
+    app.intersect(app.nodes.get('#message-list').firstChild);
+    app.run('inboundQueue = new Promise(resolve => { globalThis.releaseQueue = resolve; });');
+    const firing = app.fireViews();
+    if (state === 'hidden') app.document.visibilityState = 'hidden';
+    else app.document.focused = false;
+    app.run('releaseQueue()');
+    await firing;
+    assert.equal(app.run('calls.length'), 1);
+    assert.equal(app.run('pendingReadsByChat.size'), 0);
+    app.document.visibilityState = 'visible';
+    app.document.focused = true;
+    app.run('refreshVisibleReads()');
+    assert.equal(app.run('calls.length'), 1);
+    await app.fireViews();
+    assert.equal(app.run('calls.length'), 2);
+    assert.match(app.run('calls[1].path'), /read\/exact$/);
+  });
+}
+
+test('failed viewing-evidence storage withholds reads and remains retryable', async () => {
+  const app = await incoming();
+  app.run(`persistHistoryEntry = async (chat, entry) => {
+    if (entry.kind === 'viewed') throw new Error('synthetic viewing storage failure');
+  }; showToast = () => {};`);
+  app.intersect(app.nodes.get('#message-list').firstChild);
+  await app.fireViews();
+  assert.equal(app.run('calls.length'), 1);
+  assert.equal(app.run('pendingReadsByChat.size'), 0);
+  app.run('persistHistoryEntry = async () => {}; refreshVisibleReads();');
+  await app.fireViews();
+  assert.equal(app.run('calls.length'), 2);
+  assert.match(app.run('calls[1].path'), /read\/exact$/);
+});
+
 test('durable incoming delivery is immediate and viewing requires continuous visible dwell', async () => {
   const app = await incoming(); const bubble=app.nodes.get('#message-list').firstChild;
   assert.equal(bubble.messageFooter,undefined);

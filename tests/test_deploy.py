@@ -73,10 +73,17 @@ def host(monkeypatch, candidate, tmp_path):
         "active": False,
         "label": SHA,
         "version": candidate.version,
+        "installed_version": candidate.version,
+        "previous_version": candidate.version,
+        "tagged_image": PREVIOUS,
+        "running_image": PREVIOUS,
+        "no_container": False,
         "database": database,
         "image_id": IMAGE,
         "references": [REFERENCE],
-        "service": {"image": "sideword:private"},
+        "service": {"image": "sideword:private", "volumes": [
+            {"type": "bind", "source": str(database.parent), "target": "/data"},
+        ]},
         "schema": {"messages": ["body"]},
     }
     previous = {
@@ -92,10 +99,17 @@ def host(monkeypatch, candidate, tmp_path):
         if "config" in command:
             return json.dumps({"services": {"sideword": state["service"]}})
         if "ps" in command:
+            if state["no_container"]:
+                return ""
             return "container\n"
+        if "--no-start" in command:
+            state["no_container"] = False
+            state["running_image"] = state["tagged_image"]
+        if command[:3] == ["docker", "image", "tag"] and command[4] == "sideword:private":
+            state["tagged_image"] = command[3]
         if command[:3] == ["docker", "image", "inspect"]:
             if command[3] == "sideword:private":
-                return json.dumps([{"Id": PREVIOUS}])
+                return json.dumps([{"Id": state["tagged_image"]}])
             return json.dumps(
                 [
                     {
@@ -106,15 +120,32 @@ def host(monkeypatch, candidate, tmp_path):
                 ]
             )
         if command[:2] == ["docker", "inspect"]:
-            if not state["active"]:
-                return json.dumps([previous])
             return json.dumps(
-                [{"Image": state["image_id"], "State": {"Health": {"Status": "healthy"}}}]
+                [{**previous, "Image": state["running_image"], "State": {
+                    "Running": state["active"], "Health": {"Status": "healthy"},
+                }}]
             )
         if command[:2] == ["docker", "run"]:
+            if "--mount" in command:
+                descriptor = os.open(state["database"], os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.close(descriptor)
+                with sqlite3.connect(state["database"]) as connection:
+                    connection.execute("PRAGMA secure_delete=ON")
+                    connection.execute("PRAGMA journal_mode=TRUNCATE")
+                    for table, columns in state["schema"].items():
+                        fields = ", ".join(f'"{column}" TEXT' for column in columns)
+                        connection.execute(f'CREATE TABLE "{table}" ({fields})')
+                return ""
+            if "tables" not in command[-1]:
+                return state["installed_version"]
             return json.dumps({"version": state["version"], "tables": state["schema"]})
-        if "up" in command:
+        if "up" in command and "--no-start" not in command:
             state["active"] = True
+            state["running_image"] = state["tagged_image"]
+            state["installed_version"] = (
+                state["version"] if state["tagged_image"] == state["image_id"]
+                else state["previous_version"]
+            )
         if "stop" in command:
             state["active"] = False
         return ""
@@ -363,6 +394,648 @@ def test_incompatible_schema_never_stops_backend_or_changes_database(candidate, 
     assert state["database"].read_bytes() == original
     assert not any("stop" in command or "up" in command for command in commands)
     assert not list((candidate.compose.parent / "deployment-backups").glob("*.sqlite3"))
+
+
+@pytest.mark.parametrize("incompatible", [False, True])
+def test_prerelease_upgrade_resets_compatible_and_incompatible_databases(
+    candidate, host, incompatible
+):
+    commands, state, _ = host
+    state["installed_version"] = state["previous_version"] = "0.5.9"
+    if incompatible:
+        state["schema"]["messages"].append("new_column")
+    deploy.deploy_host(candidate)
+    with sqlite3.connect(state["database"]) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM messages").fetchone() == (0,)
+        assert {row[1] for row in connection.execute('PRAGMA table_info("messages")')} == set(
+            state["schema"]["messages"]
+        )
+    assert not (candidate.compose.parent / "database-deployment.json").exists()
+    assert not list((state["database"].parent / ".sideword-database-recovery").iterdir())
+    assert not list((candidate.compose.parent / "deployment-backups").glob("*.sqlite3"))
+    initializer = next(command for command in commands if "--mount" in command)
+    assert "--network" in initializer and "--read-only" in initializer
+    assert str(state["database"].parent) in initializer[initializer.index("--mount") + 1]
+    assert state["database"].stat().st_mode & 0o777 == 0o600
+    stop = next(command for command in commands if "stop" in command)
+    assert commands.index(stop) < commands.index(initializer)
+
+
+@pytest.mark.parametrize("no_container", [False, True])
+def test_fresh_install_initializes_persistent_storage(candidate, host, no_container):
+    commands, state, _ = host
+    state["database"].unlink()
+    state["no_container"] = no_container
+    deploy.deploy_host(candidate)
+    assert state["database"].exists()
+    assert state["active"]
+    assert bool([command for command in commands if "--no-start" in command]) == no_container
+    with sqlite3.connect(state["database"]) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM messages").fetchone() == (0,)
+
+
+def test_same_version_retry_and_container_recreation_preserve_data(candidate, host):
+    commands, state, _ = host
+    deploy.deploy_host(candidate)
+    deploy.deploy_host(candidate)
+    with sqlite3.connect(state["database"]) as connection:
+        assert connection.execute("SELECT body FROM messages").fetchone() == (
+            "synthetic retained message",
+        )
+    assert not any("--mount" in command for command in commands)
+    assert sum("up" in command for command in commands) == 2
+
+
+@pytest.mark.parametrize("old,target", [
+    ("0.6.1", "0.6.0"), ("0.10.0", "0.9.0"), ("1.0.0", "0.9.0"), ("2.1.0", "2.0.0"),
+])
+def test_downgrade_preserves_running_database(candidate, host, old, target):
+    commands, state, _ = host
+    candidate.version = state["version"] = target
+    state["installed_version"] = old
+    original = state["database"].read_bytes()
+    with pytest.raises(deploy.DeploymentError, match="downgrades"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert not any("stop" in command for command in commands)
+
+
+@pytest.mark.parametrize("old", ["0.9.0", "1.0.0"])
+def test_stable_upgrade_never_resets_incompatible_database(candidate, host, old):
+    commands, state, _ = host
+    candidate.version = state["version"] = "1.1.0"
+    state["installed_version"] = old
+    state["schema"]["messages"].append("new_column")
+    original = state["database"].read_bytes()
+    with pytest.raises(deploy.DeploymentError, match="schema is incompatible"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert not any("stop" in command for command in commands)
+
+
+@pytest.mark.parametrize("failure", ["initialize", "activate", "verify"])
+def test_failed_replacement_restores_database_and_image(candidate, host, monkeypatch, failure):
+    commands, state, _ = host
+    state["installed_version"] = state["previous_version"] = "0.5.9"
+    original = state["database"].read_bytes()
+    actual_run = deploy.run
+
+    def failed_run(command, **kwargs):
+        result = actual_run(command, **kwargs)
+        if ((failure == "initialize" and "--mount" in command)
+            or (failure == "activate" and "up" in command and state["tagged_image"] == IMAGE)):
+            raise deploy.DeploymentError("Synthetic activation failure.")
+        return result
+
+    monkeypatch.setattr(deploy, "run", failed_run)
+    actual_wait = deploy.wait_for_backend
+
+    def failed_wait(compose, image, version):
+        if failure == "verify" and image == IMAGE:
+            raise deploy.DeploymentError("Synthetic verification failure.")
+        return actual_wait(compose, image, version)
+
+    monkeypatch.setattr(deploy, "wait_for_backend", failed_wait)
+    with pytest.raises(deploy.DeploymentError, match="Synthetic"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert state["active"] and state["running_image"] == PREVIOUS
+    assert ["docker", "image", "tag", PREVIOUS, "sideword:private"] in commands
+    assert not (candidate.compose.parent / "database-deployment.json").exists()
+
+
+@pytest.mark.parametrize("point", ["initialize", "activate", "verified"])
+def test_interrupted_replacement_retries_without_losing_recovery(
+    candidate, host, monkeypatch, point
+):
+    _, state, _ = host
+    state["installed_version"] = state["previous_version"] = "0.5.9"
+    original_run, original_finish = deploy.run, deploy.DatabaseReplacement.finish
+
+    def interrupted_run(command, **kwargs):
+        result = original_run(command, **kwargs)
+        if ((point == "initialize" and "--mount" in command)
+            or (point == "activate" and "up" in command)):
+            raise SystemExit(1)
+        return result
+
+    def interrupted_finish(self):
+        if point == "verified":
+            with sqlite3.connect(state["database"]) as connection:
+                connection.execute("INSERT INTO messages VALUES ('synthetic new state')")
+            raise SystemExit(1)
+        original_finish(self)
+
+    monkeypatch.setattr(deploy, "run", interrupted_run)
+    monkeypatch.setattr(deploy.DatabaseReplacement, "finish", interrupted_finish)
+    with pytest.raises(SystemExit):
+        deploy.deploy_host(candidate)
+    recovery = state["database"].parent / ".sideword-database-recovery" / "database"
+    assert recovery.exists()
+    with sqlite3.connect(recovery) as connection:
+        assert connection.execute("SELECT body FROM messages").fetchone() == (
+            "synthetic retained message",
+        )
+    monkeypatch.setattr(deploy, "run", original_run)
+    monkeypatch.setattr(deploy.DatabaseReplacement, "finish", original_finish)
+    deploy.deploy_host(candidate)
+    with sqlite3.connect(state["database"]) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM messages").fetchone() == (
+            1 if point == "verified" else 0,
+        )
+    assert not recovery.exists()
+
+
+def test_successful_replacement_cleans_only_registered_backups(candidate, host):
+    _, state, _ = host
+    deploy.deploy_host(candidate)  # This same-version deployment registers a logical backup.
+    backups = candidate.compose.parent / "deployment-backups"
+    owned = list(backups.glob("*.sqlite3"))
+    owned_family = [path for path in backups.iterdir() if path.name != "managed.json"]
+    assert owned
+    unrelated = backups / "unrelated.sqlite3"
+    unrelated.write_bytes(b"synthetic unrelated file")
+    old_untracked = backups / "pre-deploy-20200101T000000000000Z.sqlite3"
+    old_untracked.write_bytes(b"synthetic untracked backup")
+    other_database = state["database"].parent / "unrelated.sqlite3"
+    other_database.write_bytes(b"synthetic unrelated database")
+    candidate.version = state["version"] = "0.7.0"
+    deploy.deploy_host(candidate)
+    assert all(not path.exists() for path in owned)
+    assert all(not path.exists() for path in owned_family)
+    assert not (backups / "managed.json").exists()
+    assert unrelated.read_bytes() == b"synthetic unrelated file"
+    assert old_untracked.read_bytes() == b"synthetic untracked backup"
+    assert other_database.read_bytes() == b"synthetic unrelated database"
+
+
+@pytest.mark.parametrize("cut", [1, 2, 3, 4])
+@pytest.mark.parametrize("operation", ["prepare", "restore"])
+def test_partial_sqlite_family_moves_are_recoverable(candidate, host, monkeypatch, cut, operation):
+    _, state, _ = host
+    database = state["database"]
+    originals = {suffix: (b"synthetic old" + suffix.encode()) for suffix in deploy.SQLITE_SUFFIXES}
+    for suffix, content in originals.items():
+        Path(str(database) + suffix).write_bytes(content)
+    replacement = deploy.DatabaseReplacement(candidate.compose, database)
+    original_rename = deploy.os.rename
+    count = 0
+
+    def cut_rename(source, destination):
+        nonlocal count
+        original_rename(source, destination)
+        count += 1
+        if count == cut:
+            raise SystemExit(1)
+
+    if operation == "restore":
+        replacement.prepare(PREVIOUS, "0.5.0")
+        for suffix in originals:
+            Path(str(database) + suffix).write_bytes(b"synthetic new")
+    monkeypatch.setattr(deploy.os, "rename", cut_rename)
+    with pytest.raises(SystemExit):
+        if operation == "prepare":
+            replacement.prepare(PREVIOUS, "0.5.0")
+        else:
+            replacement.restore()
+    monkeypatch.setattr(deploy.os, "rename", original_rename)
+    recovered = deploy.DatabaseReplacement(candidate.compose, database)
+    recovered.restore()
+    recovered.finish()
+    assert all(Path(str(database) + suffix).read_bytes() == content
+               for suffix, content in originals.items())
+
+
+def test_failed_rollback_retains_journal_and_can_retry(candidate, host, monkeypatch):
+    _, state, _ = host
+    state["installed_version"] = state["previous_version"] = "0.5.9"
+    original = state["database"].read_bytes()
+    actual_run = deploy.run
+
+    def failed_start(command, **kwargs):
+        result = actual_run(command, **kwargs)
+        if "up" in command:
+            raise deploy.DeploymentError("Synthetic startup failure.")
+        return result
+
+    monkeypatch.setattr(deploy, "run", failed_start)
+    with pytest.raises(deploy.DeploymentError, match="recovery could not be completed safely"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert not state["active"]
+    assert (candidate.compose.parent / "database-deployment.json").exists()
+    monkeypatch.setattr(deploy, "run", actual_run)
+    deploy.deploy_host(candidate)
+    assert state["active"] and state["running_image"] == IMAGE
+
+
+def test_replacement_refuses_changed_mount_without_touching_database(candidate, host):
+    commands, state, _ = host
+    state["installed_version"] = "0.5.9"
+    state["service"]["volumes"][0]["source"] += "-different"
+    original = state["database"].read_bytes()
+    with pytest.raises(deploy.DeploymentError, match="unchanged persistent storage"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert not any("stop" in command for command in commands)
+
+
+def test_replacement_refuses_another_container_writer(candidate, host, monkeypatch):
+    _, state, previous = host
+    state["installed_version"] = "0.5.9"
+    original = state["database"].read_bytes()
+    actual_run = deploy.run
+
+    def shared_storage(command, **kwargs):
+        if command == ["docker", "ps", "-q"]:
+            return "another-container"
+        if command == ["docker", "inspect", "another-container"]:
+            return json.dumps([previous])
+        return actual_run(command, **kwargs)
+
+    monkeypatch.setattr(deploy, "run", shared_storage)
+    with pytest.raises(deploy.DeploymentError, match="shares the database storage"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert not (candidate.compose.parent / "database-deployment.json").exists()
+
+
+def test_recovery_directory_symlink_never_touches_unrelated_files(candidate, host, tmp_path):
+    _, state, _ = host
+    state["installed_version"] = "0.5.9"
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    marker = unrelated / "database"
+    marker.write_bytes(b"synthetic private unrelated file")
+    (state["database"].parent / ".sideword-database-recovery").symlink_to(unrelated)
+    original = state["database"].read_bytes()
+    with pytest.raises(deploy.DeploymentError, match="Unsafe database recovery directory"):
+        deploy.deploy_host(candidate)
+    assert marker.read_bytes() == b"synthetic private unrelated file"
+    assert state["database"].read_bytes() == original
+
+
+def test_initializer_runs_current_schema_and_deletion_policy_on_persistent_file(
+    monkeypatch, tmp_path
+):
+    database = tmp_path / "fresh.sqlite3"
+
+    def local_initializer(command, **kwargs):
+        code = command[-1] + (
+            "\nasync def verify():\n"
+            "    async with engine.connect() as connection:\n"
+            "        for pragma, expected in [('secure_delete', 1), "
+            "('journal_mode', 'truncate'), ('synchronous', 2), ('journal_size_limit', 0)]:\n"
+            "            result = await connection.exec_driver_sql('PRAGMA ' + pragma)\n"
+            "            assert result.scalar() == expected\n"
+            "    await engine.dispose()\n"
+            "asyncio.run(verify())\n"
+        )
+        environment = {**kwargs["env"], "SIDEWORD_DB_PATH": str(database)}
+        subprocess.run([sys.executable, "-c", code], env=environment,
+                       check=True, capture_output=True)
+        return ""
+
+    monkeypatch.setattr(deploy, "run", local_initializer)
+    deploy.initialize_database(database, IMAGE)
+    assert database.stat().st_mode & 0o777 == 0o600
+    with sqlite3.connect(database) as connection:
+        names = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert {"users", "links", "admin_sessions", "pending_messages"} <= names
+        for name in names:
+            assert connection.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone() == (0,)
+
+
+def test_stable_compatible_upgrade_preserves_existing_data(candidate, host):
+    commands, state, _ = host
+    candidate.version = state["version"] = "1.1.0"
+    state["installed_version"] = "1.0.0"
+    deploy.deploy_host(candidate)
+    with sqlite3.connect(state["database"]) as connection:
+        assert connection.execute("SELECT body FROM messages").fetchone() == (
+            "synthetic retained message",
+        )
+    assert not any("--mount" in command for command in commands)
+
+
+def test_changed_configuration_blocks_recovery_without_destroying_copy(
+    candidate, host, monkeypatch
+):
+    _, state, _ = host
+    state["installed_version"] = "0.5.9"
+    original_run = deploy.run
+
+    def interrupt(command, **kwargs):
+        result = original_run(command, **kwargs)
+        if "--mount" in command:
+            raise SystemExit(1)
+        return result
+
+    monkeypatch.setattr(deploy, "run", interrupt)
+    with pytest.raises(SystemExit):
+        deploy.deploy_host(candidate)
+    recovery = state["database"].parent / ".sideword-database-recovery" / "database"
+    original = recovery.read_bytes()
+    state["service"]["environment"] = {"SIDEWORD_DB_PATH": "/data/different.sqlite3"}
+    monkeypatch.setattr(deploy, "run", original_run)
+    with pytest.raises(deploy.DeploymentError, match="configuration changed"):
+        deploy.deploy_host(candidate)
+    assert recovery.read_bytes() == original
+    assert (candidate.compose.parent / "database-deployment.json").exists()
+
+
+def test_private_route_failure_rolls_back_reset_without_weakening_checks(
+    candidate, host, monkeypatch
+):
+    _, state, _ = host
+    state["installed_version"] = state["previous_version"] = "0.5.9"
+    original = state["database"].read_bytes()
+    checked = []
+
+    def verify_routes():
+        checked.append(state["running_image"])
+        if state["running_image"] == IMAGE:
+            raise deploy.DeploymentError("A private route was not blocked on the shared listener.")
+
+    monkeypatch.setattr(deploy, "verify_private_routes", verify_routes)
+    with pytest.raises(deploy.DeploymentError, match="private route"):
+        deploy.deploy_host(candidate)
+    assert checked == [IMAGE, PREVIOUS]
+    assert state["database"].read_bytes() == original
+    assert state["running_image"] == PREVIOUS
+
+
+def test_partial_verified_cleanup_retry_preserves_new_data(candidate, host, monkeypatch):
+    _, state, _ = host
+    state["installed_version"] = state["previous_version"] = "0.5.9"
+    original_prepare = deploy.DatabaseReplacement.prepare
+    original_unlink = Path.unlink
+
+    def prepare_family(self, *args):
+        Path(str(self.database) + "-journal").write_bytes(b"")
+        return original_prepare(self, *args)
+
+    def interrupted_unlink(path, *args, **kwargs):
+        result = original_unlink(path, *args, **kwargs)
+        if path.parent.name == ".sideword-database-recovery" and path.name == "database":
+            raise SystemExit(1)
+        return result
+
+    monkeypatch.setattr(deploy.DatabaseReplacement, "prepare", prepare_family)
+    monkeypatch.setattr(Path, "unlink", interrupted_unlink)
+    with pytest.raises(SystemExit):
+        deploy.deploy_host(candidate)
+    recovery = state["database"].parent / ".sideword-database-recovery"
+    assert not (recovery / "database").exists()
+    assert (recovery / "database-journal").exists()
+    with sqlite3.connect(state["database"]) as connection:
+        connection.execute("INSERT INTO messages VALUES ('synthetic confirmed state')")
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    deploy.deploy_host(candidate)
+    with sqlite3.connect(state["database"]) as connection:
+        assert connection.execute("SELECT body FROM messages").fetchone() == (
+            "synthetic confirmed state",
+        )
+    assert not list(recovery.iterdir())
+
+
+def test_managed_backup_symlink_is_never_deleted(candidate, host, tmp_path):
+    _, state, _ = host
+    deploy.deploy_host(candidate)
+    directory = candidate.compose.parent / "deployment-backups"
+    backup = next(directory.glob("*.sqlite3"))
+    unrelated = tmp_path / "unrelated-data"
+    unrelated.write_bytes(b"synthetic unrelated")
+    backup.unlink()
+    backup.symlink_to(unrelated)
+    candidate.version = state["version"] = "0.7.0"
+    with pytest.raises(deploy.DeploymentError, match="Unsafe deployment recovery metadata"):
+        deploy.deploy_host(candidate)
+    assert backup.is_symlink()
+    assert unrelated.read_bytes() == b"synthetic unrelated"
+    assert state["running_image"] == IMAGE and state["active"]
+    # Cleanup failure is journaled as verified: it never rolls back partially deleted state.
+    assert json.loads((candidate.compose.parent / "database-deployment.json").read_text())[
+        "phase"
+    ] == "verified"
+
+
+@pytest.mark.parametrize("reported_running", [True, None])
+def test_writer_shutdown_requires_explicit_stopped_confirmation(
+    candidate, host, monkeypatch, reported_running
+):
+    commands, state, _ = host
+    state["installed_version"] = "0.5.9"
+    original = state["database"].read_bytes()
+    actual_run = deploy.run
+
+    def unconfirmed_stop(command, **kwargs):
+        result = actual_run(command, **kwargs)
+        if command == ["docker", "inspect", "container"] and any(
+            "stop" in item for item in commands
+        ):
+            value = json.loads(result)
+            value[0]["State"]["Running"] = reported_running
+            return json.dumps(value)
+        return result
+
+    monkeypatch.setattr(deploy, "run", unconfirmed_stop)
+    with pytest.raises(deploy.DeploymentError, match="writers are still running"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert not any("--mount" in command or "up" in command for command in commands)
+    assert not (candidate.compose.parent / "database-deployment.json").exists()
+
+
+def test_sqlite_writer_lock_blocks_replacement_without_touching_state(
+    candidate, host, monkeypatch
+):
+    commands, state, _ = host
+    state["installed_version"] = "0.5.9"
+    original = state["database"].read_bytes()
+    connect = sqlite3.connect
+    writer = connect(state["database"])
+    writer.execute("BEGIN IMMEDIATE")
+
+    def connect_without_wait(*args, **kwargs):
+        return connect(*args, **{**kwargs, "timeout": 0})
+
+    monkeypatch.setattr(deploy.sqlite3, "connect", connect_without_wait)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            deploy.deploy_host(candidate)
+        assert state["database"].read_bytes() == original
+        assert not any("--mount" in command or "up" in command for command in commands)
+        assert not (candidate.compose.parent / "database-deployment.json").exists()
+    finally:
+        writer.rollback()
+        writer.close()
+
+
+@pytest.mark.parametrize("version", ["", "1.0", "0.06.0", "1.0.0-alpha.1", "synthetic-private"])
+def test_unknown_installed_version_never_authorizes_replacement(candidate, host, version, capsys):
+    commands, state, _ = host
+    state["installed_version"] = version
+    original = state["database"].read_bytes()
+    with pytest.raises(deploy.DeploymentError, match="installed backend version safely"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert not any("stop" in command for command in commands)
+    assert "synthetic-private" not in capsys.readouterr().out
+
+
+def test_initializer_public_permissions_trigger_full_rollback(candidate, host, monkeypatch):
+    _, state, _ = host
+    state["installed_version"] = state["previous_version"] = "0.5.9"
+    original = state["database"].read_bytes()
+    actual_run = deploy.run
+
+    def public_initializer(command, **kwargs):
+        result = actual_run(command, **kwargs)
+        if "--mount" in command:
+            state["database"].chmod(0o644)
+        return result
+
+    monkeypatch.setattr(deploy, "run", public_initializer)
+    with pytest.raises(deploy.DeploymentError, match="private permissions"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert state["database"].stat().st_mode & 0o777 == 0o600
+    assert state["running_image"] == PREVIOUS and state["active"]
+
+
+def test_hardlinked_database_is_not_replaced_or_deleted(candidate, host, tmp_path):
+    _, state, _ = host
+    state["installed_version"] = state["previous_version"] = "0.5.9"
+    alias = tmp_path / "unrelated-hardlink"
+    os.link(state["database"], alias)
+    original = alias.read_bytes()
+    with pytest.raises(deploy.DeploymentError, match="Unsafe database recovery file"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == alias.read_bytes() == original
+    assert state["running_image"] == PREVIOUS and state["active"]
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "public"])
+def test_unsafe_transaction_record_is_rejected_before_database_changes(
+    candidate, host, tmp_path, unsafe
+):
+    commands, state, _ = host
+    journal = candidate.compose.parent / "database-deployment.json"
+    unrelated = tmp_path / "unrelated-private"
+    unrelated.write_bytes(b"synthetic private metadata")
+    if unsafe == "symlink":
+        journal.symlink_to(unrelated)
+    else:
+        journal.write_text("{}")
+        journal.chmod(0o644)
+    original = state["database"].read_bytes()
+    with pytest.raises(deploy.DeploymentError, match="Unsafe deployment recovery metadata"):
+        deploy.deploy_host(candidate)
+    assert state["database"].read_bytes() == original
+    assert unrelated.read_bytes() == b"synthetic private metadata"
+    assert not any("stop" in command for command in commands)
+
+
+@pytest.mark.parametrize("tamper", ["database", "suffix"])
+def test_transaction_paths_cannot_redirect_recovery(candidate, host, tmp_path, tamper):
+    _, state, _ = host
+    database = state["database"]
+    original = database.read_bytes()
+    replacement = deploy.DatabaseReplacement(candidate.compose, database)
+    replacement.prepare(PREVIOUS, "0.5.9")
+    unrelated = tmp_path / "unrelated.sqlite3"
+    unrelated.write_bytes(b"synthetic unrelated data")
+    record = json.loads(replacement.path.read_text())
+    if tamper == "database":
+        record["database"] = str(unrelated)
+    else:
+        record["files"]["../../unrelated.sqlite3"] = [1, 2]
+    deploy.write_deployment_state(replacement.path, record)
+    with pytest.raises(deploy.DeploymentError, match="Unsafe deployment recovery metadata"):
+        deploy.DatabaseReplacement(candidate.compose, database)
+    assert replacement.retained("").read_bytes() == original
+    assert unrelated.read_bytes() == b"synthetic unrelated data"
+
+
+def test_replaced_recovery_inode_is_not_mistaken_for_original_database(candidate, host, tmp_path):
+    _, state, _ = host
+    replacement = deploy.DatabaseReplacement(candidate.compose, state["database"])
+    replacement.prepare(PREVIOUS, "0.5.9")
+    substitute = tmp_path / "substitute"
+    substitute.write_bytes(b"synthetic substituted file")
+    os.replace(substitute, replacement.retained(""))
+    state["database"].write_bytes(b"synthetic candidate data")
+    with pytest.raises(deploy.DeploymentError, match="recovery copy changed"):
+        replacement.restore()
+    assert replacement.retained("").read_bytes() == b"synthetic substituted file"
+    assert state["database"].read_bytes() == b"synthetic candidate data"
+    assert replacement.path.exists()
+
+
+@pytest.mark.parametrize("name", [
+    "../unrelated.sqlite3", "/unrelated.sqlite3", "unrelated.sqlite3",
+])
+def test_backup_inventory_cannot_delete_unrelated_paths(candidate, host, tmp_path, name):
+    deploy.deploy_host(candidate)
+    directory = candidate.compose.parent / "deployment-backups"
+    unrelated = tmp_path / "unrelated.sqlite3"
+    unrelated.write_bytes(b"synthetic unrelated data")
+    deploy.write_deployment_state(directory / "managed.json", {
+        name: {"": deploy.DatabaseReplacement.identity(unrelated)},
+    })
+    with pytest.raises(deploy.DeploymentError, match="Unsafe managed backup inventory"):
+        deploy.managed_backups(directory, cleanup=True)
+    assert unrelated.read_bytes() == b"synthetic unrelated data"
+    assert (directory / "managed.json").exists()
+
+
+def test_recovery_metadata_is_private_and_does_not_store_database_contents(candidate, host, capsys):
+    _, state, _ = host
+    replacement = deploy.DatabaseReplacement(candidate.compose, state["database"])
+    replacement.prepare(PREVIOUS, "0.5.9")
+    assert replacement.path.stat().st_mode & 0o777 == 0o600
+    assert replacement.directory.stat().st_mode & 0o777 == 0o700
+    assert replacement.retained("").stat().st_mode & 0o777 == 0o600
+    assert "synthetic retained message" not in replacement.path.read_text()
+    assert "PRIVATE_VALUE" not in replacement.path.read_text()
+    assert capsys.readouterr().out == ""
+    replacement.restore()
+    replacement.finish()
+
+
+def test_cli_redacts_initializer_failure_and_restores_previous_database(
+    candidate, host, monkeypatch, capsys
+):
+    _, state, _ = host
+    state["installed_version"] = state["previous_version"] = "0.5.9"
+    original = state["database"].read_bytes()
+    actual_run = deploy.run
+
+    def failed_initializer(command, **kwargs):
+        result = actual_run(command, **kwargs)
+        if "--mount" in command:
+            raise OSError("synthetic-private database contents and credentials")
+        return result
+
+    monkeypatch.setattr(deploy, "run", failed_initializer)
+    monkeypatch.setattr(deploy, "host_configuration", lambda args: setattr(
+        args, "compose", candidate.compose
+    ))
+    monkeypatch.setattr(sys, "argv", [
+        "deploy", "host", "--sha", SHA, "--image-id", IMAGE,
+        "--version", candidate.version, "--image-ref", REFERENCE,
+    ])
+    with pytest.raises(SystemExit) as failure:
+        deploy.main()
+    assert failure.value.code == 1
+    output = capsys.readouterr()
+    assert "synthetic-private" not in output.out + output.err
+    assert "Deployment failed; private details were not printed." in output.out
+    assert state["database"].read_bytes() == original
+    assert state["running_image"] == PREVIOUS and state["active"]
 
 
 def test_configured_fresh_database_preserves_old_database(candidate, host):

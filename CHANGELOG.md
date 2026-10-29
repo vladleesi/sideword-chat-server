@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.0 — 2026-10-28
+
+- Automatically reset server-side SQLite state on increasing pre-1.0 version deployments, even with compatible schemas; preserve same-version data, reject downgrades, and retain schema checks for stable releases.
+- Keep one private database recovery copy by rename on persistent storage, restore the previous database/image after failed activation, recover interrupted replacements, and remove recovery files and inventoried deployment backups only after full verification.
+- Preserve browser-local keys/history across server resets; users, invitations, sessions, queued messages and administrative records are recreated without migration or data transfer.
+
 ## 0.15.1 — 2026-10-28
 
 - Fix manual deployment publication with Docker containerd manifest/index IDs; verify the checked image through its registry manifest and normalize the config digest for host verification, including single-image BuildKit provenance indexes.

@@ -60,6 +60,88 @@ function renderingClient(persistHistory = false) {
   return run;
 }
 
+for (const state of ['hidden', 'unfocused']) {
+  test(`${state} recipients persist and ACK live messages without sending reads`, async () => {
+    const run = client();
+    await run(`(async () => {
+      document.visibilityState = ${JSON.stringify(state === 'hidden' ? 'hidden' : 'visible')};
+      document.hasFocus = () => false;
+      renderMessages = () => {};
+      globalThis.saved = [];
+      globalThis.sent = [];
+      persistHistoryEntry = async (chat, entry) => { saved.push(entry); };
+      api = async (path, options) => {
+        if (!saved.some(entry => entry.text === 'background')) throw new Error('ACK before save');
+        sent.push({path, body:JSON.parse(options.body)});
+      };
+      await enqueueIncoming(() => handleSocketPayload({type:'message', message:{
+        chat_id:7, sender_public_id:'peer', client_message_id:'background',
+        delivery_id:'a'.repeat(32), ciphertext:'background', created_at:'2026-10-28T12:00:00Z'
+      }}));
+    })()`);
+    assert.equal(run('seenMessageIds.size'), 1);
+    assert.equal(run('sent.length'), 1);
+    assert.equal(run('sent[0].path'), '/api/v1/ack/exact');
+    assert.equal(run('sent[0].body.messages.length'), 1);
+    assert.equal(run('pendingReadsByChat.size'), 0);
+  });
+}
+
+test('queued poll and socket duplicates wait for persistence and ACK one exact delivery', async () => {
+  const run = client();
+  run(`
+    renderMessages = () => {};
+    globalThis.acks = [];
+    globalThis.saves = 0;
+    globalThis.saved = false;
+    globalThis.gate = new Promise(resolve => { globalThis.release = resolve; });
+    persistHistoryEntry = async (chat, entry) => {
+      if (entry.kind === 'theirs') { saves++; await gate; saved = true; }
+    };
+    api = async (path, options) => {
+      if (!saved) throw new Error('ACK before persistence');
+      acks.push(JSON.parse(options.body).messages);
+    };
+    globalThis.message = {chat_id:7, sender_public_id:'peer', client_message_id:'same',
+      delivery_id:'a'.repeat(32), ciphertext:'one message', created_at:'2026-10-28T12:00:00Z'};
+    globalThis.first = enqueueIncoming(() => processIncoming({messages:[message]}));
+    globalThis.second = enqueueIncoming(() => handleSocketPayload({type:'message', message}));
+  `);
+  await new Promise(setImmediate);
+  assert.equal(run('saves'), 1);
+  assert.equal(run('acks.length'), 0);
+  run('release()');
+  await run('Promise.all([first, second])');
+  assert.equal(run('saves'), 1);
+  assert.equal(run('acks.length'), 1);
+  assert.equal(run('acks[0][0].delivery_id'), 'a'.repeat(32));
+  assert.equal(run('messagesByChat.get(7).filter(entry => entry.kind === "theirs").length'), 1);
+});
+
+test('a failed ACK cannot poison the incoming queue or discard later durable deliveries', async () => {
+  const run = client();
+  run(`
+    renderMessages = () => {};
+    globalThis.attempts = [];
+    api = async (path, options) => {
+      attempts.push(JSON.parse(options.body).messages);
+      if (attempts.length === 1) throw new Error('synthetic lost ACK response');
+    };
+    globalThis.message = {chat_id:7, sender_public_id:'peer', client_message_id:'first',
+      delivery_id:'a'.repeat(32), ciphertext:'first', created_at:'2026-10-28T12:00:00Z'};
+    globalThis.first = enqueueIncoming(() => handleSocketPayload({type:'message', message}));
+    globalThis.second = enqueueIncoming(() => handleSocketPayload({type:'message',
+      message:{...message, client_message_id:'second', delivery_id:'b'.repeat(32), ciphertext:'second'}}));
+  `);
+  await assert.rejects(run('first'), /lost ACK response/);
+  await run('second');
+  assert.equal(run('seenMessageIds.size'), 2);
+  assert.equal(run('pendingDeliveries.size'), 0);
+  assert.deepEqual(Array.from(run('attempts[1].map(ref => ref.delivery_id)')), [
+    'a'.repeat(32), 'b'.repeat(32),
+  ]);
+});
+
 test('polling and live group messages label the matching sender using safe text', async () => {
   const run = renderingClient();
   await run(`(async () => {

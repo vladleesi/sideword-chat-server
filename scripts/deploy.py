@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import sqlite3
+import stat
 import subprocess
 import tempfile
 import time
@@ -24,6 +25,8 @@ HOST_PROGRESS_PATTERN = (
     r"Stage (pull|backup|health): (started\.|finished after [0-9]+\.[0-9]s\.)"
 )
 HOST_FAILURE_MESSAGES = {
+    "Deployment downgrades are not allowed.",
+    "Database recovery could not be completed safely; the recovery state was retained.",
     "The pulled image does not match the checked commit.",
     "The registry digest does not identify the CI image.",
     "Updated backend verification failed; keep the backup and previous image for recovery.",
@@ -532,10 +535,335 @@ def database_path(container, *, allow_missing=False):
         if ".." in relative.parts or mount.get("Type") not in {"bind", "volume"}:
             break
         path = Path(mount["Source"]) / relative
+        if path.parent.resolve() != path.parent or not path.name:
+            break
         if path.is_symlink() or (not path.is_file() and not (allow_missing and not path.exists())):
             break
         return path
     raise DeploymentError("The existing database must be a file in a persistent data mount.")
+
+
+def version_tuple(version):
+    if not isinstance(version, str) or not re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version
+    ):
+        raise DeploymentError("Cannot determine the installed backend version safely.")
+    return tuple(map(int, version.split(".")))
+
+
+def sync_directory(directory):
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def private_file(path):
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise DeploymentError("Unsafe deployment recovery metadata.")
+
+
+def write_deployment_state(path, value):
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            json.dump(value, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            sync_directory(path.parent)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+SQLITE_SUFFIXES = ("", "-journal", "-wal", "-shm")
+
+
+class DatabaseReplacement:
+    """A durable rename transaction; the only retained queue is the original database."""
+
+    def __init__(self, compose_path, database):
+        self.path = compose_path.parent / "database-deployment.json"
+        self.database = database
+        self.directory = database.parent / ".sideword-database-recovery"
+        self.state = None
+        if self.path.exists() or self.path.is_symlink():
+            private_file(self.path)
+            self.state = json.loads(self.path.read_text())
+            if (
+                self.state.get("database") != str(database)
+                or self.state.get("phase") not in {
+                    "prepared", "installing", "restoring", "restored", "verified",
+                }
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", self.state.get("image", ""))
+                or not isinstance(self.state.get("files"), dict)
+                or not set(self.state["files"]) <= set(SQLITE_SUFFIXES)
+            ):
+                raise DeploymentError("Unsafe deployment recovery metadata.")
+            version_tuple(self.state.get("version"))
+            self.check_directory()
+
+    def check_directory(self):
+        info = self.directory.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_mode & 0o077
+        ):
+            raise DeploymentError("Unsafe database recovery directory.")
+
+    def save(self, phase):
+        self.state["phase"] = phase
+        write_deployment_state(self.path, self.state)
+
+    def original(self, suffix):
+        return Path(str(self.database) + suffix)
+
+    def retained(self, suffix):
+        return self.directory / ("database" + suffix)
+
+    @staticmethod
+    def identity(path):
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise DeploymentError("Unsafe database recovery file.")
+        return [info.st_dev, info.st_ino]
+
+    def prepare(self, image, version, configuration=None):
+        if self.state is not None:
+            raise DeploymentError("A database recovery transaction is already pending.")
+        # This directory is reserved for this process; an orphaned nonempty one is never reused.
+        self.directory.mkdir(mode=0o700, exist_ok=True)
+        self.check_directory()
+        sync_directory(self.database.parent)
+        if any(self.directory.iterdir()):
+            raise DeploymentError(
+                "An unrecognized database recovery copy requires operator review."
+            )
+        files = {}
+        for suffix in SQLITE_SUFFIXES:
+            path = self.original(suffix)
+            if path.exists() or path.is_symlink():
+                files[suffix] = self.identity(path)
+                # Old installations may have used a broader umask. Never retain a public copy.
+                path.chmod(0o600)
+                with path.open("rb") as stream:
+                    os.fsync(stream.fileno())
+        self.state = {"database": str(self.database), "image": image,
+                      "version": version, "files": files, "configuration": configuration}
+        self.save("prepared")
+        for suffix in files:
+            os.rename(self.original(suffix), self.retained(suffix))
+            sync_directory(self.directory)
+            sync_directory(self.database.parent)
+        self.save("installing")
+
+    def restore(self):
+        # Journal this before touching new files, so a crash mid-restore is retryable.
+        prepared = self.state["phase"] == "prepared"
+        if not prepared:
+            self.save("restoring")
+        for suffix in SQLITE_SUFFIXES:
+            original, retained = self.original(suffix), self.retained(suffix)
+            expected = self.state["files"].get(suffix)
+            if retained.exists() or retained.is_symlink():
+                if self.identity(retained) != expected:
+                    raise DeploymentError("The database recovery copy changed unexpectedly.")
+                if original.exists() or original.is_symlink():
+                    if prepared:
+                        raise DeploymentError("Ambiguous database recovery state.")
+                    self.identity(original)
+                    original.unlink()
+                os.rename(retained, original)
+            elif expected is not None:
+                if self.identity(original) != expected:
+                    raise DeploymentError("The previous database is not recoverable safely.")
+            elif not prepared and (original.exists() or original.is_symlink()):
+                self.identity(original)
+                original.unlink()
+            sync_directory(self.database.parent)
+            sync_directory(self.directory)
+        self.save("restored")
+
+    def verified(self, image, version):
+        self.state.update(activated_image=image, activated_version=version,
+                          current=self.identity(self.database))
+        self.save("verified")
+
+    def finish(self):
+        if self.state["phase"] == "verified":
+            for suffix, expected in self.state["files"].items():
+                path = self.retained(suffix)
+                if path.exists() or path.is_symlink():
+                    if self.identity(path) != expected:
+                        raise DeploymentError("The database recovery copy changed unexpectedly.")
+                    path.unlink()
+                    sync_directory(self.directory)
+        if any(self.directory.iterdir()):
+            raise DeploymentError("Unrecognized files remain in the database recovery directory.")
+        # Keep the directory: after a crash between these operations an empty directory is safe.
+        self.path.unlink(missing_ok=True)
+        sync_directory(self.path.parent)
+        self.state = None
+
+
+def stop_database_writers(compose, container_id, database, *, check_sqlite=True):
+    run([*compose, "stop", "--timeout", "30", "sideword"])
+    current = json.loads(run(["docker", "inspect", container_id]))[0]
+    if current.get("State", {}).get("Running") is not False:
+        raise DeploymentError("Database writers are still running.")
+    # Refuse other running containers sharing this database's host storage.
+    ids = run(["docker", "ps", "-q"]).split()
+    for identifier in ids:
+        if identifier == container_id:
+            continue
+        container = json.loads(run(["docker", "inspect", identifier]))[0]
+        for mount in container.get("Mounts", []):
+            if database.is_relative_to(Path(mount["Source"])):
+                raise DeploymentError("Another running container shares the database storage.")
+    if check_sqlite and database.exists():
+        with closing(sqlite3.connect(database.as_uri() + "?mode=rw", uri=True)) as connection:
+            connection.execute("BEGIN EXCLUSIVE")
+            connection.rollback()
+
+
+def wait_for_backend(compose, image_id, version):
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        current_id = run([*compose, "ps", "-q", "sideword"]).strip()
+        if current_id:
+            current = json.loads(run(["docker", "inspect", current_id]))[0]
+            if (current["Image"] == image_id
+                and current["State"].get("Health", {}).get("Status") == "healthy"
+                and health_matches(version)):
+                verify_private_routes()
+                return
+        time.sleep(2)
+    raise DeploymentError(
+        "Updated backend verification failed; keep the backup and previous image for recovery."
+    )
+
+
+def recover_database(replacement, compose, container_id, image_tag):
+    if replacement.state["phase"] == "verified":
+        state = replacement.state
+        if replacement.identity(replacement.database) != state["current"]:
+            raise DeploymentError("The verified database changed unexpectedly.")
+        wait_for_backend(compose, state["activated_image"], state["activated_version"])
+        managed_backups(replacement.path.parent / "deployment-backups", cleanup=True)
+        replacement.finish()
+        return
+    try:
+        old_image, old_version = replacement.state["image"], replacement.state["version"]
+        run(["docker", "image", "inspect", old_image])
+        container_id = run([*compose, "ps", "-a", "-q", "sideword"]).strip()
+        if not container_id or "\n" in container_id:
+            raise DeploymentError("Cannot identify the database writer for recovery.")
+        stop_database_writers(compose, container_id, replacement.database, check_sqlite=False)
+        if replacement.state["phase"] != "restored":
+            replacement.restore()
+        elif "" in replacement.state["files"]:
+            if replacement.identity(replacement.database) != replacement.state["files"][""]:
+                raise DeploymentError("The restored database changed unexpectedly.")
+        run(["docker", "image", "tag", old_image, image_tag])
+        if "" in replacement.state["files"]:
+            run([*compose, "up", "-d", "--no-build", "--pull", "never", "--no-deps", "sideword"])
+            wait_for_backend(compose, old_image, old_version)
+        replacement.finish()
+    except Exception as error:
+        # A failed rollback must remain offline with its transaction record intact.
+        run([*compose, "stop", "--timeout", "30", "sideword"])
+        raise DeploymentError(
+            "Database recovery could not be completed safely; the recovery state was retained."
+        ) from error
+
+
+def managed_backups(directory, *, added=None, cleanup=False):
+    """Only an explicit ownership ledger authorizes automatic backup deletion."""
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+        or info.st_mode & 0o077):
+        raise DeploymentError("The deployment backup directory must be private.")
+    ledger = directory / "managed.json"
+    entries = {}
+    if ledger.exists() or ledger.is_symlink():
+        private_file(ledger)
+        entries = json.loads(ledger.read_text())
+    for name, family in entries.items():
+        if not re.fullmatch(r"pre-deploy-[0-9]{8}T[0-9]{12}Z\.sqlite3", name):
+            raise DeploymentError("Unsafe managed backup inventory.")
+        if (not isinstance(family, dict) or "" not in family
+            or not set(family) <= set(SQLITE_SUFFIXES)):
+            raise DeploymentError("Unsafe managed backup inventory.")
+        for suffix in SQLITE_SUFFIXES:
+            path = directory / (name + suffix)
+            if path.exists() or path.is_symlink():
+                private_file(path)
+                if DatabaseReplacement.identity(path) != family.get(suffix):
+                    raise DeploymentError("A managed backup changed unexpectedly.")
+                if cleanup:
+                    path.unlink()
+                    sync_directory(directory)
+    if added is not None:
+        entries[added.name] = {
+            suffix: DatabaseReplacement.identity(Path(str(added) + suffix))
+            for suffix in SQLITE_SUFFIXES if Path(str(added) + suffix).exists()
+        }
+    if cleanup:
+        ledger.unlink(missing_ok=True)
+        sync_directory(directory)
+    elif added is not None:
+        write_deployment_state(ledger, entries)
+
+
+def initialize_database(database, image_id, user=None):
+    if any(character in str(database.parent) for character in ",\n\r"):
+        raise DeploymentError("Unsupported persistent database mount.")
+    command = [
+        "docker", "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges:true", "--pids-limit", "64", "--memory", "128m",
+        "--mount", f"type=bind,src={database.parent},dst=/sideword-init",
+        "--env", "SIDEWORD_SECRET_KEY", "--env", "SIDEWORD_DB_PATH",
+        "--entrypoint", "python",
+    ]
+    if user:
+        command.extend(["--user", str(user)])
+    run([*command, image_id, "-c",
+         "import asyncio, os; os.umask(0o077)\n"
+         "from app.db import init_db, engine\n"
+         "async def initialize():\n"
+         "    await init_db()\n"
+         "    await engine.dispose()\n"
+         "asyncio.run(initialize())"],
+        env={**os.environ, "SIDEWORD_SECRET_KEY": os.urandom(32).hex(),
+             "SIDEWORD_DB_PATH": "/sideword-init/" + database.name})
+    info = database.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+        raise DeploymentError("The initialized database must have private permissions.")
+    with database.open("rb") as stream:
+        os.fsync(stream.fileno())
+    sync_directory(database.parent)
+
+
+def verify_persistent_mount(service, configuration, previous, database):
+    mounts = [mount for mount in previous["Mounts"]
+              if database.is_relative_to(Path(mount["Source"]))]
+    if not mounts:
+        raise DeploymentError("Database replacement requires unchanged persistent storage.")
+    actual = max(mounts, key=lambda mount: len(mount["Source"]))
+    desired = next((mount for mount in service.get("volumes", [])
+                    if mount.get("target") == actual["Destination"]), None)
+    if not desired or desired.get("read_only") or desired.get("type") != actual["Type"]:
+        raise DeploymentError("Database replacement requires unchanged persistent storage.")
+    source = desired.get("source")
+    if actual["Type"] == "volume":
+        source = configuration.get("volumes", {}).get(source, {}).get("name", source)
+        expected = actual.get("Name")
+    else:
+        expected = actual["Source"]
+    if source != expected:
+        raise DeploymentError("Database replacement requires unchanged persistent storage.")
 
 
 def verify_database_schema(database, expected):
@@ -653,6 +981,9 @@ def deploy_host(args):
             raise DeploymentError("Another backend deployment is already running.") from error
         compose = ["docker", "compose", "-f", str(args.compose)]
         configuration = json.loads(run([*compose, "config", "--format", "json"]))
+        configuration_digest = hashlib.sha256(
+            json.dumps(configuration, sort_keys=True).encode()
+        ).hexdigest()
         service = configuration.get("services", {}).get("sideword", {})
         image_tag = service.get("image")
         if not image_tag or image_tag.startswith("-") or "@" in image_tag:
@@ -666,15 +997,30 @@ def deploy_host(args):
                 "inherit the checked image's Python probe."
             )
         container_id = run([*compose, "ps", "-a", "-q", "sideword"]).strip()
-        if not container_id or "\n" in container_id:
-            raise DeploymentError("Exactly one existing sideword container is required.")
-        previous = json.loads(run(["docker", "inspect", container_id]))[0]
-        configured_image = json.loads(run(["docker", "image", "inspect", image_tag]))[0]
-        if configured_image["Id"] != previous["Image"]:
+        if "\n" in container_id:
+            raise DeploymentError("At most one sideword container is required.")
+        first_install = not container_id
+        previous = json.loads(run(["docker", "inspect", container_id]))[0] if container_id else None
+        if previous:
+            database = database_path(previous, allow_missing=True)
+            replacement = DatabaseReplacement(args.compose, database)
+            if replacement.state:
+                if replacement.state.get("configuration") != configuration_digest:
+                    raise DeploymentError(
+                        "Deployment configuration changed during database recovery."
+                    )
+                recover_database(replacement, compose, container_id, image_tag)
+                container_id = run([*compose, "ps", "-a", "-q", "sideword"]).strip()
+                previous = json.loads(run(["docker", "inspect", container_id]))[0]
+            configured_image = json.loads(run(["docker", "image", "inspect", image_tag]))[0]
+            if configured_image["Id"] != previous["Image"]:
+                raise DeploymentError(
+                    "The configured image tag must still identify the running backend."
+                )
+        elif (args.compose.parent / "database-deployment.json").exists():
             raise DeploymentError(
-                "The configured image tag must still identify the running backend."
+                "A recovery transaction requires its persistent service container."
             )
-        database = database_path(previous)
         backup_dir = args.compose.parent / "deployment-backups"
         backup_dir.mkdir(mode=0o700, exist_ok=True)
         if backup_dir.is_symlink() or backup_dir.stat().st_mode & 0o077:
@@ -726,6 +1072,31 @@ def deploy_host(args):
         ))
         if probe.get("version") != args.version:
             raise DeploymentError("The checked image reports an unexpected backend version.")
+        if first_install:
+            run(["docker", "image", "tag", host_image_id, image_tag])
+            run([
+                *compose, "up", "--no-start", "--no-build", "--pull", "never", "--no-deps",
+                "sideword",
+            ])
+            container_id = run([*compose, "ps", "-a", "-q", "sideword"]).strip()
+            if not container_id or "\n" in container_id:
+                raise DeploymentError("Cannot identify the persistent service container.")
+            previous = json.loads(run(["docker", "inspect", container_id]))[0]
+            database = database_path(previous, allow_missing=True)
+            if database.exists():
+                raise DeploymentError("Existing unversioned database requires operator review.")
+            installed_version = args.version
+            replacement = DatabaseReplacement(args.compose, database)
+        else:
+            installed_version = run([
+                "docker", "run", "--rm", "--network", "none", "--read-only",
+                "--entrypoint", "python", previous["Image"], "-c",
+                "from app.version import __version__; print(__version__)",
+            ]).strip()
+        installed, target = version_tuple(installed_version), version_tuple(args.version)
+        if target < installed:
+            raise DeploymentError("Deployment downgrades are not allowed.")
+        reset = installed[0] == target[0] == 0 and installed != target
         environment = dict(
             value.split("=", 1) for value in image["Config"].get("Env", []) if "=" in value
         )
@@ -735,12 +1106,56 @@ def deploy_host(args):
                                if value is not None]},
             "Mounts": previous["Mounts"],
         }, allow_missing=True)
-        verify_database_schema(candidate_database, probe.get("tables"))
+        replace = reset or (not candidate_database.exists() and candidate_database == database)
+        # Do not guess which database a changed Compose path or mount belongs to.
+        if replace and candidate_database != database:
+            raise DeploymentError("Database replacement requires unchanged persistent storage.")
+        if replace:
+            verify_persistent_mount(service, configuration, previous, database)
+        verify_database_schema(
+            candidate_database if not replace else replacement.directory / "absent",
+            probe.get("tables"),
+        )
         run(["docker", "image", "tag", previous["Image"], rollback_tag])
+        if replace:
+            stopped = False
+            try:
+                stop_database_writers(compose, container_id, database)
+                stopped = True
+                replacement.prepare(previous["Image"], installed_version, configuration_digest)
+                initialize_database(database, host_image_id, service.get("user"))
+                verify_database_schema(database, probe.get("tables"))
+                run(["docker", "image", "tag", host_image_id, image_tag])
+                run([
+                    *compose, "up", "-d", "--no-build", "--pull", "never", "--no-deps", "sideword",
+                ])
+                wait_for_backend(compose, host_image_id, args.version)
+            except Exception:
+                if replacement.state:
+                    recover_database(replacement, compose, container_id, image_tag)
+                elif stopped and database.exists():
+                    # Preparation did not move a file or create a transaction record.
+                    run([
+                        *compose, "up", "-d", "--no-build", "--pull", "never", "--no-deps",
+                        "sideword",
+                    ])
+                    try:
+                        wait_for_backend(compose, previous["Image"], installed_version)
+                    except Exception:
+                        run([*compose, "stop", "--timeout", "30", "sideword"])
+                        raise
+                raise
+            # A cleanup failure must never roll back a verified database after partial deletion.
+            replacement.verified(host_image_id, args.version)
+            managed_backups(backup_dir, cleanup=True)
+            replacement.finish()
+            print("Checked backend deployment verified.")
+            return
         try:
             run([*compose, "stop", "--timeout", "30", "sideword"])
             with stage("backup"):
                 backup_database(database, backup)
+                managed_backups(backup_dir, added=backup)
             run(["docker", "image", "tag", host_image_id, image_tag])
         except Exception:
             # No new application ran against the database; restarting the old image is safe.
@@ -749,24 +1164,8 @@ def deploy_host(args):
             raise
         try:
             run([*compose, "up", "-d", "--no-build", "--pull", "never", "--no-deps", "sideword"])
-            deadline = time.monotonic() + 180
-            while time.monotonic() < deadline:
-                current_id = run([*compose, "ps", "-q", "sideword"]).strip()
-                if current_id:
-                    current = json.loads(run(["docker", "inspect", current_id]))[0]
-                    if (
-                        current["Image"] == host_image_id
-                        and current["State"].get("Health", {}).get("Status") == "healthy"
-                        and health_matches(args.version)
-                    ):
-                        verify_private_routes()
-                        print("Checked backend deployment verified.")
-                        return
-                time.sleep(2)
-            raise DeploymentError(
-                "Updated backend verification failed; "
-                "keep the backup and previous image for recovery."
-            )
+            wait_for_backend(compose, host_image_id, args.version)
+            print("Checked backend deployment verified.")
         except Exception:
             # Keep an unverified application offline without overwriting its database.
             run([*compose, "stop", "--timeout", "30", "sideword"])

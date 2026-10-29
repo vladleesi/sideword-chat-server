@@ -151,7 +151,7 @@ When relevant: `python -m pip check`, `python -m compileall -q app scripts tests
 - Authenticate, decrypt and persist locally before deletion ACKs. Serialize incoming processing and keep failures retryable.
 - Keep browser private keys non-exportable, render user content with `textContent`, and preserve CSP/no-store headers.
 - Keep form errors inline and accessible; validate optional empty fields deliberately on the server.
-- Each pre-release uses fresh state and current APIs/formats only. Do not add legacy fallbacks or automatic migrations.
+- Increasing pre-1.0 version deployments reset server state automatically; same-version redeployments preserve data. Stable releases preserve data and reject incompatible schemas. Keep recoverable replacement state until verification succeeds. Do not add legacy fallbacks or automatic migrations.
 
 ## Documentation
 

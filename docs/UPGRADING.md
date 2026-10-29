@@ -9,7 +9,7 @@ python -m scripts.deploy backup --source data/sideword.sqlite3 --destination bac
 ```
 
 Creates a new private file with configuration, credentials and retry/ACK metadata,
-but no queued content or deleted free pages. Deployment backups use the same command.
+but no queued content or deleted free pages. Non-reset deployment backups use the same command.
 Protect/encrypt backups and set retention: they still contain secrets. Configuration
 exports are unencrypted and omit both sessions and delivery evidence. Neither includes
 browser keys/history. Ordinary restarts retain pending content; backup restores do not.
@@ -20,26 +20,36 @@ cannot guarantee physical erasure from SSDs, old backups, snapshots or host memo
 
 ## Upgrade
 
-Each pre-release requires fresh server/browser state and matching code/assets; no
-automatic migration. SQLite 3.35+ is required; incompatible schemas and WAL databases
-are rejected. Version 0.15.0 adds payload v1 and fixed content deadlines; older raw-text
-clients are incompatible. Browser DB `sideword-test-client-p256-payload-v1` leaves old
-browser data untouched. Configuration bundles remain v2.
+Actions deployments reset **all server-side state** when upgrading between different
+`0.x.y` versions, even with compatible schemas: users, chats, invitations, sessions,
+pending messages, delivery metadata and administrative records. No data is migrated.
+Same-version retries preserve data. Releases `1.0.0+` preserve data and reject incompatible
+schemas; no migration strategy exists. Downgrades are blocked.
 
-1. Stop writers and back up; preserve old server/browser state separately.
-2. Choose a fresh database path/volume and install matching code/assets.
-3. Review [.env.example](../.env.example) without replacing secrets. Old 64 KiB envelope/
-   2 MiB send overrides reject larger attachments; default content lifetime is seven days.
-4. Start fresh, create invites, verify `/health`, public admin blocking and cache headers.
+The deployer preserves configuration, secrets, volumes and networking. It locks deployment,
+stops database writers and initializes private fresh state on persistent storage. The original
+SQLite files remain recoverable until image, Docker/listener health and public HTTP/WS
+isolation checks pass. Success deletes those files and inventoried deployment backups.
+Uninventoried backups, exports and external copies need separate [retention](#backups).
 
-Manual deployment checks schema/health before stopping the old backend. Inherit the
-image's Python health probe; do not disable it or replace it with `curl`. Failed activation
-retains backups/rollback images. Releases deploy neither backend nor Pages.
+Failed replacements restore the prior database/image where possible. Retries recover
+interrupted work or finish verified cleanup without another reset. Recovery uncertainty
+leaves the service offline; cleanup errors retain the verified backend. Never delete recovery
+records/copies to force a retry. Failed attempts may extend queued-content retention.
+Non-reset activation failures leave the service offline with its logical backup/image retained.
 
-Publication accepts Docker config or manifest/index image IDs and binds the immutable
-registry reference to the checked CI image. Single-image indexes may include BuildKit
-provenance; ambiguous multi-platform indexes are rejected. Host verification uses the
-resolved config digest and rechecks the registry binding before activation.
+Keep configuration and database paths/mounts unchanged during recovery. Stop external
+host-side writers/tools; other container writers are rejected. Unversioned data or a missing
+rollback image requires operator review. Inherit the image's Python health probe.
+
+Server resets **leave browser-local keys, histories, pins and outboxes intact**. Use matching
+client assets, recreate administrators through bootstrap credentials or local
+`scripts.create_admin`, and issue new invitations: old sessions/invites no longer work.
+Reconnect deliberately; old history/outboxes must not be assumed to belong to recreated chats.
+
+Outside the Actions deployer, stop writers and select fresh persistent state manually for
+new pre-1.0 versions. Review [.env.example](../.env.example) without replacing secrets.
+SQLite 3.35+ is required; startup rejects WAL. Releases deploy neither backend nor Pages.
 
 ## Restore safely
 

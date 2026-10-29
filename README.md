@@ -8,8 +8,8 @@ Clients encrypt content; the relay removes ciphertext after durable ACK or expir
 Includes expiring/password-protected invites, renewable sessions, WebSocket/polling
 delivery, confirmations, an admin UI and a browser test client with 1 MiB attachments.
 
-The client is unaudited. Pre-releases require fresh server/browser state and matching
-assets; read [security limits](SECURITY.md) and [upgrade steps](docs/UPGRADING.md#upgrade).
+The client is unaudited. Pre-1.0 upgrades reset server state; browser keys/history remain.
+Use matching assets; see [security limits](SECURITY.md) and [upgrades](docs/UPGRADING.md#upgrade).
 
 ## Setup
 
