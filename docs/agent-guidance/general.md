@@ -20,14 +20,22 @@
   Define ordering for shared mutable state and overlapping work.
 - Optimize measured bottlenecks with representative workloads. Define cache
   lifetime, keys, and invalidation; avoid speculative complexity.
-- Keep one authoritative explanation per topic; update affected setup, usage,
-  contracts, and limitations. Keep README a concise entry point; put advanced
-  details in existing docs first.
-- Keep public docs relevant to project users. Exclude unrelated promotion,
-  personal infrastructure, and private development context without user value.
-  Preserve copyright, licensing, provenance, legitimate contributor and support
-  info, and useful external links.
+- Write new and updated documentation, including published-site copy, for its
+  intended reader. Include what readers need to use, integrate, operate, maintain,
+  or contribute to the project.
+- Keep one authoritative explanation per topic and link to it elsewhere. Keep
+  README focused on purpose, quick start, and reference links; put advanced details
+  in existing docs first. Preserve useful external links and provenance.
+- Replace stale explanations and remove repetition in the affected topic instead
+  of continually appending sections. Keep cleanup scoped to the task; judge
+  usefulness and clarity without arbitrary word limits or reduction percentages.
+- Prefer short paragraphs, descriptive headings, and minimal working examples;
+  use tables only when they make information easier to understand.
+- Exclude task histories, progress reports, abandoned approaches, repetitive
+  implementation summaries, and speculative guidance. Keep rationale only when
+  it helps future readers avoid a meaningful mistake. Exclude unrelated promotion,
+  personal infrastructure, and private development context without reader value.
 - Update affected website or documentation sources alongside repository changes:
-  descriptions, examples, versions, compatibility. Check for published content;
-  reuse site architecture, styling, generator, and validation. Add no unrelated
-  site.
+  setup, usage, contracts, limitations, descriptions, examples, versions, and
+  compatibility. Check for published content; reuse site architecture, styling,
+  generator, and validation. Add no unrelated site.
