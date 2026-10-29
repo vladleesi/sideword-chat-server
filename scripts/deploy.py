@@ -314,6 +314,42 @@ def package_image(directory, sha, retain=True):
     return image_id
 
 
+def registry_config_digest(image_ref: str, image_id: str, environment: dict[str, str]) -> str:
+    """Bind either Docker image-ID format to a single runnable registry image."""
+    failure = "The registry digest does not identify the CI image."
+    repository, root_digest = image_ref.split("@")
+    manifest = json.loads(
+        run(["docker", "manifest", "inspect", image_ref], env=environment)
+    )
+    manifest_digest = root_digest
+    if "manifests" in manifest:
+        # BuildKit indexes can also contain provenance with an unknown/unknown platform.
+        runnable = [
+            entry for entry in manifest["manifests"]
+            if entry.get("platform", {}).get("os") != "unknown"
+        ]
+        if len(runnable) != 1:
+            raise DeploymentError(failure)
+        descriptor = runnable[0]
+        manifest_digest = descriptor.get("digest", "")
+        if (
+            descriptor.get("platform", {}).get("os") != "linux"
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", manifest_digest)
+        ):
+            raise DeploymentError(failure)
+        manifest = json.loads(run(
+            ["docker", "manifest", "inspect", f"{repository}@{manifest_digest}"],
+            env=environment,
+        ))
+    config_digest = manifest.get("config", {}).get("digest", "")
+    if (
+        not re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest)
+        or image_id not in {root_digest, manifest_digest, config_digest}
+    ):
+        raise DeploymentError(failure)
+    return config_digest
+
+
 def publish_image(args):
     validate_config()
     token = os.environ.get("GCP_ACCESS_TOKEN", "")
@@ -362,11 +398,9 @@ def publish_image(args):
                 raise DeploymentError("Cannot verify the published image digest.")
             candidate.image_ref = references[0]
             validate_reference(candidate)
-            manifest = json.loads(
-                run(["docker", "manifest", "inspect", candidate.image_ref], env=environment)
+            candidate.image_id = registry_config_digest(
+                candidate.image_ref, candidate.image_id, environment
             )
-            if manifest.get("config", {}).get("digest") != candidate.image_id:
-                raise DeploymentError("The registry digest does not identify the CI image.")
     with open(os.environ["GITHUB_ENV"], "a") as output:
         # Mask the reference before it becomes an environment value in later steps.
         print(f"::add-mask::{candidate.image_ref}")
@@ -460,10 +494,7 @@ def pull_image(args):
             env=environment,
         )
         run(["docker", "pull", args.image_ref], env=environment, timeout=600)
-        manifest = json.loads(
-            run(["docker", "manifest", "inspect", args.image_ref], env=environment)
-        )
-        if manifest.get("config", {}).get("digest") != args.image_id:
+        if registry_config_digest(args.image_ref, args.image_id, environment) != args.image_id:
             raise DeploymentError("The registry digest does not identify the CI image.")
 
 
@@ -654,7 +685,7 @@ def deploy_host(args):
         pull_image(args)
         image = json.loads(run(["docker", "image", "inspect", args.image_ref]))[0]
         # Classic Docker uses the config digest as id; containerd uses the manifest digest.
-        # pull_image binds the pinned manifest to CI's config digest before either is accepted.
+        # Publication normalizes CI's ID to the config digest; pull_image rechecks that binding.
         host_image_id = image["Id"]
         if (
             host_image_id not in {args.image_id, args.image_ref.split("@")[1]}

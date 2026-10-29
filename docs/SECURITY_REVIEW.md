@@ -1,6 +1,6 @@
 # Security review
 
-**Reviewed:** 2026-10-28 · **Backend:** 0.15.0. Maintainer source/test review;
+**Reviewed:** 2026-10-28 · **Backend:** 0.15.1. Maintainer source/test review;
 not an independent security or cryptographic audit. [Report vulnerabilities](../SECURITY.md).
 
 ## Controls and supporting evidence
@@ -57,6 +57,8 @@ revocation/deletion cannot erase. Card viewing does not confirm file opening.
 Synthetic Python/Node regressions cover payload boundaries/tampering, peer mismatch,
 authorization, ciphertext persistence, duplicate WS/poll delivery, reload retries,
 quota failures withholding ACKs, deletion/expiry, safe downloads and transfer gestures.
+Deployment regressions use isolated command fakes for config/manifest/index image IDs,
+provenance indexes, config-digest normalization and rejection of unrelated/ambiguous images.
 These do not establish browser/OS behavior, native interoperability or deployed memory,
 proxy/IAM/log/backup controls. Independent cryptographic review remains outstanding.
 

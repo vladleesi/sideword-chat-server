@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.1 — 2026-10-28
+
+- Fix manual deployment publication with Docker containerd manifest/index IDs; verify the checked image through its registry manifest and normalize the config digest for host verification, including single-image BuildKit provenance indexes.
+
 ## 0.15.0 — 2026-10-28
 
 - Harden deletion with SQLite overwrite-on-delete and truncated rollback journals; omit queued ciphertext and deleted free pages from supported backups while preserving restart recovery and retry metadata.

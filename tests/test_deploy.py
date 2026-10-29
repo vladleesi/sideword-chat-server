@@ -20,6 +20,7 @@ SHA = "a" * 40
 IMAGE = "sha256:" + "b" * 64
 REFERENCE = "region-docker.pkg.dev/example-project/backend/sideword@sha256:" + "d" * 64
 PREVIOUS = "sha256:" + "c" * 64
+CHILD = "sha256:" + "e" * 64
 
 
 @pytest.fixture
@@ -893,9 +894,10 @@ def test_pull_failure_never_stops_backend(candidate, host, monkeypatch):
     assert not list(candidate.compose.parent.glob("deployment-backups/*.sqlite3"))
 
 
+@pytest.mark.parametrize("layout", ["manifest", "index"])
 @pytest.mark.parametrize("wrong_config", [False, True])
 def test_vm_pull_uses_metadata_and_disposable_credentials(
-    candidate, monkeypatch, capsys, wrong_config
+    candidate, monkeypatch, capsys, wrong_config, layout
 ):
     commands = []
     requests = []
@@ -912,6 +914,11 @@ def test_vm_pull_uses_metadata_and_disposable_credentials(
     def fake_run(command, **kwargs):
         commands.append((command, kwargs))
         if command[:3] == ["docker", "manifest", "inspect"]:
+            if layout == "index" and command[3] == REFERENCE:
+                return json.dumps({"manifests": [
+                    {"digest": CHILD, "platform": {"os": "linux", "architecture": "amd64"}},
+                    {"digest": PREVIOUS, "platform": {"os": "unknown", "architecture": "unknown"}},
+                ]})
             return json.dumps({"config": {"digest": PREVIOUS if wrong_config else IMAGE}})
         return "synthetic-private"
 
@@ -922,27 +929,37 @@ def test_vm_pull_uses_metadata_and_disposable_credentials(
     else:
         deploy.pull_image(candidate)
     assert requests[0].get_header("Metadata-flavor") == "Google"
-    login, pull, manifest = commands
+    login, pull, manifest, *children = commands
     assert login[1]["input"] == b"synthetic-token"
     assert "--password-stdin" in login[0]
     assert pull[0] == ["docker", "pull", REFERENCE]
     assert login[1]["env"]["DOCKER_CONFIG"] == pull[1]["env"]["DOCKER_CONFIG"]
     assert manifest[0] == ["docker", "manifest", "inspect", REFERENCE]
     assert manifest[1]["env"]["DOCKER_CONFIG"] == pull[1]["env"]["DOCKER_CONFIG"]
+    if layout == "index":
+        assert children[0][0] == [
+            "docker", "manifest", "inspect", REFERENCE.split("@")[0] + "@" + CHILD,
+        ]
+        assert children[0][1]["env"] == manifest[1]["env"]
+    else:
+        assert not children
     assert not Path(login[1]["env"]["DOCKER_CONFIG"]).exists()
     output = capsys.readouterr().out
     assert "synthetic-token" not in output and "synthetic-private" not in output
 
 
+@pytest.mark.parametrize("ci_image_format", ["config", "manifest", "index"])
 @pytest.mark.parametrize("wrong_manifest", [False, True])
 def test_publication_binds_digest_to_ci_image_and_cleans_credentials(
-    candidate, vm_config, monkeypatch, tmp_path, capsys, wrong_manifest
+    candidate, vm_config, monkeypatch, tmp_path, capsys, wrong_manifest, ci_image_format
 ):
     directory = candidate.archive.parent
+    checked_id = IMAGE if ci_image_format == "config" else REFERENCE.split("@")[1]
+    published_reference = REFERENCE.replace("d" * 64, "f" * 64) if wrong_manifest else REFERENCE
     (directory / "image.json").write_text(
         json.dumps(
             {
-                "image_id": IMAGE,
+                "image_id": checked_id,
                 "checksum": candidate.checksum,
                 "version": candidate.version,
             }
@@ -959,8 +976,8 @@ def test_publication_binds_digest_to_ci_image_and_cleans_credentials(
             return json.dumps(
                 [
                     {
-                        "Id": IMAGE,
-                        "RepoDigests": [REFERENCE],
+                        "Id": checked_id,
+                        "RepoDigests": [published_reference],
                         "Config": {
                             "Labels": {"org.opencontainers.image.revision": SHA},
                         },
@@ -968,6 +985,11 @@ def test_publication_binds_digest_to_ci_image_and_cleans_credentials(
                 ]
             )
         if command[:3] == ["docker", "manifest", "inspect"]:
+            if ci_image_format == "index" and command[3] == published_reference:
+                return json.dumps({"manifests": [
+                    {"digest": CHILD, "platform": {"os": "linux", "architecture": "amd64"}},
+                    {"digest": PREVIOUS, "platform": {"os": "unknown", "architecture": "unknown"}},
+                ]})
             return json.dumps({"config": {"digest": PREVIOUS if wrong_manifest else IMAGE}})
         return "synthetic-private"
 
@@ -980,12 +1002,47 @@ def test_publication_binds_digest_to_ci_image_and_cleans_credentials(
     else:
         deploy.publish_image(args)
         assert f"IMAGE_REF={REFERENCE}" in output.read_text()
+        assert f"IMAGE_ID={IMAGE}\n" in output.read_text()
+    inspections = [
+        command[3] for command, _ in commands
+        if command[:3] == ["docker", "manifest", "inspect"]
+    ]
+    assert inspections == (
+        [published_reference, published_reference.split("@")[0] + "@" + CHILD]
+        if ci_image_format == "index" else [published_reference]
+    )
     assert not any(command[0] == "gcloud" for command, _ in commands)
     login = next(kwargs for command, kwargs in commands if "login" in command)
     assert login["input"] == b"synthetic-token"
     assert not Path(login["env"]["DOCKER_CONFIG"]).exists()
     logs = capsys.readouterr().out
     assert "synthetic-token" not in logs and "synthetic-private" not in logs
+
+
+@pytest.mark.parametrize("checked_id", [IMAGE, REFERENCE.split("@")[1]])
+@pytest.mark.parametrize("manifest", [
+    {},
+    {"config": {"digest": "invalid"}},
+    {"manifests": []},
+    {"manifests": [{"platform": {"os": "unknown", "architecture": "unknown"}}]},
+    {"manifests": [
+        {"digest": CHILD, "platform": {"os": "linux", "architecture": "amd64"}},
+        {"digest": PREVIOUS, "platform": {"os": "linux", "architecture": "arm64"}},
+    ]},
+    {"manifests": [{"digest": CHILD}]},
+    {"manifests": [{"digest": "invalid", "platform": {"os": "linux"}}]},
+])
+def test_registry_binding_rejects_missing_or_ambiguous_image(manifest, checked_id, monkeypatch):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return json.dumps(manifest)
+
+    monkeypatch.setattr(deploy, "run", fake_run)
+    with pytest.raises(deploy.DeploymentError, match="registry digest"):
+        deploy.registry_config_digest(REFERENCE, checked_id, {})
+    assert commands == [["docker", "manifest", "inspect", REFERENCE]]
 
 
 def test_retention_policy_preserves_two_recent_versions():

@@ -36,6 +36,11 @@ Manual deployment checks schema/health before stopping the old backend. Inherit 
 image's Python health probe; do not disable it or replace it with `curl`. Failed activation
 retains backups/rollback images. Releases deploy neither backend nor Pages.
 
+Publication accepts Docker config or manifest/index image IDs and binds the immutable
+registry reference to the checked CI image. Single-image indexes may include BuildKit
+provenance; ambiguous multi-platform indexes are rejected. Host verification uses the
+resolved config digest and rechecks the registry binding before activation.
+
 ## Restore safely
 
 Snapshots can revive revoked credentials and undo later policy changes:
