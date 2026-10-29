@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+from .config import get_settings
 from .message_keys import valid_public_key
 
 
@@ -89,17 +90,25 @@ class MeResponse(BaseModel):
 
 
 class MessageEnvelope(BaseModel):
-    recipient_public_id: str = Field(..., description="Recipient public_id.")
+    model_config = ConfigDict(extra="forbid")
+
+    recipient_public_id: str = Field(
+        ..., min_length=1, max_length=64, description="Recipient public_id.",
+    )
     ciphertext: str = Field(..., description="Base64 ciphertext (nonce + MAC included).")
 
     @field_validator("ciphertext")
     @classmethod
     def _ciphertext_is_b64(cls, value: str) -> str:
+        if len(value) > 4 * ((get_settings().max_ciphertext_bytes + 2) // 3):
+            raise ValueError("ciphertext too large")
         _decode_b64(value)
         return value
 
 
 class SendMessageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     client_message_id: str = Field(..., min_length=1, max_length=64)
     envelopes: list[MessageEnvelope] = Field(..., min_length=1, max_length=100)
 
@@ -107,7 +116,7 @@ class SendMessageRequest(BaseModel):
 class TimestampedPayload(BaseModel):
     created_at: datetime
 
-    @field_validator("created_at")
+    @field_validator("created_at", "content_expires_at", check_fields=False)
     @classmethod
     def normalize_utc(cls, value: datetime) -> datetime:
         # SQLite returns naive datetimes even for timezone-aware columns.
@@ -121,6 +130,7 @@ class SendMessageResponse(TimestampedPayload):
     recipients: list[str]
     deliveries: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
+    content_expires_at: datetime
 
 
 class IncomingMessage(TimestampedPayload):
@@ -194,9 +204,11 @@ class RecipientDeliveryStatus(BaseModel):
     delivery_id: str | None = None
     delivered_at: datetime | None = None
     read_at: datetime | None = None
+    state: Literal["pending", "delivered", "expired", "unavailable"] = "pending"
 
 
 class MessageDeliveryStatus(TimestampedPayload):
+    content_expires_at: datetime
     client_message_id: str
     recipients: list[RecipientDeliveryStatus]
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import enum
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (
     Boolean,
@@ -20,11 +20,16 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from .config import get_settings
 from .db import Base
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _content_expiry() -> datetime:
+    return _utcnow() + timedelta(days=get_settings().message_ttl_days)
 
 
 class LinkType(str, enum.Enum):
@@ -165,6 +170,9 @@ class PendingMessage(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_content_expiry, nullable=False, index=True
+    )
 
 
 class ReadReceipt(Base):
@@ -228,6 +236,9 @@ class SendRecord(Base):
     receipt_state_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    content_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_content_expiry, nullable=False
+    )
 
 
 class AdminSession(Base):

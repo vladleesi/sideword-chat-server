@@ -1,98 +1,117 @@
 # Browser test-client P-256 protocol v1
 
-This unaudited interoperability format has no recipient forward secrecy or
-post-compromise recovery. Backend release, `/api/v1` and envelope versions are
-independent; sharing an HTTP API does not imply compatible encryption.
-
-## Implementation boundary
-
-`app/static/client-protocol.js` implements Web Crypto wire operations with explicit
-identity/peer inputs, without network, DOM, sessions or storage. `client.js` owns
-trust checks, persistence, sessions and delivery. Callers must authenticate peer
-keys; protocol failures use fixed `ProtocolError` messages, never raw exceptions.
-The backend validates public P-256 points but treats ciphertext as opaque.
+Unaudited; no recipient forward secrecy or post-compromise recovery. Backend, HTTP
+API, application payload and cryptographic envelope versions are independent.
+`client-protocol.js` owns pure Web Crypto/payload operations; `client.js` owns peer
+trust, DOM, networking and persistence. See [security limits](SECURITY_REVIEW.md).
 
 ## Wire representation
 
-The API's `ciphertext` is standard base64 of UTF-8 JSON:
+API `ciphertext` is standard base64 of UTF-8 envelope JSON:
 
 ```json
-{
-  "v": 1,
-  "alg": "P256-2DH-HKDF-SHA256-AES256GCM",
-  "epk": "<base64 uncompressed P-256 point, 65 bytes>",
-  "salt": "<base64 random salt, 16 bytes>",
-  "iv": "<base64 random IV, 12 bytes>",
-  "ct": "<base64 ciphertext followed by 16-byte GCM tag>"
-}
+{"v":1,"alg":"P256-2DH-HKDF-SHA256-AES256GCM","epk":"<base64 65-byte point>","salt":"<base64 16 bytes>","iv":"<base64 12 bytes>","ct":"<base64 ciphertext + 16-byte tag>"}
 ```
 
-Identity keys encode uncompressed SEC1 `0x04 || X || Y`: 65 bytes, coordinates
-32 bytes each, ECDH `namedCurve: "P-256"`. Validate curve membership; reject
-compressed points and other curves. For each message/recipient generate a fresh
-ephemeral P-256 pair, 16-byte salt and 12-byte IV with the platform CSPRNG.
-For sender identity S, recipient identity R and ephemeral E:
+Use uncompressed SEC1 P-256 points (`0x04 || X || Y`, 32-byte coordinates); validate
+curve membership and reject compressed/other-curve keys. For each recipient:
 
-1. Concatenate `DH(S_private, R_public) || DH(E_private, R_public)` (64 bytes).
-   The recipient obtains the same outputs using `R_private`.
-2. Set UTF-8 context to
+1. Generate a fresh ephemeral ECDH pair, random 16-byte salt and 12-byte IV with CSPRNG.
+2. Concatenate `DH(sender_identity_private, recipient_public) || DH(ephemeral_private,
+   recipient_public)` (64 bytes); recipient derives equivalents with its private key.
+3. HKDF-SHA-256 derives an AES-256-GCM key using that secret, salt and UTF-8 info:
    `sideword-web-p256-v1|{chat_id}|{client_message_id}|{sender_public_id}|{recipient_public_id}`.
-   Use decimal chat IDs and exact API ID strings.
-3. HKDF-SHA-256 derives 32 bytes from those DH outputs, envelope salt and context as info.
-4. AES-256-GCM encrypts UTF-8 plaintext with that key, IV, context as AAD and a
-   128-bit tag appended to ciphertext.
-5. Discard derived secrets/ephemeral private keys; JavaScript cannot guarantee physical erasure.
+   Use decimal chat ID and exact API strings.
+4. Encrypt UTF-8 plaintext with that key/IV and the same context as AAD; append a
+   128-bit GCM tag. Discard derived secrets/ephemeral keys; JS cannot guarantee erasure.
 
-Reject unsupported versions/algorithms, invalid DH and authentication failures.
-No negotiation, weaker fallback, zero secret or plaintext fallback is allowed.
-Context does not authenticate names, timestamps or group membership. Groups use
-separate pairwise envelopes under one client message ID, without a shared ratchet
-or authenticated membership epochs; cover every peer.
+Reject unsupported formats/algorithms, invalid DH and authentication failures without
+plaintext/weaker fallback. Context does not authenticate names, timestamps or group
+membership. Groups use separate per-recipient envelopes, never a shared group key.
+
+## Application payload v1
+
+Plaintext JSON has exactly one of these field sets:
+
+```json
+{"v":1,"type":"text","text":"Hello"}
+{"v":1,"type":"attachment","name":"example.bin","mime":"application/octet-stream","size":3,"data":"AP8B"}
+```
+
+- Text: 1–16,000 UTF-8 bytes; arbitrary user text always goes inside `text`.
+- Attachment: `size` integer 0–1,048,576; `data` canonical padded standard base64,
+  decoded length exactly `size`; nonempty `name` at most 255 UTF-16 code units;
+  `mime` 0–127 printable ASCII characters, including empty.
+- Reject unknown fields/types/versions, malformed encodings, size mismatches and
+  payloads over 1,400,000 UTF-8 bytes. No legacy/raw-text fallback.
+
+Names, declared types and file bytes are encrypted. One file per message; select,
+paste or drop, review, then Send. No captions, previews, playback, compression or
+chunking. Read no bytes before size validation/peer checks; never fetch pasted URLs.
+
+### Encoding and resource budget
+
+Maximal file with maximally escaped metadata:
+
+| Stage | Bytes/ASCII characters |
+| --- | --- |
+| Original | 1,048,576 |
+| File base64 | 1,398,104 |
+| Payload JSON | 1,399,960 |
+| GCM output + tag | 1,399,976 |
+| Envelope JSON | 1,866,845 |
+| Outer base64 per recipient | 2,489,128 |
+
+Base64 length is `4 * ceil(n/3)`; envelope fields add 209 bytes plus base64 ciphertext.
+The conservative four-recipient HTTP bound is 9,959,328 bytes, below 10 MiB; five
+maximal copies exceed it. Smaller files support up to 100 recipients, within quotas.
+The relay bounds opaque resources, not verified plaintext size/type. See [API limits](API.md#send-retries-and-capacity).
+
+Encrypt recipients sequentially; retained envelopes still multiply bandwidth/storage.
+File buffers, JSON/base64, crypto/storage copies and possibly two-byte JS strings
+coexist: wire limits are not heap limits. Outbox: 100 records/32 MiB encrypted bytes;
+history depends on browser quota. Storage failures withhold ACK and preserve retries.
+Invalid message work is cooled down for 60 seconds in a bounded cache; reload may retry sooner.
+
+### Downloads and confirmations
+
+Render names with `textContent`. Suggested downloads remove path separators, controls,
+bidi formatting and leading/trailing dots/spaces, capped at 180 UTF-16 units with
+`download` fallback. Keep original metadata encrypted in history.
+
+Explicit clicks create generic `application/octet-stream` Blobs and object URLs with
+the `download` attribute. Never embed file contents or auto-open/download. Revoke URLs
+after a 60-second handoff or cleanup; at most eight live URLs. Browser/OS can refuse or
+rename downloads. No server malware inspection; saved downloads are ordinary local
+files that cannot be remotely revoked. Viewing confirms the card, not file opening.
 
 ## Identity checks and local state
 
-Fingerprints are lowercase hex SHA-256 of raw public points (64 characters).
-Compute locally and compare the full fingerprint/participant through another
-trusted channel; the relay's fingerprint is not a trust anchor.
+Compare full lowercase hex SHA-256 fingerprints of raw public points through another
+trusted channel. First-use pins bind peer ID/local key/origin; atomic writes prevent
+tab overwrites, and mismatches block sending/decryption. Pins cannot authenticate
+initial substitution, a malicious roster or served code. Names grant no trust.
 
-First-use pins are scoped to peer public ID, local device key and origin. Atomic
-IndexedDB writes prevent tabs overwriting pins; later mismatches block that key.
-A new public ID requires new verification. Pinning cannot detect initial
-substitution, a malicious roster or malicious code served by the origin.
-
-IndexedDB `sideword-test-client-p256`, version 1, store `device` holds non-exportable
-identity/history CryptoKeys. `history:` records use a separate AES-256-GCM key,
-fresh 12-byte IV and full storage key as AAD. Private/ephemeral keys are generated
-non-exportable; no export/wrapping/plaintext fallback exists. Device keys are not uploaded.
-
-Before admission, read saved identity in a separate completed transaction and
-verify both keys and expected participant/public key. Distinguish absent records
-from null/unreadable keys; preserve unreadable state and abort replacement writes.
-Block renewal on storage failure; an actual device identity change requires reload.
-These checks cannot recover lost keys or establish device compatibility.
-
-Names are unauthenticated labels stored beside routing IDs. Roster label updates
-must not change saved delivery identities or history. Origins have independent
-keys/pins/history despite sharing rooms; see [device lifecycle](SESSION_LIFECYCLE.md#persistence-devices-and-reconnects).
+IndexedDB `sideword-test-client-p256-payload-v1` v1, store `device`, holds non-exportable
+identity/history CryptoKeys. History/outboxes use separate AES-256-GCM, fresh 12-byte IVs
+and full storage key as AAD; no plaintext/key export fallback. Origins have independent
+state. Preserve unreadable keys/history and fail admission/renewal closed on storage or
+identity mismatch; never silently replace keys. See [devices](SESSION_LIFECYCLE.md#persistence-devices-and-reconnects).
 
 ## Delivery requirements for future clients
 
-- Authenticate, decrypt, verify pins and commit local history **before** exact ACK
-  removes ciphertext. Failed crypto/storage stays retryable; serialize WS/poll processing.
-- Deduplicate messages by chat/sender/client message ID; receipts also bind reader,
-  original delivery ID and event stage. SQLite row IDs can be reused. Treat naive timestamps as UTC.
-- Exact operations bind random delivery ID, chat, sender/reader and message ID;
-  batch at most 100 per list. IDs survive full backups but are relay metadata,
-  outside ciphertext/HKDF context and not proof against relay replay.
-- Persist immutable outgoing envelopes before upload; retry identical ciphertext
-  within the [retry window](API.md#send-retries-and-capacity). The browser uses encrypted outboxes and Web Locks.
-- Store acceptance, per-recipient confirmations, viewing intent and ACK markers as
-  encrypted history metadata. ACK receipts only after persistence; zero counts can mean an earlier retry committed.
-- Send viewing confirmations only after actual viewing and prior durable delivery;
-  presence is separate connection metadata, never viewing/delivery proof. See
-  [confirmation semantics](API.md#durable-delivery-and-actual-viewing).
-- Respect conversation closure without erasing local history or re-encrypting
-  pending messages. Resume only within ordinary deadlines when reopened.
+- Serialize WS/poll receipt processing. Authenticate, check pins, decrypt, validate and
+  durably persist locally **before** exact deletion ACK; keep failures retryable.
+- Deduplicate by chat/sender/client message ID, not reusable SQLite row IDs. Receipts
+  also bind reader/original delivery ID/stage. Normalize timestamps to UTC.
+- Persist immutable outgoing envelopes before upload and retry identical IDs/ciphertext
+  within the [retry window](API.md#send-retries-and-capacity), never re-encrypting.
+- Encrypt acceptance/original recipients, confirmations, viewing intent and ACK markers.
+  Hash event storage keys to hide recipient bindings; merge independent recipients/tabs
+  without lost updates. ACK each receipt's own exact reference after persistence.
+- Confirm viewing only after actual visibility and prior durable delivery; neither
+  rendering/download nor presence substitutes for [confirmation rules](API.md#durable-delivery-and-actual-viewing).
+- Respect closure/expiry without erasing history or automatically resending. Supported
+  backups retain retry metadata but omit queued content; relay IDs do not prove decryption.
 
-See [verification gaps](SECURITY_REVIEW.md#verification-record-and-gaps) before
-claiming browser/native interoperability or cryptographic assurance.
+See [verification gaps](SECURITY_REVIEW.md#verification-record-and-gaps).

@@ -13,7 +13,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path, PurePosixPath
 
 IMAGE_PATH = (
@@ -535,10 +535,31 @@ def verify_database_schema(database, expected):
 
 
 def backup_database(source, destination):
-    with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as original:
-        with sqlite3.connect(destination) as backup:
-            original.backup(backup)
-    destination.chmod(0o600)
+    """Copy live configuration/metadata, never queue rows or database free pages."""
+    source = source.resolve()
+    # Exclusive creation prevents overwriting a backup or following an existing symlink.
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(descriptor)
+    try:
+        with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as original:
+            original.execute("PRAGMA temp_store=MEMORY")
+            original.execute("BEGIN")  # One consistent read snapshot, including during writes.
+            with closing(sqlite3.connect(destination)) as backup:
+                backup.execute("PRAGMA journal_mode=TRUNCATE")
+                backup.execute("PRAGMA secure_delete=ON")
+                backup.execute("PRAGMA temp_store=MEMORY")
+                # Stream logical rows. Never write queued ciphertext into the destination,
+                # even temporarily; a page-level backup would also copy deleted remnants.
+                for statement in original.iterdump():
+                    if statement.startswith('INSERT INTO "pending_messages"'):
+                        continue
+                    backup.execute(statement)
+                if backup.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                    raise DeploymentError("Backup validation failed.")
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        Path(str(destination) + "-journal").unlink(missing_ok=True)
+        raise
 
 
 def health_matches(version):
@@ -725,6 +746,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("validate")
+    backup = commands.add_parser("backup", help="Back up metadata without queued content")
+    backup.add_argument("--source", type=Path, required=True)
+    backup.add_argument("--destination", type=Path, required=True)
     ci = commands.add_parser("ci")
     ci.add_argument("--sha", required=True)
     for name in ["package", "publish", "artifact"]:
@@ -749,6 +773,7 @@ def main():
     try:
         {
             "validate": validate_config,
+            "backup": lambda: backup_database(args.source, args.destination),
             "artifact": lambda: artifact_args(args.directory, args.sha),
             "package": lambda: package_image(args.directory, args.sha, args.retain == "true"),
             "publish": lambda: publish_image(args),

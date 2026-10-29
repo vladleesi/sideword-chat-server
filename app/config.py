@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     )
 
     admin_session_ttl_hours: int = Field(default=12, ge=1)
-    message_ttl_days: int = Field(default=30, ge=1)
-    max_ciphertext_bytes: int = Field(default=64 * 1024, ge=128)
+    message_ttl_days: int = Field(default=7, ge=1, le=30)
+    max_ciphertext_bytes: int = Field(default=2 * 1024 * 1024, ge=128, le=2 * 1024 * 1024)
     send_idempotency_days: int = Field(default=30, ge=1, le=365)
     max_users: int = Field(default=10000, ge=1)
     max_send_records: int = Field(default=100000, ge=1)
@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     max_pending_bytes_per_sender: int = Field(default=16 * 1024 * 1024, ge=1024)
     sends_per_minute: int = Field(default=60, ge=1)
     max_read_receipts: int = Field(default=10000, ge=1)
+    max_pending_per_chat: int = Field(default=2000, ge=1)
+    max_pending_bytes_per_chat: int = Field(default=32 * 1024 * 1024, ge=1024)
+    max_send_request_bytes: int = Field(
+        default=10 * 1024 * 1024, ge=1024, le=10 * 1024 * 1024,
+    )
+    max_http_concurrency: int = Field(default=4, ge=1)
     max_request_bytes: int = Field(default=2 * 1024 * 1024, ge=1024)
     max_ws_connections: int = Field(default=256, ge=1)
     max_ws_per_user: int = Field(default=4, ge=1)

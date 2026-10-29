@@ -131,7 +131,7 @@ h3 { font-size: .9rem; font-weight: 600; }
 .message-status.status-read { color: var(--signature); }
 .message-status.status-failed, .message-status.status-pending { color: var(--danger); }
 .message.mine:focus-visible, .message-status:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .35rem .65rem; align-items: end; flex-shrink: 0; padding: .75rem max(1rem, calc((100% - 820px) / 2)); padding-bottom: max(.75rem, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
+.composer { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .35rem .65rem; align-items: end; flex-shrink: 0; padding: .75rem max(1rem, calc((100% - 820px) / 2)); padding-bottom: max(.75rem, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
 input:not([type="radio"]), textarea { width: 100%; min-width: 0; border: 1px solid var(--control-border); border-radius: 2px; background: var(--bg); color: var(--text); padding: .65rem .75rem; }
 input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 input[aria-invalid="true"] { border-color: var(--danger); }
@@ -258,3 +258,60 @@ textarea:disabled { color: var(--muted); }
   .reload-progress { background: Canvas; }
   .reload-progress > span { background: CanvasText; }
 }
+
+/* Attachment controls share one quiet, file-first visual language. */
+#composer-help, #composer-error, #attachment-preview { grid-column: 1 / -1; }
+.composer .icon-button { width: 44px; padding: .6rem; border-radius: 50%; }
+.icon-button svg { display: block; width: 22px; height: 22px; flex-shrink: 0; }
+#attachment-button { color: var(--muted); align-self: center; border: 1px solid var(--border); background: var(--surface); }
+#attachment-button:hover:not(:disabled), #attachment-button:focus-visible { color: var(--text); border-color: var(--control-border); background: var(--surface-alt); }
+#attachment-button:disabled { opacity: .5; }
+.attachment-selection { display: grid; grid-template-columns: 40px minmax(0, 1fr) 44px; align-items: center; gap: .75rem; padding: .75rem; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); min-width: 0; }
+.attachment-info { min-width: 0; text-align: left; }
+.attachment-caption { display: block; margin-bottom: .2rem; color: var(--muted); font-family: var(--mono); font-size: .625rem; letter-spacing: .035em; text-transform: uppercase; }
+.attachment-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; max-height: 2.8em; overflow: hidden; font-size: .875rem; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; white-space: normal; unicode-bidi: plaintext; }
+.attachment-size { display: block; margin-top: .2rem; color: var(--muted); font-size: .75rem; line-height: 1.4; }
+.file-tile { display: flex; align-items: center; justify-content: center; width: 40px; height: 48px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--muted); }
+.file-icon { display: block; width: 23px; height: 27px; }
+#attachment-cancel { color: var(--muted); align-self: start; }
+#attachment-cancel:hover:not(:disabled) { color: var(--text); }
+.composer.has-attachment #attachment-preview { grid-column: 2; grid-row: 1; }
+.composer.has-attachment #attachment-button { grid-column: 1; grid-row: 1; }
+.composer.has-attachment #send-button { grid-column: 3; grid-row: 1; align-self: center; }
+/* Filename and size stay beside the action rather than pushing it to a second row. */
+.attachment-card { display: grid; grid-template-columns: 40px minmax(0, 1fr) 44px; align-items: center; gap: .1rem .75rem; width: 21rem; max-width: 100%; padding: .75rem; border: 1px solid var(--border); border-radius: 6px; }
+.attachment-card .attachment-download { display: flex; width: 44px; min-height: 44px; padding: .65rem; border-radius: 50%; color: var(--text); background: var(--bg); border: 1px solid var(--border); }
+.attachment-download svg { display: block; width: 20px; height: 20px; pointer-events: none; }
+.attachment-download .sr-only { pointer-events: none; }
+.attachment-card .attachment-download:hover { border-color: var(--control-border); background: var(--surface-alt); }
+.attachment-card .message-footer { position: static; grid-column: 2 / -1; grid-row: 2; justify-self: end; margin-top: .2rem; }
+.attachment-card .message-status { width: 44px; min-height: 28px; }
+.attachment-card .message-content::after { display: none; }
+#composer-error, .attachment-card .field-error { position: relative; margin: .3rem 0 0; padding: .6rem .75rem .6rem 2.1rem; border: 1px solid var(--danger); border-radius: 4px; background: var(--warning-bg); background: color-mix(in srgb, var(--danger) 6%, var(--bg)); color: var(--danger); font-size: .8125rem; line-height: 1.45; overflow-wrap: anywhere; }
+#composer-error::before, .attachment-card .field-error::before { content: "!"; position: absolute; left: .7rem; top: .7rem; display: grid; place-items: center; width: 15px; height: 15px; border: 1px solid currentColor; border-radius: 50%; font-size: .6875rem; font-weight: 600; line-height: 1; }
+.attachment-card .field-error { grid-column: 1 / -1; grid-row: 3; }
+.attachment-card .field-error:empty { display: none; }
+.message-status.status-expired, .message-status.status-unavailable { color: var(--danger); }
+@media (max-width: 560px) {
+  .composer.has-attachment #attachment-preview { grid-column: 1 / -1; grid-row: 1; }
+  .composer.has-attachment #attachment-button, .composer.has-attachment #send-button { grid-row: 2; }
+  .attachment-selection { padding: .6rem; }
+  .attachment-card { width: 19rem; gap: .1rem .55rem; padding: .65rem; }
+}
+@media (forced-colors: active) {
+  .file-tile, #attachment-button, .attachment-card .attachment-download { border-color: ButtonText; }
+  #composer-error, .attachment-card .field-error { border-color: CanvasText; color: CanvasText; background: Canvas; }
+}
+
+.conversation.file-drag-over { outline: 2px dashed var(--accent); outline-offset: -5px; }
+.conversation.file-drag-over .composer { background: var(--surface); }
+
+/* Sent files keep the size and delivery control on one metadata line. */
+.message.mine .attachment-card { width: 18rem; grid-template-columns: 40px minmax(0, 1fr) 44px; gap: 0 .5rem; padding: .5rem; }
+.message.mine .attachment-card .attachment-info { display: contents; }
+.message.mine .attachment-card .attachment-name { grid-column: 2; grid-row: 1; }
+.message.mine .attachment-card .attachment-size { grid-column: 2; grid-row: 2; align-self: center; margin: 0; padding-right: 2.75rem; }
+.message.mine .attachment-card .file-tile { grid-column: 1; grid-row: 1 / span 2; }
+.message.mine .attachment-card .attachment-download { grid-column: 3; grid-row: 1 / span 2; }
+.message.mine .attachment-card .message-footer { grid-column: 2; grid-row: 2; margin: 0; align-self: center; }
+.message.mine .attachment-card .message-status { min-height: 24px; }

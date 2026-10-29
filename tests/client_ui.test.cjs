@@ -490,7 +490,8 @@ test('changed-key warnings and blocked sending remain visible with the details d
 test('a key change during an outgoing attempt keeps the composer blocked after failure', async () => {
   const app = client();
   app.nodes.get('#message-input').value = 'draft';
-  app.run(`encryptForRecipient = async () => {
+  app.run(`assertTrustedPeer = async () => {};
+    encryptForRecipient = async () => {
     chats[0].participants[1].key_changed = true;
     selectChat(7);
     throw new ClientError("A participant's encryption key changed and no longer matches the fingerprint saved on this device. Sending and decryption are blocked. Keep this device's history.");
@@ -710,8 +711,8 @@ test('pending retries retain encrypted records, expiry labels and unchanged disc
     globalThis.records = [];
     putDatabaseValue = async (key, value) => records.push({key, value});
     readHistoryRecords = async () => records;
-    await persistOutbox({chatId: 7, messageId: 'saved', plaintext: 'pending text', expiresAt: Date.now() + 60000});
-    await persistOutbox({chatId: 7, messageId: 'expired', plaintext: 'expired text', expiresAt: 0});
+    await persistOutbox({chatId: 7, messageId: 'saved', payload: { v: 1, type: 'text', text: 'pending text' }, expiresAt: Date.now() + 60000});
+    await persistOutbox({chatId: 7, messageId: 'expired', payload: { v: 1, type: 'text', text: 'expired text' }, expiresAt: 0});
     await renderOutbox();
   })()`);
   const list = app.nodes.get('#pending-send-list');

@@ -103,7 +103,7 @@ test('P-256 setup uses a separate database without reading or overwriting prior 
   const run = client(backend);
   const requestDatabase = name => {
     opened.push(name);
-    assert.equal(name, 'sideword-test-client-p256');
+    assert.equal(name, 'sideword-test-client-p256-payload-v1');
     const request = {};
     setImmediate(() => { request.result = backend.database; request.onsuccess(); });
     return request;
@@ -228,7 +228,7 @@ test('changed sender keys cannot cause decryption, history persistence, or delet
 
 test('missing history storage key cannot acknowledge plaintext that was never persisted', async () => {
   const run = client(storage());
-  run(`decryptMessage = async () => 'authenticated plaintext';
+  run(`decryptMessage = async () => SidewordProtocol.encodePayload(SidewordProtocol.textPayload('authenticated plaintext'));
     senderKeyIsLoaded = () => true;
     incoming = { id: 1, chat_id: 7, sender_public_id: 'alice', client_message_id: 'x' };
   `);

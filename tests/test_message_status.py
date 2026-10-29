@@ -218,6 +218,8 @@ def test_metadata_expiry_retention_and_no_stale_confirmations(room):
                 select(SendRecord).where(SendRecord.chat_id == users[0]["chat"]["id"])
             )
             record.created_at = datetime.now(timezone.utc) - timedelta(days=days)
+            record.content_expires_at = record.created_at + timedelta(
+                days=get_settings().message_ttl_days)
             record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
             await session.commit()
 

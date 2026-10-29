@@ -15,6 +15,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app import db
+from app.config import get_settings
 from app.db import SessionLocal
 from app.invite_security import hash_room_password, verify_room_password
 from app.main import create_app
@@ -270,7 +271,9 @@ def test_lifecycle_invalidates_resumption_and_http_sessions(client, field):
                       ).status_code == 401
 
 
-def test_concurrent_first_joins_and_retries_are_atomic(client):
+def test_concurrent_first_joins_and_retries_are_atomic(client, monkeypatch):
+    # Exercise DB admission races independently of the outer HTTP concurrency gate.
+    monkeypatch.setattr(get_settings(), "max_http_concurrency", 5)
     link, _ = create_invite(client)
     alice = join_payload()
 

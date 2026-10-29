@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from sqlalchemy import inspect
+from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -29,6 +29,31 @@ engine = create_async_engine(
     pool_pre_ping=True,
     connect_args={"timeout": 30},
 )
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def configure_storage(connection, _record):
+    """Apply deletion policy to every pooled connection without disabling crash recovery."""
+    cursor = connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode")
+        if cursor.fetchone()[0].lower() == "wal":
+            raise RuntimeError(
+                "WAL databases are unsupported by this deletion policy. Use fresh state."
+            )
+        for statement, expected in (
+            ("PRAGMA secure_delete=ON", 1),
+            ("PRAGMA journal_mode=TRUNCATE", "truncate"),
+            ("PRAGMA journal_size_limit=0", 0),
+        ):
+            cursor.execute(statement)
+            if cursor.fetchone()[0] != expected:
+                raise RuntimeError("SQLite cannot enforce the required deletion policy.")
+        cursor.execute("PRAGMA synchronous=FULL")
+        cursor.execute("PRAGMA temp_store=MEMORY")
+    finally:
+        cursor.close()
+
 
 SessionLocal = async_sessionmaker(
     engine,

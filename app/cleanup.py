@@ -32,7 +32,7 @@ async def _purge_once() -> None:
     cutoff = datetime.now(timezone.utc) - ttl
     async with session_scope() as session:
         msg_res = await session.execute(
-            delete(PendingMessage).where(PendingMessage.created_at < cutoff)
+            delete(PendingMessage).where(PendingMessage.expires_at <= datetime.now(timezone.utc))
         )
         # Receipts use the same TTL as pending messages.
         rcpt_res = await session.execute(
@@ -42,7 +42,7 @@ async def _purge_once() -> None:
         # Read authorization outlives ciphertext deletion, but never exceeds the
         # larger of the configured retry window and message retention period.
         await session.execute(delete(SendRecord).where(
-            SendRecord.expires_at <= now, SendRecord.created_at < cutoff
+            SendRecord.expires_at <= now, SendRecord.content_expires_at <= now
         ))
         await session.execute(delete(RefreshUse).where(RefreshUse.session_id.in_(
             select(ClientSession.id).where(ClientSession.expires_at <= now))))

@@ -29,6 +29,7 @@ class ConnectionManager:
         self._public_ids: dict[WebSocket, str] = {}
         self._presence: set[WebSocket] = set()
         self._presence_lock = asyncio.Lock()
+        self._sending: set[WebSocket] = set()
 
     async def connect(
         self, user_id: int, websocket: WebSocket, validate: Callable[[], Awaitable[bool]],
@@ -196,11 +197,16 @@ class ConnectionManager:
                     return
         sockets = list(self._connections.get(user_id, ()))
         for ws in sockets:
+            if ws in self._sending:
+                continue  # Pending rows remain available to polling; never queue live pushes.
+            self._sending.add(ws)
             try:
                 if await self.validate(user_id, ws):
                     await asyncio.wait_for(ws.send_json(payload), timeout=5)
             except Exception:
                 await self.disconnect(user_id, ws)
+            finally:
+                self._sending.discard(ws)
 
     async def notify_chat_state(self, chat_id: int) -> None:
         async with SessionLocal() as session:

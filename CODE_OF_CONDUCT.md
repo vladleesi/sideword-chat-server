@@ -1,17 +1,9 @@
 # Code of conduct
 
-## Standard
+Be respectful, constructive and welcoming. Harassment, discrimination, threats,
+sexualized content, intimidation, sustained disruption and sharing private information
+are unacceptable in project spaces or when representing the project.
 
-Communicate respectfully, welcome different experiences, accept responsibility
-for mistakes and keep discussion constructive.
-
-Harassment, discrimination, threats, sexualized content, intimidation, sustained
-disruption and publishing private information are unacceptable.
-
-## Enforcement
-
-Maintainers may edit/remove contributions or restrict participation to protect
-the community. Report concerns privately through the repository owner's GitHub
-profile; reports are handled promptly and as confidentially as practical.
-
-This policy covers project spaces and public representation of the project.
+Report concerns privately through the repository owner's GitHub profile. Maintainers
+handle reports as confidentially as practical and may remove contributions or restrict
+participation to protect the community.

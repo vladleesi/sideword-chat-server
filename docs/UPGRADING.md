@@ -1,115 +1,80 @@
 # Backups, upgrades and recovery
 
-[Setup](../README.md#setup) · [Releases](../CHANGELOG.md) · [Security review](SECURITY_REVIEW.md)
+[Setup](../README.md#setup) · [Changelog](../CHANGELOG.md) · [Security](SECURITY_REVIEW.md)
 
 ## Backups
 
-Stop all writers, then copy SQLite and adjacent `-wal`/`-shm` files. Defaults:
-`data/sideword.sqlite3` locally; `/data/sideword.sqlite3` in Docker's `sideword-data`
-volume. Preserve signing/configuration secrets, encrypt backups and set retention.
-SQL deletion does not erase backups, WAL or free pages.
+```sh
+python -m scripts.deploy backup --source data/sideword.sqlite3 --destination backup.sqlite3
+```
 
-Admin/CLI exports are unencrypted configuration, not full backups. They include
-users, chats, memberships, invites, password/resume verifiers and admission retry metadata;
-they omit pending messages/receipts, admins and send/session ledgers. Replacing
-configuration removes current configuration and pending deliveries. Protect exports
-as secrets.
+Creates a new private file with configuration, credentials and retry/ACK metadata,
+but no queued content or deleted free pages. Deployment backups use the same command.
+Protect/encrypt backups and set retention: they still contain secrets. Configuration
+exports are unencrypted and omit both sessions and delivery evidence. Neither includes
+browser keys/history. Ordinary restarts retain pending content; backup restores do not.
 
-Browser keys/history are origin-bound and absent from server backups. Clearing
-browser state can permanently lose access without freeing participant slots.
+Exclude live database/journals from volume snapshots and backup agents if content must
+not be retained there. Existing copies are not retroactively scrubbed. Application deletion
+cannot guarantee physical erasure from SSDs, old backups, snapshots or host memory.
 
 ## Upgrade
 
-Each pre-release requires fresh server/browser state and matching code/assets.
-Data conversion is unsupported; preserve old state separately.
+Each pre-release requires fresh server/browser state and matching code/assets; no
+automatic migration. SQLite 3.35+ is required; incompatible schemas and WAL databases
+are rejected. Version 0.15.0 adds payload v1 and fixed content deadlines; older raw-text
+clients are incompatible. Browser DB `sideword-test-client-p256-payload-v1` leaves old
+browser data untouched. Configuration bundles remain v2.
 
-Backend 0.14.0 adds membership display names to `chat_members`. Earlier database
-schemas are rejected; preserve the old database and select fresh server state
-before starting this release. Configuration bundles are now version 2 and require
-each member's `display_name` (nullable, at most 64 characters). Version 1 bundles
-are rejected without changing existing state. No automatic migration or bundle
-conversion is provided.
+1. Stop writers and back up; preserve old server/browser state separately.
+2. Choose a fresh database path/volume and install matching code/assets.
+3. Review [.env.example](../.env.example) without replacing secrets. Old 64 KiB envelope/
+   2 MiB send overrides reject larger attachments; default content lifetime is seven days.
+4. Start fresh, create invites, verify `/health`, public admin blocking and cache headers.
 
-1. Read the changelog, stop writers and back up.
-2. Select a fresh database path or Docker volume; retain old server/browser data.
-3. Install matching code/dependencies/assets using [setup](../README.md#setup).
-   Review `.env.example` without replacing secrets; apply [cache controls](#public-asset-transfers).
-4. Start fresh, create invites and verify `/health` and public admin blocking.
-5. Keep backups until verification finishes.
-
-SQLite 3.35+ is required. Startup creates the schema and rejects incompatible
-databases without rewriting them. Release publication does not deploy the backend
-or Pages; see [release automation](../CONTRIBUTING.md#pull-requests-and-releases).
-
-Manual deployment checks schema/health configuration before stopping the backend.
-Use a fresh database filename inside the existing persistent mount for a new
-pre-release. Inherit the image's Python health probe; remove `curl` overrides and
-never disable health checks. Failed activation stops the candidate and retains
-backups/rollback images. Fix configuration before retrying the manual workflow.
+Manual deployment checks schema/health before stopping the old backend. Inherit the
+image's Python health probe; do not disable it or replace it with `curl`. Failed activation
+retains backups/rollback images. Releases deploy neither backend nor Pages.
 
 ## Restore safely
 
-Use matching pre-release code/assets. Restoring a snapshot can revive revoked
-credentials and undo later policy changes:
+Snapshots can revive revoked credentials and undo later policy changes:
 
-1. Stop writers; restore with external access blocked.
+1. Stop writers; restore matching code/assets/data with external access blocked.
 2. Rotate `SIDEWORD_SECRET_KEY` on every worker.
 3. In one transaction delete `refresh_uses`, then `client_sessions`, then `admin_sessions`.
-4. Reapply later invite revocations, closures, user deactivations and password resets.
-5. Restart and verify old tokens/refresh credentials fail. Admins log in again;
-   clients recover only through still-authorized invite credentials.
+4. Reapply invite revocations, closures, deactivations and password resets made since backup.
+5. Verify old JWTs/refresh credentials fail and test recovery before reopening access.
 
-Key rotation/session removal does not invalidate invite resume credentials or
-passwords; revoke/change those separately. Snapshots cannot reconstruct later changes.
-
-Full backups retain delivery IDs and ACK/send evidence. Deduplicate restored
-messages before ACK; retry newer outboxes carefully because later evidence is
-missing. Test an isolated copy of the operator's backup before reopening access.
+Invite resume credentials/passwords survive key rotation; revoke/change them separately.
+Backups retain delivery IDs/evidence but omit pending content; affected sends show
+unavailable. Older snapshots also lose later retry evidence: verify before resending.
 
 ## Rollback
 
-Restore the target release's matching code/assets/backup. Newer data/protections
-may be lost. Test offline and apply [credential invalidation](#restore-safely).
+Use the target release's matching code/assets/backup, test offline and follow
+[credential invalidation](#restore-safely). Newer data/protections may be lost.
 
 ## Public deployment controls
 
-- Require HTTPS/WSS outside loopback. Block `/admin` and descendants, `/docs`,
-  `/redoc`, `/openapi.json` for HTTP and WS. Proxy restricted **8001**, or explicitly
-  block those routes on Docker's admin-inclusive **8000**.
-- Route aliases' API/WS traffic to one process/database. Independent workers do
-  not share connections. Aliases need no shared cookies, relaxed CORS or key transfer;
-  `SIDEWORD_PUBLIC_URL` only chooses generated invite addresses.
-- Trust actual proxy IPs only: `SIDEWORD_TRUSTED_PROXY_IPS` for the shared runner,
-  `FORWARDED_ALLOW_IPS` for Uvicorn/Docker; never `*`. Preserve configured client
-  certificate checks and enable HSTS after TLS validation.
-- Redact invite paths/queries, bodies, Authorization, cookies and WS auth at every
-  logging layer. Use `--no-access-log --log-level warning`; WS URLs otherwise reach INFO logs.
-- Add gateway limits, header/idle timeouts and CPU/memory/disk limits. HTTP/WS
-  limits are per process; DB quotas/login limits are shared. See [.env.example](../.env.example)
-  and [API limits](API.md#send-retries-and-capacity).
-- Disable `SIDEWORD_PRESENCE_ENABLED` across independent workers. Preserve transport
-  ping/pong cleanup; see [presence](API.md#participant-presence).
-
-Interrupted requests may have committed. Retry persisted ciphertext/message IDs
-instead of re-encrypting; see [device/reconnect behavior](SESSION_LIFECYCLE.md#persistence-devices-and-reconnects).
+- Require HTTPS/WSS. Block `/admin` and descendants, `/docs`, `/redoc`, `/openapi.json`
+  over HTTP **and WS**. Proxy restricted **8001**; Docker's **8000** includes admin.
+- Route aliases to one process/database. Independent workers do not share connections;
+  disable presence across them. Trust only actual proxy IPs in `SIDEWORD_TRUSTED_PROXY_IPS`
+  (shared runner) or `FORWARDED_ALLOW_IPS` (Uvicorn/Docker), never `*`.
+- Redact invite URLs, request bodies, Authorization, cookies and WS auth at every layer.
+  Use `--no-access-log --log-level warning`; WS URLs otherwise reach INFO logs.
+- Set gateway/time/resource limits. Allow send bodies up to 10 MiB, other bodies 2 MiB,
+  outbound WS 4 MiB. Group copies multiply resources; four HTTP operations can hold
+  40 MiB of bodies before additional JSON/base64/ORM/WS copies. Measure runtime memory
+  and set host budgets; wire limits are not RSS guarantees. Lower limits may reject files.
+- Preserve transport ping/pong, TLS certificate checks and private no-store protections.
+  See [API limits](API.md#send-retries-and-capacity) and [.env.example](../.env.example).
 
 ### Public asset transfers
 
-Cache only public `/static/` GET/HEAD requests. Preserve gzip, ETag/Last-Modified,
-query strings in CDN keys, and `Cache-Control: public, max-age=3600, must-revalidate`.
-Old revision URLs serve current files: deploy templates/assets together, advance
-query revisions and purge caches when rolling back or reusing a revision.
-
-Example Cloudflare bypass rule:
-
-```text
-(http.host eq "chat.example.com") and not
-(starts_with(http.request.uri.path, "/static/") and http.request.method in {"GET" "HEAD"})
-```
-
-Keep clients, invites, API/admin, redirects and errors `no-store`; never compress
-private responses. Allow static `X-Accel-Buffering: yes` without changing private/WS
-buffering. See [Nginx](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_buffering)
-and [Cloudflare](https://developers.cloudflare.com/cache/how-to/cache-rules/).
-Verify asset delivery, CDN hits and private-response headers after deployment;
-measure network performance externally.
+Cache/compress only public `/static/` GET/HEAD responses; retain gzip, ETag/Last-Modified,
+query-string cache keys and `public, max-age=3600, must-revalidate`. Deploy templates/assets
+together and advance revisions; old revision URLs serve current files. Purge reused revisions
+on rollback. Keep client/invite/API/admin/redirect/error responses `no-store`, uncompressed,
+and preserve WS/private buffering rules. Verify proxy/CDN behavior after deployment.

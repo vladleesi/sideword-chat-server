@@ -21,6 +21,78 @@ const SidewordProtocol = (() => {
     return Uint8Array.from(binary, (character) => character.charCodeAt(0));
   }
 
+  const MAX_FILE_BYTES = 1048576;
+  const MAX_TEXT_BYTES = 16000;
+  const MAX_PAYLOAD_BYTES = 1400000;
+  const MAX_ENVELOPE_BYTES = 2 * 1024 * 1024;
+  const MAX_WIRE_CHARS = 4 * Math.ceil(MAX_ENVELOPE_BYTES / 3);
+  const MAX_SEND_BYTES = 10 * 1024 * 1024;
+
+  function payloadError() {
+    return new ProtocolError("Invalid or unsupported message payload. The message was not saved or acknowledged.");
+  }
+
+  function attachmentBytes(payload) {
+    if (typeof payload.data !== "string" || !Number.isInteger(payload.size)
+        || payload.size < 0 || payload.size > MAX_FILE_BYTES
+        || payload.data.length !== 4 * Math.ceil(payload.size / 3)) throw payloadError();
+    let bytes;
+    try { bytes = base64ToBytes(payload.data); } catch { throw payloadError(); }
+    // Reject whitespace, URL alphabet, missing padding and nonzero pad bits.
+    if (bytes.length !== payload.size || bytesToBase64(bytes) !== payload.data) throw payloadError();
+    return bytes;
+  }
+
+  function validatePayload(payload) {
+    if (!payload || Array.isArray(payload) || payload.v !== 1) throw payloadError();
+    const fields = payload.type === "text" ? ["v", "type", "text"]
+      : payload.type === "attachment" ? ["v", "type", "name", "mime", "size", "data"] : [];
+    if (Object.keys(payload).length !== fields.length
+        || !fields.every(field => Object.hasOwn(payload, field))) throw payloadError();
+    if (payload.type === "text") {
+      if (typeof payload.text !== "string" || !payload.text.length
+          || encoder.encode(payload.text).length > MAX_TEXT_BYTES) {
+        throw new ProtocolError("Text messages must contain 1–16,000 UTF-8 bytes.");
+      }
+    } else {
+      if (typeof payload.name !== "string" || !payload.name.length || payload.name.length > 255
+          || typeof payload.mime !== "string" || payload.mime.length > 127
+          || /[^\x20-\x7e]/.test(payload.mime)) throw payloadError();
+      attachmentBytes(payload);
+    }
+    return payload;
+  }
+
+  function encodePayload(payload) { return JSON.stringify(validatePayload(payload)); }
+
+  function decodePayload(plaintext) {
+    if (typeof plaintext !== "string" || plaintext.length > MAX_PAYLOAD_BYTES
+        || encoder.encode(plaintext).length > MAX_PAYLOAD_BYTES) throw payloadError();
+    let payload;
+    try { payload = JSON.parse(plaintext); } catch { throw payloadError(); }
+    return validatePayload(payload);
+  }
+
+  function textPayload(text) { return validatePayload({ v: 1, type: "text", text }); }
+
+  function filePayload(name, mime, bytes) {
+    if (bytes.byteLength > MAX_FILE_BYTES) throw new ProtocolError("Files must be 1 MiB or smaller.");
+    return validatePayload({ v: 1, type: "attachment", name, mime,
+      size: bytes.byteLength, data: bytesToBase64(bytes) });
+  }
+
+  function safeDownloadName(name) {
+    return name.replace(/[\/\\\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+      .replace(/^[. ]+|[. ]+$/g, "").slice(0, 180) || "download";
+  }
+
+  // Upper bound includes maximal JSON escaping and outer request fields.
+  function attachmentSendBytes(size, recipients) {
+    const payloadBytes = 4 * Math.ceil(size / 3) + 255 * 6 + 127 * 2 + 100;
+    const envelopeBytes = 4 * Math.ceil((payloadBytes + 16) / 3) + 220;
+    return 512 + recipients * (4 * Math.ceil(envelopeBytes / 3) + 512);
+  }
+
   function envelopeContext(chatId, messageId, senderId, recipientId) {
     return encoder.encode(`sideword-web-p256-v1|${chatId}|${messageId}|${senderId}|${recipientId}`);
   }
@@ -64,6 +136,7 @@ const SidewordProtocol = (() => {
   }
 
   async function encryptForRecipient(identity, plaintext, chatId, messageId, recipient) {
+    if (encoder.encode(plaintext).length > MAX_PAYLOAD_BYTES) throw payloadError();
     const recipientKey = await importPublicKey(recipient.public_key);
     const ephemeral = await crypto.subtle.generateKey(keyAlgorithm, false, ["deriveBits"]);
     const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -95,6 +168,7 @@ const SidewordProtocol = (() => {
   }
 
   async function decryptMessage(identity, message, sender) {
+    if (typeof message.ciphertext !== "string" || message.ciphertext.length > MAX_WIRE_CHARS) throw payloadError();
     let envelope;
     try {
       envelope = JSON.parse(decoder.decode(base64ToBytes(message.ciphertext)));
@@ -139,7 +213,7 @@ const SidewordProtocol = (() => {
     } catch {
       throw new ProtocolError("This message could not be authenticated or decrypted: its encrypted data or encryption keys do not match.");
     }
-    return decoder.decode(plaintext);
+    try { return decoder.decode(plaintext); } catch { throw payloadError(); }
   }
 
   async function publicKeyFingerprint(publicKey) {
@@ -150,5 +224,7 @@ const SidewordProtocol = (() => {
   }
 
   return Object.freeze({ bytesToBase64, base64ToBytes, encryptForRecipient,
-    decryptMessage, publicKeyFingerprint, ProtocolError });
+    decryptMessage, publicKeyFingerprint, ProtocolError, encodePayload, decodePayload,
+    textPayload, filePayload, validatePayload, attachmentBytes, safeDownloadName,
+    attachmentSendBytes, MAX_FILE_BYTES, MAX_SEND_BYTES, MAX_WIRE_CHARS });
 })();

@@ -221,7 +221,7 @@ for (const mobile of [false,true]) {
 
 async function incoming(options = {}) {
   const app = client({observeVisibility:true,...options});
-  await app.run(`persistHistoryEntry=async()=>{}; decryptMessage=async message=>message.ciphertext;
+  await app.run(`persistHistoryEntry=async()=>{}; decryptMessage=async message=>SidewordProtocol.encodePayload(SidewordProtocol.textPayload(message.ciphertext));
     globalThis.calls=[]; api=async(path,options)=>calls.push({path,body:JSON.parse(options.body)});
     globalThis.incoming={delivery_id:'a'.repeat(32),chat_id:7,sender_public_id:'peer-a',
       client_message_id:'in',ciphertext:'durable',created_at:'2026-10-07T12:00:00Z'};
@@ -314,7 +314,7 @@ test('message details retain selectable full IDs when clipboard access is blocke
 
 test('lost local ACK-marker persistence retries the exact delivery without duplicate messages', async () => {
   const app=client();
-  await app.run(`decryptMessage=async message=>message.ciphertext;
+  await app.run(`decryptMessage=async message=>SidewordProtocol.encodePayload(SidewordProtocol.textPayload(message.ciphertext));
     globalThis.calls=[]; api=async(path,options)=>calls.push(JSON.parse(options.body));
     persistHistoryEntry=async(_,entry)=>{if(entry.kind==='delivery_ack') throw new Error('marker failed');};
     globalThis.incoming={delivery_id:'a'.repeat(32),chat_id:7,sender_public_id:'peer-a',
@@ -349,7 +349,7 @@ for (const advertised of [undefined, 0, '86400', 86400]) {
 test('saved capabilities cannot enable read confirmations before current-server negotiation', async () => {
   const app=client({observeVisibility:true});
   await app.run(`messageProfileReady=false;identity.receiptRetentionSeconds=86400;
-    persistHistoryEntry=async()=>{};decryptMessage=async message=>message.ciphertext;
+    persistHistoryEntry=async()=>{};decryptMessage=async message=>SidewordProtocol.encodePayload(SidewordProtocol.textPayload(message.ciphertext));
     globalThis.requests=[];api=async(path,options)=>requests.push({path,body:JSON.parse(options.body)});
     processIncoming({messages:[{delivery_id:'a'.repeat(32),chat_id:7,sender_public_id:'peer-a',
       client_message_id:'not-negotiated',ciphertext:'durable'}]})`);
@@ -536,4 +536,39 @@ test('a visible sender header without visible message content cannot confirm hum
   row.messageBubble.rect=rectangle(0,40,100,60);
   app.nodes.get('#message-list').emit('scroll'); await app.fireViews();
   assert.equal(app.run('calls.length'),2);
+});
+
+test('expired and unavailable copies show unconfirmed failure without hiding successful group delivery', async () => {
+  for (const failure of ['expired', 'unavailable']) {
+    const app = await outgoing();
+    await app.run('accept()');
+    await app.run(`appendMessage(7, {id:'state', kind:'delivery_state',clientMessageId:'stable',
+      recipient:'peer-b',deliveryId:'b'.repeat(32),state:'${failure}'})`);
+    await app.run('processReceipts([receipt], true)');
+    assert.equal(state(app).status, failure);
+    assert.equal(state(app).states[0].delivered, true);
+    assert.equal(state(app).states[1].delivered, false);
+    assert.equal(app.nodes.get('#message-list').children.length, 1);
+    app.run('showMessageDetails(7, message, elements.messageList.firstChild)');
+    assert.match(app.nodes.get('#message-details-note').textContent, /local copy is kept/);
+    assert.match(app.nodes.get('#message-details-recipients').textContent, /without confirmation/);
+    // A late valid delivery receipt takes precedence over an earlier unavailable snapshot.
+    await app.run(`processReceipts([{...receipt, reader_public_id:'peer-b',
+      message_delivery_id:'b'.repeat(32),delivery_id:'e'.repeat(32)}], true)`);
+    assert.equal(state(app).status, 'delivered');
+  }
+});
+
+test('status recovery persists terminal delivery state before rendering and never infers a read', async () => {
+  const app = await outgoing();
+  app.run(`message.createdAt=Date.now(); identity.receiptRetentionSeconds=2592000;
+    globalThis.saved=[]; persistHistoryEntry=async (_,entry)=>saved.push(entry);
+    api=async()=>({statuses:[{client_message_id:'stable',created_at:new Date().toISOString(),
+      content_expires_at:new Date().toISOString(),recipients:[
+        {public_id:'peer-a',delivery_id:'a'.repeat(32),state:'expired',delivered_at:null,read_at:null},
+        {public_id:'peer-b',delivery_id:'b'.repeat(32),state:'pending',delivered_at:null,read_at:null}]}]});`);
+  await app.run('recoverMessageStatuses()');
+  assert.equal(state(app).status, 'expired');
+  assert.equal(state(app).readCount, 0);
+  assert.equal(app.run('saved.filter(e=>e.kind==="delivery_state").length'), 1);
 });

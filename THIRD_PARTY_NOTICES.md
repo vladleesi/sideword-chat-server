@@ -2,14 +2,10 @@
 
 ## IBM Plex
 
-The landing page, test client and invite pages bundle unmodified IBM Plex Sans
-and IBM Plex Mono webfonts from the [official IBM Plex repository](https://github.com/IBM/plex), source commit
-`763c36ef9117782905ae010056dfbe8fd2653a25`.
-Copyright 2017 IBM Corp., with Reserved Font Name "Plex".
-These fonts are licensed under the SIL Open Font License, Version 1.1.
-The full upstream license and copyright notice are distributed with the fonts in
-[docs/fonts/OFL.txt](docs/fonts/OFL.txt) and
-[app/static/fonts/OFL.txt](app/static/fonts/OFL.txt).
+Bundled IBM Plex Sans/Mono fonts: [IBM Plex](https://github.com/IBM/plex), commit
+`763c36ef9117782905ae010056dfbe8fd2653a25`. Copyright 2017 IBM Corp.; Reserved Font
+Name "Plex". SIL OFL 1.1: [site license](docs/fonts/OFL.txt),
+[client license](app/static/fonts/OFL.txt).
 
 ## Ponytail
 
@@ -42,14 +38,9 @@ SOFTWARE.
 
 ## Agent guidelines
 
-The repository instructions in `AGENTS.md` and `docs/agent-guidance/*.md` retain
-selected rules verbatim from
+Repository guidance imports selected modules once from
 [vladleesi/agent-guidelines v1.2.0](https://github.com/vladleesi/agent-guidelines/tree/v1.2.0),
-source commit `b63cff2a9a11c72a1ceb48223f844ccd637f0f37`.
-Selected modules: general, agent-workflow, testing, security, git, ci, release,
-deployment, backend, python and frontend. This is a one-time, self-contained import;
-fetching, comparing with, or updating the collection requires explicit request.
-The full upstream notice follows.
+commit `b63cff2a9a11c72a1ceb48223f844ccd637f0f37`. Upstream updates require explicit request.
 
 MIT License
 

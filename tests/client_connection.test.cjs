@@ -308,3 +308,25 @@ test('successful requests clear their deadline and HTTP 401 does not wait for a 
     assert.equal(app.run('identity.token'), 'not-for-display');
   }
 });
+
+test('large or congested incoming WebSocket data closes the stream and bounds queued work', async () => {
+  for (const mode of ['frame', 'bytes', 'count']) {
+    const app = connection();
+    app.run(`connectSocket(); globalThis.release = null;
+      inboundQueue = new Promise(resolve => { release = resolve; });`);
+    const ws = app.latest();
+    ws.emit('open');
+    const payload = JSON.stringify({type:'message', message:{ciphertext:'x'.repeat(2500000)}});
+    if (mode === 'frame') ws.emit('message', {data:'x'.repeat(4 * 1024 * 1024 + 1)});
+    else for (let i = 0; i < (mode === 'bytes' ? 3 : 33); i++) {
+      ws.emit('message', {data: mode === 'bytes' ? payload : '{"type":"unknown"}'});
+    }
+    assert.equal(ws.closeCalls, 1);
+    assert.ok(app.run('queuedSocketBytes') <= 6 * 1024 * 1024);
+    assert.ok(app.run('queuedSocketEvents') <= 32);
+    app.run('release()');
+    await app.run('inboundQueue');
+    await Promise.resolve(); await Promise.resolve();
+    assert.equal(app.run('queuedSocketBytes'), 0);
+  }
+});

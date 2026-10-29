@@ -19,7 +19,7 @@ def client():
 
 @pytest.mark.parametrize("path", [
     "/static/client.js?v=28", "/static/client.css?v=15",
-    "/static/client-protocol.js?v=3", "/static/client.js",
+    "/static/client-protocol.js?v=4", "/static/client.js",
     "/static/fonts/IBMPlexSans-Regular.woff2",
 ])
 def test_public_assets_are_cacheable_and_buffered(client, path):

@@ -4,12 +4,14 @@ import asyncio
 import hashlib
 import hmac
 import ipaddress
+import re
 import secrets
 import time
 from urllib.parse import urlsplit
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.websockets import WebSocketDisconnect
 
 from .config import get_settings
 
@@ -45,6 +47,8 @@ class SecurityGuards:
         self.app = app
         self.rates = {}
         self.connections = 0
+        self.http_requests = 0
+        self.static_requests = 0
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in {"http", "websocket"}:
@@ -90,7 +94,19 @@ class SecurityGuards:
                     return
                 if message["type"] == "websocket.close":
                     closed = True
-                await send(message)
+                if message["type"] == "websocket.send":
+                    size = len(message.get("bytes") or (message.get("text") or "").encode())
+                    if size > 4 * 1024 * 1024:
+                        closed = True
+                        await send({"type": "websocket.close", "code": 1009})
+                        raise WebSocketDisconnect(1009)
+                    try:
+                        await asyncio.wait_for(send(message), timeout=5)
+                    except TimeoutError as exc:
+                        closed = True
+                        raise WebSocketDisconnect(1001) from exc
+                else:
+                    await send(message)
 
             async def bounded_receive():
                 message = await receive()
@@ -108,13 +124,31 @@ class SecurityGuards:
             finally:
                 self.connections -= 1
 
+        # Script/font loads must not compete with expensive message requests.
+        static_read = scope["method"] in {"GET", "HEAD"} and scope["path"].startswith("/static/")
+        counter = "static_requests" if static_read else "http_requests"
+        limit = 32 if static_read else settings.max_http_concurrency
+        if getattr(self, counter) >= limit:
+            return await reject(429, "request concurrency capacity reached; retry later")
+        setattr(self, counter, getattr(self, counter) + 1)
+        try:
+            return await self.http(scope, receive, send, reject)
+        finally:
+            setattr(self, counter, getattr(self, counter) - 1)
+
+    async def http(self, scope, receive, send, reject):
+        settings = get_settings()
+        send_request = scope["method"] == "POST" and re.fullmatch(
+            r"/api/v1/chats/[0-9]+/messages", scope["path"]
+        )
+        limit = settings.max_send_request_bytes if send_request else settings.max_request_bytes
         request = Request(scope)
         body = bytearray()
         try:
             length = int(request.headers.get("content-length", "0"))
         except ValueError:
             return await reject(400, "invalid content length")
-        if length < 0 or length > settings.max_request_bytes:
+        if length < 0 or length > limit:
             return await reject(413, "request too large")
         body_deadline = time.monotonic() + 15
         while True:
@@ -125,9 +159,10 @@ class SecurityGuards:
                 return await reject(408, "request body timeout")
             if message["type"] == "http.disconnect":
                 return
-            body.extend(message.get("body", b""))
-            if len(body) > settings.max_request_bytes:
+            chunk = message.get("body", b"")
+            if len(body) + len(chunk) > limit:
                 return await reject(413, "request too large")
+            body.extend(chunk)
             if not message.get("more_body", False):
                 break
 

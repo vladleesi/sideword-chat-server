@@ -16,3 +16,5 @@ os.environ["SIDEWORD_EXPORTS_DIR"] = str(_TEST_ROOT / "exports")
 os.environ["SIDEWORD_REQUIRE_HTTPS"] = "false"
 os.environ["SIDEWORD_LOGIN_ATTEMPTS_PER_MINUTE"] = "10000"
 os.environ["SIDEWORD_PRIVATE_ADMIN"] = "false"
+
+os.environ["SIDEWORD_MESSAGE_TTL_DAYS"] = "7"

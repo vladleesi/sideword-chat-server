@@ -1,7 +1,7 @@
 "use strict";
 
 // New test protocol: keep prior device/history records untouched in their old DB.
-const DB_NAME = "sideword-test-client-p256";
+const DB_NAME = "sideword-test-client-p256-payload-v1";
 const STORE_NAME = "device";
 const IDENTITY_KEY = "identity";
 const HISTORY_PREFIX = "history:";
@@ -21,6 +21,7 @@ const elements = {
   deviceDialog: document.querySelector("#device-settings"),
   devicePublicId: document.querySelector("#device-public-id"),
   keyWarning: document.querySelector("#key-change-warning"),
+  conversation: document.querySelector("#conversation"),
   conversationKind: document.querySelector("#conversation-kind"),
   conversationTitle: document.querySelector("#conversation-title"),
   displayName: document.querySelector("#display-name"),
@@ -30,6 +31,13 @@ const elements = {
   loadingPanel: document.querySelector("#loading-panel"),
   roomPassword: document.querySelector("#join-password"),
   activationError: document.querySelector("#activation-error"),
+  attachmentInput: document.querySelector("#attachment-input"),
+  attachmentButton: document.querySelector("#attachment-button"),
+  attachmentPreview: document.querySelector("#attachment-preview"),
+  attachmentLabel: document.querySelector("#attachment-label"),
+  attachmentSize: document.querySelector("#attachment-size"),
+  attachmentCancel: document.querySelector("#attachment-cancel"),
+  composerError: document.querySelector("#composer-error"),
   messageForm: document.querySelector("#message-form"),
   messageInput: document.querySelector("#message-input"),
   messageList: document.querySelector("#message-list"),
@@ -44,6 +52,12 @@ const elements = {
   waitingNotice: document.querySelector("#waiting-notice"),
 };
 
+let selectedFile = null;
+let sendingMessage = false;
+let queuedSocketBytes = 0;
+let queuedSocketEvents = 0;
+const failedMessageRetries = new Map();
+const downloadUrls = new Map();
 let identity = null;
 let chats = [];
 let selectedChatId = null;
@@ -591,7 +605,9 @@ async function loadStoredHistory() {
       );
       const parts = record.key.split(":");
       const chatId = Number(parts[2]);
-      await appendMessage(chatId, JSON.parse(decoder.decode(plaintext)), false);
+      const entry = JSON.parse(decoder.decode(plaintext));
+      if (entry.attachment) SidewordProtocol.validatePayload(entry.attachment);
+      await appendMessage(chatId, entry, false);
       loadedHistoryKeys.add(record.key);
     } catch {
       // Ignore corrupted local records; authenticated decryption prevents use.
@@ -864,7 +880,7 @@ function outgoingMessageId(entry) {
 }
 
 function hiddenMessageEntry(entry) {
-  return ["receipt", "acceptance", "viewed", "read_ack", "delivery_ack", "delivery_ref", "send_failed"].includes(entry.kind);
+  return ["receipt", "acceptance", "viewed", "read_ack", "delivery_ack", "delivery_ref", "send_failed", "delivery_state"].includes(entry.kind);
 }
 
 function indexMessageMetadata(chatId, entry) {
@@ -876,6 +892,10 @@ function indexMessageMetadata(chatId, entry) {
     const metadata = metadataFor(chatId, entry.clientMessageId);
     if (!metadata.acceptance || Object.keys(entry.deliveries || {}).length
         >= Object.keys(metadata.acceptance.deliveries || {}).length) metadata.acceptance = entry;
+  } else if (entry.kind === "delivery_state") {
+    const metadata = metadataFor(chatId, entry.clientMessageId);
+    metadata.unavailable ||= new Map();
+    metadata.unavailable.set(entry.recipient, entry);
   } else if (entry.kind === "send_failed") {
     outgoingAttempts.set(metadataKey(chatId, entry.clientMessageId), "failed");
   } else if (entry.kind === "delivery_ack") {
@@ -931,11 +951,18 @@ function outgoingStatus(chatId, entry) {
       if (time !== null) state.deliveredAt = state.deliveredAt === null ? time : Math.min(state.deliveredAt, time);
     }
   }
+  for (const state of states) {
+    const terminal = metadata.unavailable?.get(state.publicId);
+    const expected = acceptance?.deliveries?.[state.publicId];
+    if (!state.delivered && terminal && expected === terminal.deliveryId) state.failure = terminal.state;
+  }
+  const failures = states.filter(peer => peer.failure);
   const accepted = Boolean(acceptance || states.some(peer => peer.delivered));
   const attempt = outgoingAttempts.get(metadataKey(chatId, messageId));
   const readCount = states.filter(peer => peer.read).length;
   const allRead = recipientsKnown && readCount === states.length;
   const status = !accepted ? (attempt || "pending")
+    : failures.length ? (failures.some(peer => peer.failure === "unavailable") ? "unavailable" : "expired")
     : readCount > 0 ? "read"
     : recipientsKnown && states.every(peer => peer.delivered) ? "delivered" : "sent";
   return { status, states, recipientsKnown, messageId, accepted, readCount, allRead,
@@ -944,7 +971,7 @@ function outgoingStatus(chatId, entry) {
 
 function statusLabel(status) {
   return ({ sending: "Sending", pending: "Pending retry", failed: "Failed", sent: "Sent",
-    delivered: "Delivered", read: "Read" })[status] || "Status unknown";
+    delivered: "Delivered", read: "Read", expired: "Delivery expired", unavailable: "Delivery unavailable" })[status] || "Status unknown";
 }
 
 function messageStatusLabel(state) {
@@ -1128,7 +1155,8 @@ function updateMessageFooter(node, chatId, entry) {
     node.messageBubble.append(footer);
   }
   const state = outgoingStatus(chatId, entry);
-  const label = `${messageStatusLabel(state)}. Open message details`;
+  const status = entry.attachment ? messageStatusLabel(state).replace(/^Read/, "Card viewed") : messageStatusLabel(state);
+  const label = `${status}. Open message details`;
   footer.indicator.className = `message-status status-${state.status}`;
   footer.indicator.setAttribute("aria-label", label);
   footer.indicator.title = label;
@@ -1171,14 +1199,19 @@ function refreshMessageDetails() {
   if (!openMessageDetails) return;
   const { chatId, entry } = openMessageDetails;
   const state = outgoingStatus(chatId, entry);
-  document.querySelector("#message-details-status").textContent = messageStatusLabel(state);
+  document.querySelector("#message-details-status").textContent = entry.attachment
+    ? `${messageStatusLabel(state).replace(/^Read/, "Card viewed")} · File opening/download is not confirmed`
+    : messageStatusLabel(state);
   document.querySelector("#message-details-time").textContent = displayTimestamp(state.timestamp, true);
   const groups = document.querySelector("#message-details-recipients");
   groups.replaceChildren();
   for (const [label, peers, timeField] of [
     ["Read by", state.states.filter(peer => peer.read), "readAt"],
     ["Delivered to", state.states.filter(peer => peer.delivered && !peer.read), "deliveredAt"],
-    ["Pending", state.states.filter(peer => !peer.delivered), null],
+    ["Pending", state.states.filter(peer => !peer.delivered && !peer.failure), null],
+    ...(["expired", "unavailable"].filter(failure => state.states.some(peer => peer.failure === failure))
+      .map(failure => [failure === "expired" ? "Expired without confirmation" : "Unavailable without confirmation",
+        state.states.filter(peer => peer.failure === failure), null])),
   ]) {
     const section = document.createElement("section");
     const heading = document.createElement("h3"); heading.textContent = label;
@@ -1198,6 +1231,7 @@ function refreshMessageDetails() {
   }
   const note = document.querySelector("#message-details-note");
   note.textContent = !state.recipientsKnown ? "The original recipient list is unavailable. Full delivery and reading cannot be confirmed."
+    : state.states.some(peer => peer.failure) ? "Some recipients have no delivery confirmation and their relay copies are no longer available. Your local copy is kept; verify with them before sending again."
     : "Pending means delivery has not been confirmed. Confirmations may be delayed.";
   // Keep technical controls and focus stable as receipt updates arrive.
   const technical = document.querySelector("#message-details-technical");
@@ -1297,7 +1331,8 @@ function renderMessages(openAtLatest = false) {
   let position = 0;
   for (const entry of entries) {
     const key = entry.id || entry;
-    const messageTextContent = entry.text;
+    const messageTextContent = entry.attachment
+      ? SidewordProtocol.safeDownloadName(entry.attachment.name) : entry.text;
     const previous = entries[position - 1];
     const existing = renderedMessages.get(key);
     if (existing) {
@@ -1334,6 +1369,38 @@ function renderMessages(openAtLatest = false) {
     text.textContent = messageTextContent;
     message.messageContent = text;
     bubble.append(text);
+    if (entry.attachment) {
+      bubble.className += " attachment-card";
+      const download = document.createElement("button");
+      download.type = "button";
+      text.className = "message-content attachment-name";
+      text.title = messageTextContent;
+      const info = document.createElement("div");
+      info.className = "attachment-info";
+      const size = document.createElement("small");
+      size.className = "attachment-size";
+      size.textContent = fileSize(entry.attachment.size);
+      info.append(text, size);
+      download.className = "button subtle attachment-download";
+      const downloadLabel = document.createElement("span");
+      downloadLabel.className = "sr-only";
+      downloadLabel.textContent = "Download";
+      download.append(downloadIcon(), downloadLabel);
+      download.title = "Download file";
+      download.setAttribute("aria-label", `Download ${messageTextContent}`);
+      const error = document.createElement("span");
+      error.className = "field-error";
+      error.setAttribute("role", "alert");
+      download.addEventListener("click", event => {
+        event.stopPropagation();
+        downloadAttachment(entry.attachment, error);
+      });
+      const tile = document.createElement("span");
+      tile.className = "file-tile";
+      tile.setAttribute("aria-hidden", "true");
+      tile.append(fileIcon());
+      bubble.append(tile, info, download, error);
+    }
     message.append(bubble);
     updateMessageHeader(message, chatId, entry, previous, timestampFormatters);
     if (entry.kind === "mine") {
@@ -1404,6 +1471,7 @@ function renderChats() {
 
 function selectChat(chatId, openAtLatest = false) {
   const changedChat = renderedChatId !== chatId;
+  if (selectedChatId !== chatId && !sendingMessage) clearAttachment();
   selectedChatId = chatId;
   if (openMessageDetails && openMessageDetails.chatId !== chatId) elements.messageDetails.close();
   const chat = chats.find((candidate) => candidate.id === chatId);
@@ -1424,12 +1492,20 @@ function selectChat(chatId, openAtLatest = false) {
   elements.waitingNotice.hidden = !waitingForPeer;
   elements.messageInput.disabled = !canSend;
   elements.messageInput.placeholder = waitingForPeer ? "Waiting for another participant…" : "Write a message";
-  elements.sendButton.disabled = !canSend;
+  elements.sendButton.disabled = !canSend || sendingMessage;
+  elements.attachmentButton.disabled = !canSend || sendingMessage;
+  elements.attachmentInput.disabled = !canSend || sendingMessage;
+  elements.messageInput.hidden = Boolean(selectedFile);
+  elements.messageForm.classList.toggle("has-attachment", Boolean(selectedFile));
+  elements.sendButton.textContent = sendingMessage ? "Sending…" : selectedFile ? "Send file" : "Send";
+  elements.attachmentButton.setAttribute("aria-label", selectedFile ? "Replace attached file" : "Attach a file");
+  if (selectedFile) elements.messageInput.disabled = true;
   document.querySelector("#composer-help").textContent = chat?.closed_at
     ? "Conversation closed. Saved history is kept; messaging is paused."
     : changedKey ? "Messaging is blocked because a participant's encryption key changed."
     : waitingForPeer ? "Sending is unavailable until another participant joins."
     : !chat ? "Select a conversation to send a message."
+    : selectedFile ? "Ready to send · Your text draft is kept separately"
     : "Enter to send · Shift+Enter for a new line";
   renderChats();
   renderMessages(openAtLatest);
@@ -1588,14 +1664,14 @@ async function processMessages(messages) {
       refreshVisibleReads();
       continue;
     }
-    if (processingMessageIds.has(key)) continue;
+    if (processingMessageIds.has(key) || (failedMessageRetries.get(key) || 0) > Date.now()) continue;
     processingMessageIds.add(key);
     try {
-      const plaintext = await decryptMessage(message);
+      const payload = SidewordProtocol.decodePayload(await decryptMessage(message));
       const entry = {
         id: key,
         kind: "theirs",
-        text: plaintext,
+        ...payloadEntry(payload),
         senderPublicId: message.sender_public_id,
         meta: `From ${message.sender_public_id}`,
         createdAt: serverTimestamp(message.created_at),
@@ -1605,9 +1681,18 @@ async function processMessages(messages) {
       await appendMessage(message.chat_id, entry);
       seenMessageIds.add(key);
       failedMessageReasons.delete(key);
+      failedMessageRetries.delete(key);
       queueDelivery(message);
     } catch (error) {
       const reason = errorMessage(error);
+      if (error instanceof SidewordProtocol.ProtocolError) {
+        if (failedMessageRetries.size >= 1024) {
+          const oldest = failedMessageRetries.keys().next().value;
+          failedMessageRetries.delete(oldest);
+          failedMessageReasons.delete(oldest);
+        }
+        failedMessageRetries.set(key, Date.now() + 60000);
+      }
       if (failedMessageReasons.get(key) !== reason) {
         failedMessageReasons.set(key, reason);
         appendMessage(message.chat_id, {
@@ -1785,6 +1870,11 @@ function connectSocket() {
   ws.addEventListener("message", (event) => {
     if (socket !== ws) return;
     if (event.data === "pong") return;
+    if (typeof event.data !== "string" || event.data.length > 4 * 1024 * 1024
+        || queuedSocketBytes + event.data.length > 6 * 1024 * 1024 || queuedSocketEvents >= 32) {
+      retrySocket(ws);
+      return;
+    }
     // Presence must not wait behind decryption, storage or HTTP work: doing so
     // could turn an old queued snapshot into an apparently fresh status.
     let payload;
@@ -1809,6 +1899,9 @@ function connectSocket() {
       return;
     }
     if (payload.type === "auth_error") clearPresence();
+    const bytes = event.data.length;
+    queuedSocketBytes += bytes;
+    queuedSocketEvents++;
     enqueueIncoming(async () => {
         if (socket !== ws) return;
         try {
@@ -1818,7 +1911,8 @@ function connectSocket() {
           throw error;
         }
       })
-      .catch((error) => showToast(errorMessage(error), true));
+      .catch((error) => showToast(errorMessage(error), true))
+      .finally(() => { queuedSocketBytes -= bytes; queuedSocketEvents--; });
   });
   ws.addEventListener("close", () => retrySocket(ws));
   ws.addEventListener("error", () => retrySocket(ws));
@@ -1973,7 +2067,8 @@ async function renderOutbox() {
       const record = JSON.parse(decoder.decode(decoded));
       const state = chats.find(chat => chat.id === record.chatId)?.closed_at
         ? "Paused (conversation closed)" : record.expiresAt <= Date.now() ? "Retry expired" : "Pending";
-      row.textContent = `${state}: ${record.plaintext} `;
+      const payload = SidewordProtocol.validatePayload(record.payload);
+      row.textContent = `${state}: ${payload.type === "text" ? payload.text : SidewordProtocol.safeDownloadName(payload.name)} `;
     } catch { row.textContent = "Unreadable pending message. "; }
     const discard = document.createElement("button");
     discard.type = "button";
@@ -2033,6 +2128,9 @@ async function flushOutbox() {
       outgoingAttempts.set(attemptKey, "sending");
       renderMessages();
       try {
+        if (chats.find(chat => chat.id === record.chatId)?.participants.some(peer => peer.key_changed)) {
+          throw new ClientError("A participant's encryption key changed. The saved send is paused; keep this device's history.");
+        }
         if (record.expiresAt <= Date.now()) {
           throw new ClientError("An outgoing retry expired. The message is still saved locally; uploading it now could duplicate a message already delivered.");
         }
@@ -2061,7 +2159,7 @@ async function storeOutgoing(record) {
     clientMessageId: record.messageId,
     recipients: record.envelopes.map(envelope => envelope.recipient_public_id),
     senderPublicId: identity.publicId,
-    text: record.plaintext, meta: `Sent by ${identity.publicId}`,
+    ...payloadEntry(SidewordProtocol.validatePayload(record.payload)), meta: `Sent by ${identity.publicId}`,
     createdAt: record.createdAt };
   entry.meta = messageMeta(record.chatId, entry);
   await appendMessage(record.chatId, entry);
@@ -2069,10 +2167,11 @@ async function storeOutgoing(record) {
 
 async function storeAcceptance(chatId, messageId, result) {
   const key = await messageEventId("acceptance", [messageId,
-    [...(result.recipients || [])].sort(), Object.entries(result.deliveries || {}).sort()]);
+    [...(result.recipients || [])].sort(), Object.entries(result.deliveries || {}).sort(),
+    result.content_expires_at || null]);
   await appendMessage(chatId, { id: key, kind: "acceptance",
     clientMessageId: messageId, recipients: result.recipients,
-    deliveries: result.deliveries || {}, createdAt: receiptTime(result.created_at) || Date.now() });
+    deliveries: result.deliveries || {}, contentExpiresAt: receiptTime(result.content_expires_at), createdAt: receiptTime(result.created_at) || Date.now() });
 }
 
 async function recoverMessageStatuses() {
@@ -2090,10 +2189,18 @@ async function recoverMessageStatuses() {
     body: JSON.stringify({ client_message_ids: batch.map(outgoingMessageId) }) });
   for (const message of result.statuses || []) {
     await storeAcceptance(chatId, message.client_message_id, { created_at: message.created_at,
+      content_expires_at: message.content_expires_at,
       recipients: message.recipients.map(peer => peer.public_id),
       deliveries: Object.fromEntries(message.recipients.filter(peer => peer.delivery_id)
         .map(peer => [peer.public_id, peer.delivery_id])) });
     for (const peer of message.recipients) {
+      if (["expired", "unavailable"].includes(peer.state) && peer.delivery_id) {
+        const key = await messageEventId("delivery_state", [chatId, message.client_message_id,
+          peer.public_id, peer.delivery_id, peer.state]);
+        await appendMessage(chatId, { id: key, kind: "delivery_state",
+          clientMessageId: message.client_message_id, recipient: peer.public_id,
+          deliveryId: peer.delivery_id, state: peer.state, createdAt: Date.now() });
+      }
       for (const [stage, time] of [["delivered", peer.delivered_at], ["read", peer.read_at]]) {
         if (!time) continue;
         const key = await messageEventId("receipt", [chatId, peer.public_id,
@@ -2107,43 +2214,225 @@ async function recoverMessageStatuses() {
   }
 }
 
+function payloadEntry(payload) {
+  return payload.type === "attachment" ? { attachment: payload } : { text: payload.text };
+}
+
+function fileIcon() {
+  // Fixed decorative geometry only; file content and MIME never enter the DOM.
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [name, value] of Object.entries({viewBox: "0 0 24 24", fill: "none",
+    stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round",
+    "aria-hidden": "true", focusable: "false", class: "file-icon"})) {
+    icon.setAttribute(name, value);
+  }
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z M14 2v6h6 M8 13h8 M8 17h5");
+  icon.append(path);
+  return icon;
+}
+
+function downloadIcon() {
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [name, value] of Object.entries({viewBox: "0 0 24 24", fill: "none",
+    stroke: "currentColor", "stroke-width": "1.75", "stroke-linecap": "round",
+    "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false"})) {
+    icon.setAttribute(name, value);
+  }
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M12 3v12 m-5-5 5 5 5-5 M5 16v4h14v-4");
+  icon.append(path);
+  return icon;
+}
+
+function fileSize(size) {
+  return size === 1048576 ? "1 MiB" : size >= 1024 ? `${(size / 1024).toFixed(1)} KiB` : `${size} B`;
+}
+
+function composerError(message = "") {
+  elements.composerError.textContent = message;
+  elements.composerError.hidden = !message;
+}
+
+function clearAttachment() {
+  selectedFile = null;
+  elements.attachmentInput.value = "";
+  elements.attachmentPreview.hidden = true;
+  elements.attachmentLabel.textContent = "";
+  elements.attachmentSize.textContent = "";
+}
+
+function selectAttachment(file) {
+  clearAttachment();
+  composerError();
+  if (!file) return;
+  if (file.size > SidewordProtocol.MAX_FILE_BYTES) {
+    throw new ClientError("Files must be 1 MiB (1,048,576 bytes) or smaller.");
+  }
+  if (!file.name || file.name.length > 255 || file.type.length > 127) {
+    throw new ClientError("The filename or declared file type is too long.");
+  }
+  selectedFile = file;
+  elements.attachmentLabel.textContent = SidewordProtocol.safeDownloadName(file.name);
+  elements.attachmentLabel.title = elements.attachmentLabel.textContent;
+  elements.attachmentSize.textContent = `${fileSize(file.size)} · File attachment`;
+  elements.attachmentPreview.hidden = false;
+  elements.messageInput.disabled = true; // Attachments have no captions; preserve the text draft.
+}
+
+function stageAttachmentFiles(files) {
+  if (sendingMessage || elements.attachmentButton.disabled) {
+    composerError(sendingMessage ? "Wait for the current message to finish sending."
+      : "File attachment is unavailable. Select an active conversation and resolve any access or key warnings.");
+    return;
+  }
+  if (files.length !== 1) {
+    composerError(files.length ? "Attach one file at a time. Choose a single file."
+      : "No file was available. Copy or drag a file, or use the attachment button.");
+    return;
+  }
+  try { selectAttachment(files[0]); }
+  catch (error) { composerError(errorMessage(error)); }
+  selectChat(selectedChatId);
+  if (selectedFile && !elements.sendButton.disabled) elements.sendButton.focus();
+}
+
+function hasTransferFiles(transfer) {
+  return Boolean(transfer?.files?.length || Array.from(transfer?.types || []).includes("Files"));
+}
+
+elements.attachmentButton.addEventListener("click", () => elements.attachmentInput.click());
+elements.attachmentInput.addEventListener("change", () => {
+  if (sendingMessage || !elements.attachmentInput.files?.[0]) return;
+  stageAttachmentFiles(elements.attachmentInput.files);
+});
+// Read only files supplied by the user's paste/drop event. Never read clipboard
+// permissions, HTML, remote URLs or file contents here; sending owns file reads.
+elements.conversation.addEventListener("paste", event => {
+  if (!hasTransferFiles(event.clipboardData)) return; // Preserve ordinary text paste.
+  event.preventDefault();
+  stageAttachmentFiles(event.clipboardData.files || []);
+});
+elements.conversation.addEventListener("dragover", event => {
+  if (!hasTransferFiles(event.dataTransfer)) return;
+  event.preventDefault(); // Prevent browser navigation, including when sending is blocked.
+  event.dataTransfer.dropEffect = !sendingMessage && !elements.attachmentButton.disabled ? "copy" : "none";
+  elements.conversation.classList.toggle("file-drag-over", event.dataTransfer.dropEffect === "copy");
+});
+elements.conversation.addEventListener("dragleave", event => {
+  if (event.relatedTarget && elements.conversation.contains(event.relatedTarget)) return;
+  elements.conversation.classList.toggle("file-drag-over", false);
+});
+elements.conversation.addEventListener("dragend", () => elements.conversation.classList.toggle("file-drag-over", false));
+elements.conversation.addEventListener("drop", event => {
+  elements.conversation.classList.toggle("file-drag-over", false);
+  if (!hasTransferFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  stageAttachmentFiles(event.dataTransfer.files || []);
+});
+elements.attachmentCancel.addEventListener("click", () => {
+  if (sendingMessage) return;
+  clearAttachment();
+  composerError();
+  selectChat(selectedChatId);
+  if (!elements.messageInput.disabled) elements.messageInput.focus();
+});
+
+function releaseDownload(url) {
+  if (!downloadUrls.has(url)) return;
+  window.clearTimeout(downloadUrls.get(url));
+  URL.revokeObjectURL(url);
+  downloadUrls.delete(url);
+}
+
+function downloadAttachment(payload, errorNode) {
+  let url;
+  let link;
+  try {
+    errorNode.textContent = "";
+    SidewordProtocol.validatePayload(payload);
+    if (downloadUrls.size >= 8) throw new ClientError("Please wait before starting another download.");
+    const bytes = SidewordProtocol.attachmentBytes(payload);
+    url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+    downloadUrls.set(url, null);
+    link = document.createElement("a");
+    link.href = url;
+    link.download = SidewordProtocol.safeDownloadName(payload.name);
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    // Keep the URL alive for navigation/download handoff, including slower engines.
+    downloadUrls.set(url, window.setTimeout(() => releaseDownload(url), 60000));
+  } catch (error) {
+    if (url) releaseDownload(url);
+    errorNode.textContent = error instanceof ClientError ? error.message
+      : "The file could not be downloaded. Its saved copy is retained; try again.";
+  } finally { link?.remove(); }
+}
+
 elements.messageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const plaintext = elements.messageInput.value.trim();
+  const text = elements.messageInput.value.trim();
   const chat = chats.find((candidate) => candidate.id === selectedChatId);
-  if (!plaintext || !chat || chat.closed_at) return;
+  const file = selectedFile;
+  if (sendingMessage || (!text && !file) || !chat || chat.closed_at) return;
+  sendingMessage = true;
   elements.sendButton.disabled = true;
+  elements.attachmentButton.disabled = true;
+  elements.attachmentInput.disabled = true;
+  elements.attachmentCancel.disabled = true;
+  elements.sendButton.textContent = "Sending…";
+  composerError();
   try {
     const messageId = crypto.randomUUID();
     const recipients = chat.participants.filter((item) => item.public_id !== identity.publicId);
-    const envelopes = await Promise.all(
-      recipients.map(async (recipient) => ({
-        recipient_public_id: recipient.public_id,
-        ciphertext: await encryptForRecipient(plaintext, chat.id, messageId, recipient),
-      })),
-    );
+    if (!recipients.length || recipients.length > 100) throw new ClientError("This conversation exceeds the recipient limit or has no peers.");
+    // Verify every peer before reading the file or starting expensive encryption.
+    for (const recipient of recipients) await assertTrustedPeer(recipient);
+    if (file && (file.size > SidewordProtocol.MAX_FILE_BYTES
+        || SidewordProtocol.attachmentSendBytes(file.size, recipients.length) > SidewordProtocol.MAX_SEND_BYTES)) {
+      throw new ClientError("This file exceeds the file or group transport limit. Use a smaller file or fewer recipients.");
+    }
+    const payload = file ? SidewordProtocol.filePayload(file.name, file.type, new Uint8Array(await file.arrayBuffer()))
+      : SidewordProtocol.textPayload(text);
+    const plaintext = SidewordProtocol.encodePayload(payload);
+    const envelopes = [];
+    let wireBytes = 512;
+    // Sequential encryption bounds transient buffers independently of group size.
+    for (const recipient of recipients) {
+      const ciphertext = await encryptForRecipient(plaintext, chat.id, messageId, recipient);
+      wireBytes += ciphertext.length + 512;
+      if (wireBytes > SidewordProtocol.MAX_SEND_BYTES) throw new ClientError("This message exceeds the group transport limit.");
+      envelopes.push({ recipient_public_id: recipient.public_id, ciphertext });
+    }
+    if (encoder.encode(JSON.stringify({ client_message_id: messageId, envelopes })).length > SidewordProtocol.MAX_SEND_BYTES) {
+      throw new ClientError("This message exceeds the group transport limit. Use a smaller message or fewer recipients.");
+    }
     if (!identity.retryWindowSeconds) throw new ClientError("The server does not advertise a safe message retry period. This message was not uploaded.");
-    const record = { chatId: chat.id, messageId, envelopes, plaintext,
+    const record = { chatId: chat.id, messageId, envelopes, payload,
       expiresAt: Date.now() + Math.max(0, identity.retryWindowSeconds - 300) * 1000,
       createdAt: Date.now() };
     await deviceLock(`outbox:${identity.publicId}`, async () => {
-      if ((await readHistoryRecords(`outbox:${identity.publicId}:`)).length >= 100) {
-        throw new ClientError("This device has too many saved outgoing messages awaiting confirmation. Another message cannot be added to the local outbox.");
+      const records = await readHistoryRecords(`outbox:${identity.publicId}:`);
+      const bytes = records.reduce((sum, item) => sum + item.value.ciphertext.byteLength, 0);
+      if (records.length >= 100 || bytes + encoder.encode(JSON.stringify(record)).length + 16 > 32 * 1024 * 1024) {
+        throw new ClientError("The encrypted local outbox is full. Retry or discard pending sends before adding another message.");
       }
       await persistOutbox(record);
+      // Ownership transfers to the durable outbox even if subsequent history persistence fails.
+      if (file) clearAttachment();
+      else elements.messageInput.value = "";
       await storeOutgoing(record);
     });
-    elements.messageInput.value = "";
-    try {
-      await flushOutbox();
-    } finally {
-      await renderOutbox();
-    }
+    try { await flushOutbox(); }
+    finally { await renderOutbox(); }
   } catch (error) {
-    showToast(errorMessage(error), true);
+    composerError(errorMessage(error));
   } finally {
-    elements.sendButton.disabled = Boolean(elements.messageInput.disabled);
-    elements.messageInput.focus({ preventScroll: true });
+    sendingMessage = false;
+    elements.attachmentCancel.disabled = false;
+    selectChat(selectedChatId);
+    if (!elements.messageInput.disabled) elements.messageInput.focus({ preventScroll: true });
   }
 });
 
@@ -2231,6 +2520,7 @@ window.addEventListener("online", () => {
 });
 window.addEventListener("offline", disconnectSocket);
 window.addEventListener("pagehide", () => {
+  for (const url of downloadUrls.keys()) releaseDownload(url);
   pageActive = false;
   disconnectSocket();
 });

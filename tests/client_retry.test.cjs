@@ -372,6 +372,8 @@ for (const failed of [false, true]) {
       chats = [{ id: 7, participants: [{ public_id: 'bob' }] }];
       elements.messageInput.value = 'hello';
       globalThis.events = [];
+      assertTrustedPeer = async () => {};
+      selectChat = () => { elements.sendButton.disabled = false; };
       encryptForRecipient = async () => 'ciphertext';
       deviceLock = async (_, action) => action();
       readHistoryRecords = async () => [];
@@ -379,7 +381,7 @@ for (const failed of [false, true]) {
       storeOutgoing = async () => {};
       flushOutbox = async () => { events.push('upload'); ${failed ? "throw new Error('offline');" : ''} };
       renderOutbox = async () => events.push('render');
-      showToast = () => events.push('error');
+      composerError = value => { if (value) events.push('error'); };
     `);
     await handlers.get('#message-form:submit')({ preventDefault() {} });
     assert.deepEqual(JSON.parse(run('JSON.stringify(events)')),
@@ -406,7 +408,7 @@ test('closed-room retries remain encrypted and paused while other-room retries a
       return {created_at:'2026-10-08T00:00:00Z'}; };
     for (const chatId of [7,8]) await persistOutbox({chatId, messageId:'stable-'+chatId,
       envelopes:[{recipient_public_id:'peer', ciphertext:'stable-ciphertext'}],
-      plaintext:'private pending text', createdAt:Date.now(), expiresAt:Date.now()+60000});
+      payload: { v: 1, type: 'text', text: 'private pending text' }, createdAt:Date.now(), expiresAt:Date.now()+60000});
     await flushOutbox();
   })()`);
   const requests = () => JSON.parse(run('JSON.stringify(requests)'));
@@ -434,7 +436,7 @@ test('encrypted outbox survives upload response loss and history-save failure', 
     globalThis.requests = [];
     api = async (_, options) => { requests.push(options.body); throw new Error('response lost'); };
     await persistOutbox({ chatId: 7, messageId: 'stable', envelopes: [{ciphertext:'already encrypted'}],
-      plaintext: 'private plaintext', createdAt: Date.now(), expiresAt: Date.now() + 60000 });
+      payload: { v: 1, type: 'text', text: 'private plaintext' }, createdAt: Date.now(), expiresAt: Date.now() + 60000 });
   })()`);
   assert.equal(run('JSON.stringify([...records]).includes("private plaintext")'), false);
   await assert.rejects(run('flushOutbox()'), /response lost/);
@@ -459,7 +461,7 @@ test('expired outgoing records stay saved without unsafe retransmission', async 
     putDatabaseValue = async (key, value) => { record = {key,value}; };
     readHistoryRecords = async () => [record];
     api = async () => { throw new Error('must not upload'); };
-    await persistOutbox({chatId:7,messageId:'old',expiresAt:0,createdAt:1,envelopes:[],plaintext:'old'});
+    await persistOutbox({chatId:7,messageId:'old',expiresAt:0,createdAt:1,envelopes:[],payload: { v: 1, type: 'text', text: 'old' }});
   })()`);
   await assert.rejects(run('flushOutbox()'), /retry expired/);
   assert.equal(run('record !== null'), true);

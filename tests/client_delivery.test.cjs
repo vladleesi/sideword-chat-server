@@ -17,7 +17,7 @@ function client(persistHistory = false) {
   vm.runInContext(`
     messageProfileReady = true;
     senderKeyIsLoaded = () => true;
-    decryptMessage = async (message) => message.ciphertext;
+    decryptMessage = async (message) => SidewordProtocol.encodePayload(SidewordProtocol.textPayload(message.ciphertext));
   `, context);
   if (!persistHistory) vm.runInContext('persistHistoryEntry = async () => {};', context);
   return (code) => vm.runInContext(code, context);
@@ -199,7 +199,7 @@ test('outgoing sends save the sender name before removing retry state', async ()
     removeOutbox = async () => {
       if (!records.some(record => record.key.startsWith('history:'))) throw new Error('history not saved');
     };
-    await persistOutbox({ chatId: 7, messageId: 'outbound-message-id', plaintext: 'hello',
+    await persistOutbox({ chatId: 7, messageId: 'outbound-message-id', payload: { v: 1, type: 'text', text: 'hello' },
       createdAt: Date.now(), envelopes: [], expiresAt: Date.now() + 60000 });
     await flushOutbox();
     chats = [];
@@ -467,7 +467,7 @@ test('failed envelope authentication never queues deletion and remains retryable
   assert.equal(run('processingMessageIds.size'), 0);
   assert.equal(run('messagesByChat.get(7).some(e => e.kind === "theirs")'), false);
   assert.equal(run('messagesByChat.get(7).some(e => e.text.includes("synthetic-private"))'), false);
-  await run(`decryptMessage = async () => 'authenticated'; processMessages([incoming]);`);
+  await run(`decryptMessage = async () => SidewordProtocol.encodePayload(SidewordProtocol.textPayload('authenticated')); processMessages([incoming]);`);
   assert.equal(run('pendingDeliveries.size'), 1);
   assert.equal(run('failedMessageReasons.size'), 0);
   assert.equal(run('messagesByChat.get(7).filter(e => e.kind === "theirs").length'), 1);

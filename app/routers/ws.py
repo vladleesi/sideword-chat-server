@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from datetime import datetime, timezone
 
 from anyio import CancelScope
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import SessionLocal
-from ..delivery import queued_receipts
+from ..delivery import queued_messages, queued_receipts
 from ..deps import resolve_client_user
-from ..models import PendingMessage, User
+from ..models import User
 from ..schemas import IncomingMessage, IncomingReadReceipt
-from ..services import open_chat_ids
 from ..ws_manager import manager
 
 router = APIRouter()
@@ -32,26 +29,7 @@ async def _resolve_user(session: AsyncSession, token: str) -> User | None:
 async def _backlog_payload(
     session: AsyncSession, user: User
 ) -> tuple[list[IncomingMessage], list[IncomingReadReceipt], list[IncomingReadReceipt]]:
-    msg_res = await session.execute(
-        select(PendingMessage, User)
-        .join(User, User.id == PendingMessage.sender_id)
-        .where(PendingMessage.recipient_id == user.id,
-               PendingMessage.chat_id.in_(open_chat_ids(user.id)))
-        .order_by(PendingMessage.id.asc()).limit(100)
-    )
-    messages = [
-        IncomingMessage(
-            id=msg.id,
-            delivery_id=msg.delivery_id,
-            client_message_id=msg.client_message_id,
-            chat_id=msg.chat_id,
-            sender_public_id=sender.public_id,
-            ciphertext=base64.b64encode(msg.ciphertext).decode("ascii"),
-            created_at=msg.created_at,
-        )
-        for msg, sender in msg_res.all()
-    ]
-
+    messages = await queued_messages(session, user.id)
     receipts, deliveries = await queued_receipts(session, user.id)
     return messages, receipts, deliveries
 

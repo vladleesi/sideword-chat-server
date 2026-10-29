@@ -1,25 +1,16 @@
 # Security policy
 
-## Supported versions
-
-Sideword is pre-1.0. Security fixes target the latest `main` code only.
+Security fixes target the latest `main` code; Sideword is pre-1.0.
 
 ## Report a vulnerability
 
-Use **Security → Report a vulnerability** for a private GitHub advisory. Include
-reproduction steps, affected endpoints/versions, impact and suggested mitigations.
-Do not publish details in issues, discussions or pull requests. If private reporting
-is unavailable, ask for a private contact channel without including the findings.
-
-Initial acknowledgement is expected within seven days; remediation and coordinated
-disclosure depend on severity and complexity.
+Use GitHub **Security → Report a vulnerability**. Include affected versions,
+reproduction and impact. Keep findings out of public issues/PRs. If private reporting
+is unavailable, request a private contact channel without disclosing details.
+Initial acknowledgement is expected within seven days; resolution depends on severity.
 
 ## Security limits
 
-The bundled browser client is an unaudited testing aid. Clients must encrypt and
-verify peers correctly; the server relays opaque ciphertext. The v1 protocol has
-no recipient forward secrecy or post-compromise recovery. First-use pinning cannot
-authenticate an initial key or protect against malicious origin code.
-
-See the [security review](docs/SECURITY_REVIEW.md) for controls, open findings and
-verification limits, and the [protocol](docs/PROTOCOL.md) for the wire contract.
+The browser client is unaudited. V1 has no recipient forward secrecy or post-compromise
+recovery; first-use pins cannot authenticate initial keys or malicious served code.
+Read the [security review](docs/SECURITY_REVIEW.md) and [protocol](docs/PROTOCOL.md).

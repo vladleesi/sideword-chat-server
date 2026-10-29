@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, delete, func, or_, select, text
+from sqlalchemy import Row, and_, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -16,6 +16,7 @@ from ..db import SessionLocal, get_session
 from ..delivery import (
     confirmation_available,
     delivery_ids,
+    queued_messages,
     queued_receipts,
     receipt_payload,
     receipt_state,
@@ -43,7 +44,7 @@ from ..schemas import (
     SendMessageResponse,
     _decode_b64,
 )
-from ..services import chat_members, ensure_chat_member, load_chat_info, open_chat_ids
+from ..services import chat_members, ensure_chat_member, load_chat_info
 from ..ws_manager import manager as ws_manager
 
 router = APIRouter(prefix="/api/v1", tags=["chats"])
@@ -85,7 +86,8 @@ async def send_message(
         return SendMessageResponse(client_message_id=payload.client_message_id,
                                    recipients=json.loads(record.recipients_json),
                                    deliveries=delivery_ids(record),
-                                   created_at=record.created_at)
+                                   created_at=record.created_at,
+                                   content_expires_at=record.content_expires_at)
     if record:
         await session.delete(record)
         await session.flush()
@@ -156,6 +158,10 @@ async def send_message(
     ).where(PendingMessage.sender_id == user.id))).one()
     own_receipts = await session.scalar(select(func.count(ReadReceipt.id)).where(
         ReadReceipt.sender_id == user.id))
+    chat_count, chat_bytes = (await session.execute(select(
+        func.count(PendingMessage.id),
+        func.coalesce(func.sum(func.length(PendingMessage.ciphertext)), 0),
+    ).where(PendingMessage.chat_id == chat_id))).one()
     recent = await session.scalar(select(func.count(SendRecord.id)).where(
         SendRecord.sender_id == user.id, SendRecord.created_at > now - timedelta(minutes=1)))
     if (count + len(recipients_users) > _settings.max_pending_messages
@@ -164,13 +170,18 @@ async def send_message(
             or own_count + own_receipts + len(recipients_users) > _settings.max_pending_per_sender
             or (own_bytes + sum(map(len, ciphertexts.values()))
                 > _settings.max_pending_bytes_per_sender)
+            or chat_count + len(recipients_users) > _settings.max_pending_per_chat
+            or (chat_bytes + sum(map(len, ciphertexts.values()))
+                > _settings.max_pending_bytes_per_chat)
             or recent >= _settings.sends_per_minute):
         raise HTTPException(429, "relay capacity reached; retry later",
                             headers={"Retry-After": "60"})
+    content_expires_at = now + timedelta(days=_settings.message_ttl_days)
     record = SendRecord(
         chat_id=chat_id, sender_id=user.id, client_message_id=payload.client_message_id,
         payload_hash=digest, recipients_json=json.dumps([r.public_id for r in recipients_users]),
         created_at=now, expires_at=now + timedelta(days=_settings.send_idempotency_days),
+        content_expires_at=content_expires_at,
     )
     session.add(record)
     new_rows = [
@@ -180,7 +191,7 @@ async def send_message(
             sender_id=user.id,
             recipient_id=rec.id,
             ciphertext=ciphertexts[rec.id],
-            created_at=now,
+            created_at=now, expires_at=content_expires_at,
         )
         for rec in recipients_users
     ]
@@ -218,7 +229,7 @@ async def send_message(
         client_message_id=payload.client_message_id,
         recipients=[r.public_id for r in recipients_users],
         deliveries=delivery_ids(record),
-        created_at=now,
+        created_at=now, content_expires_at=record.content_expires_at,
     )
 
 
@@ -235,35 +246,18 @@ async def message_status(
         SendRecord.client_message_id.in_(payload.client_message_ids),
     ))
     now = datetime.now(timezone.utc)
-    return MessageStatusResponse(statuses=[status_payload(record) for record in records
+    records = list(records)
+    queued = set(await session.scalars(select(PendingMessage.delivery_id).where(
+        PendingMessage.chat_id == chat_id, PendingMessage.sender_id == user.id,
+        PendingMessage.client_message_id.in_(payload.client_message_ids),
+    )))
+    return MessageStatusResponse(statuses=[status_payload(record, queued, now) for record in records
         if confirmation_available(record, now)
         and receipt_state(record).get("sender_public_id") == user.public_id])
 
 
 async def _fetch_poll(session: AsyncSession, user: User) -> PollResponse:
-    # Pending ciphertext addressed to this user.
-    result = await session.execute(
-        select(PendingMessage, User)
-        .join(User, User.id == PendingMessage.sender_id)
-        .where(PendingMessage.recipient_id == user.id,
-               PendingMessage.chat_id.in_(open_chat_ids(user.id)))
-        .order_by(PendingMessage.id.asc()).limit(100)
-    )
-    pending_rows = result.all()
-
-    incoming: list[IncomingMessage] = []
-    for msg, sender in pending_rows:
-        incoming.append(
-            IncomingMessage(
-                id=msg.id,
-                delivery_id=msg.delivery_id,
-                client_message_id=msg.client_message_id,
-                chat_id=msg.chat_id,
-                sender_public_id=sender.public_id,
-                ciphertext=base64.b64encode(msg.ciphertext).decode("ascii"),
-                created_at=msg.created_at,
-            )
-        )
+    incoming = await queued_messages(session, user.id)
     incoming_receipts, delivery_receipts = await queued_receipts(session, user.id)
 
     return PollResponse(messages=incoming, read_receipts=incoming_receipts,
@@ -303,8 +297,12 @@ async def ack_exact(
             PendingMessage.recipient_id == user.id,
             or_(*(_message_match(ref) for ref in payload.messages)),
         )
-        result = await session.execute(statement.returning(PendingMessage))
-        rows = list(result.scalars().all())
+        # ACK needs only routing/receipt fields: never materialize deleted file content.
+        result = await session.execute(statement.returning(
+            PendingMessage.chat_id, PendingMessage.sender_id,
+            PendingMessage.client_message_id, PendingMessage.delivery_id,
+        ))
+        rows = result.all()
         messages = len(rows)
         now = datetime.now(timezone.utc)
         for row in rows:
@@ -346,7 +344,7 @@ async def mark_read_exact(
     return await _mark_viewed(session, user, payload.messages)
 
 
-def _confirmation(msg: PendingMessage, user: User, kind: str, now: datetime) -> ReadReceipt:
+def _confirmation(msg: Row, user: User, kind: str, now: datetime) -> ReadReceipt:
     return ReadReceipt(
         client_message_id=msg.client_message_id, chat_id=msg.chat_id, sender_id=msg.sender_id,
         reader_public_id=user.public_id, kind=kind, message_delivery_id=msg.delivery_id,

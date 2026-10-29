@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.15.0 — 2026-10-28
+
+- Harden deletion with SQLite overwrite-on-delete and truncated rollback journals; omit queued ciphertext and deleted free pages from supported backups while preserving restart recovery and retry metadata.
+- Default undelivered content to seven days with fixed deadlines, block expired delivery before cleanup, and show expired/unavailable confirmations per recipient; the schema change requires fresh state.
+- Add one encrypted attachment per message, up to 1 MiB, in personal and group chats; encrypt filenames, declared types and bytes with per-recipient message keys and reuse durable delivery, encrypted history and immutable outbox retries.
+- Accept clipboard file/image pastes and file drops into the conversation through the same review-before-send flow, retaining one-file/1 MiB limits and ordinary text paste.
+- Introduce application payload v1 for explicit text/file messages while retaining cryptographic envelope v1 and HTTP API v1; require fresh state and matching clients without legacy payload fallback.
+- Bound envelope, aggregate send, per-chat storage, HTTP concurrency and polling/WebSocket buffers; keep existing sender/global quotas and cap text at 16,000 UTF-8 bytes.
+- Refine file selection, compact sent cards, two-line filenames and inline errors; downloads use explicit generic Blobs with sanitized names and URL cleanup. No previews, captions or automatic opening.
+
 ## 0.14.0 — 2026-10-28
 
 - Store display names per chat membership while retaining the shared device identity; reconnects preserve room names and configuration bundle v2 carries them through export/import. The membership schema changes require fresh server state; no automatic migration is provided.

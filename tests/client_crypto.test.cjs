@@ -50,10 +50,10 @@ function key(sender, recipient, epk, saltValue, context) {
   ]);
   return hkdfSync('sha256', secrets, saltValue, context, 32);
 }
-function fixture() {
+function fixture(plaintext = text) {
   const cipher = createCipheriv('aes-256-gcm', key(alice, bob, ephemeral, salt, info), iv);
   cipher.setAAD(info);
-  const ct = Buffer.concat([cipher.update(text, 'utf8'), cipher.final(), cipher.getAuthTag()]);
+  const ct = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final(), cipher.getAuthTag()]);
   return { v: 1, alg: 'P256-2DH-HKDF-SHA256-AES256GCM', epk: ephemeral.raw,
     salt: salt.toString('base64'), iv: iv.toString('base64'), ct: ct.toString('base64') };
 }
@@ -257,4 +257,11 @@ test('an aborted history transaction rejects persistence instead of leaving deli
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('persistence hung')), 200); }),
     ]), /could not save local chat history/);
   } finally { clearTimeout(timer); }
+});
+
+
+test('authenticated non-UTF-8 plaintext fails with a retry-throttled protocol error', async () => {
+  const app = await receiver();
+  app.context.message = message(fixture(Buffer.from([0xff])));
+  await assert.rejects(app.run('decryptMessage(message)'), /Invalid or unsupported message payload/);
 });

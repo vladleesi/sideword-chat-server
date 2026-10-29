@@ -144,7 +144,7 @@
         </article>
         <article>
           <p class="number">03 / TRANSPORT</p>
-          <div><h3>Opaque payloads</h3><p>Clients encrypt and verify peers. The server relays ciphertext; HTTPS protects sessions.</p></div>
+          <div><h3>Opaque payloads</h3><p>Clients encrypt and verify peers. The test client supports text and files up to 1 MiB, including encrypted filenames and types. Select, paste or drop a file, then send. HTTPS protects sessions.</p></div>
         </article>
         <article>
           <p class="number">04 / ADMISSION</p>
@@ -156,7 +156,7 @@
         </article>
         <article>
           <p class="number">06 / RETENTION</p>
-          <div><h3>A queue, not an archive</h3><p>Durable ACK or expiry removes ciphertext; viewing does not. Bounded retry/confirmation metadata and room records persist separately. Clients keep local history.</p></div>
+          <div><h3>A queue, not an archive</h3><p>Durable ACK or seven-day default expiry removes ciphertext. Room records and bounded retry metadata remain. Clients keep encrypted history; downloads remain local files.</p></div>
         </article>
       </div>
     </section>
@@ -174,7 +174,7 @@
           <div class="relay-line" aria-hidden="true"><span>CIPHERTEXT</span></div>
           <div class="relay-node"><span>03 / RECIPIENT</span><strong>CLIENT</strong><small>Persist, then ACK</small></div>
         </div>
-        <figcaption id="relay-caption">Plaintext stays with the clients. The server sees routing metadata.</figcaption>
+        <figcaption id="relay-caption">Content and file metadata stay encrypted. The server sees routing, timing and ciphertext sizes.</figcaption>
       </figure>
       <ol class="steps">
         <li><p class="number">01 / ENCRYPT</p><h3>Before upload.</h3><p>Your client verifies peers and encrypts an envelope for each recipient.</p></li>
@@ -211,7 +211,7 @@
       </div>
       <aside class="reference-note">
         <p class="number">REFERENCE CLIENT</p>
-        <div><h3>A tool for testing the contract.</h3><p>The unaudited <code>/client</code> uses non-exportable P-256 keys and origin-local history. Verify peer fingerprints separately; first-use pins cannot authenticate initial keys or server code. Pre-releases require fresh state; see the <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/UPGRADING.md">setup and recovery guide</a>.</p><a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/PROTOCOL.md">Reference protocol <span aria-hidden="true">&#8599;</span></a></div>
+        <div><h3>A tool for testing the contract.</h3><p>The unaudited <code>/client</code> uses P-256 keys and encrypted local history. Group copies multiply bandwidth/storage. Verify peer fingerprints separately. No recipient forward secrecy, post-compromise recovery or server malware inspection. Pre-releases require fresh state; see the <a href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/UPGRADING.md">setup and recovery guide</a>.</p><a class="text-link" href="https://github.com/vladleesi/sideword-chat-server/blob/main/docs/PROTOCOL.md">Reference protocol <span aria-hidden="true">&#8599;</span></a></div>
       </aside>
     </section>
 
