@@ -39,8 +39,8 @@ SOFTWARE.
 ## Agent guidelines
 
 Repository guidance imports selected modules once from
-[vladleesi/agent-guidelines v1.3.0](https://github.com/vladleesi/agent-guidelines/tree/v1.3.0),
-commit `a8423f9d663d046cefb4f7f239bcf816087b9526`. Upstream updates require explicit request.
+[vladleesi/agent-guidelines v1.5.0](https://github.com/vladleesi/agent-guidelines/tree/v1.5.0),
+commit `11f8f36e0308d0acc07b1352a8fa68cc137e6638`. Upstream updates require explicit request.
 
 MIT License
 
